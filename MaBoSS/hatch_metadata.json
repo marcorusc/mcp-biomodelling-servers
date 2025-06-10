@@ -1,0 +1,25 @@
+{
+  "package_schema_version": "1.1.0",
+  "name": "MaBoSS",
+  "version": "0.1.0",
+  "description": "A Hatch package for MaBoSS",
+  "tags": [],
+  "author": {
+    "name": "Hatch User",
+    "email": ""
+  },
+  "license": {
+    "name": "MIT"
+  },
+  "entry_point": "server.py",
+  "tools": [
+    {
+      "name": "example_tool",
+      "description": "Example tool function"
+    }
+  ],
+  "citations": {
+    "origin": "Origin citation for MaBoSS",
+    "mcp": "MCP citation for MaBoSS"
+  }
+}
