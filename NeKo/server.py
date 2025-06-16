@@ -57,9 +57,8 @@ def create_network(list_of_initial_genes: list[str], database="omnipath", sif_fi
     # If using SIGNOR, download and build the SIGNOR resource
     if database == "signor":
         hatch_mcp.logger.info("Downloading SIGNOR database...")
-        download_signor_database()
         hatch_mcp.logger.info("SIGNOR database downloaded successfully.")
-        signor_res = signor("SIGNOR_Human.tsv")
+        signor_res = signor()
         signor_res.build()
         resources = signor_res.interactions
     else:
@@ -99,7 +98,7 @@ def create_network(list_of_initial_genes: list[str], database="omnipath", sif_fi
     if df_edges.empty:
         hatch_mcp.logger.warning("No interactions found in the network. Please check the input parameters.")
         # Build an empty table with the expected columns
-        empty_df = pd.DataFrame(columns=["source", "target", "Type", "Effect", "References"])
+        empty_df = pd.DataFrame(columns=["source", "target", "Effect"])
         return "_No interactions found in the network._\n\n" + clean_for_markdown(empty_df).to_markdown(index=False, tablefmt="plain")
 
     # Compute basic statistics
@@ -111,6 +110,7 @@ def create_network(list_of_initial_genes: list[str], database="omnipath", sif_fi
 
     # Prepare a preview of the first 100 interactions
     preview_df = df_edges.head(100)
+    preview_df = preview_df[[c for c in ['source', 'target', 'Effect'] if c in preview_df.columns]]
     preview_md = clean_for_markdown(preview_df).to_markdown(index=False, tablefmt="plain")
 
     # Build the Markdown summary
@@ -160,6 +160,14 @@ def remove_gene(gene: str) -> str:
         return "No network exists. Please create a network first."
     network.remove_node(gene)
     return f"Gene {gene} removed from the network."
+
+# TO DO: Implement multiple network enrichment strategies (connect upstream, connect as atopo, etc...)
+
+# TO DO: Implement export of images with graphviz
+
+# TO DO: implement better check of which nodes are disconnected and use MCM strategy to connect the disconnected component with the connected one
+
+# TO DO: implement GO enrichment
 
 @hatch_mcp.server.tool()
 def export_network(format: str = "sif") -> str:
@@ -240,6 +248,10 @@ def export_network(format: str = "sif") -> str:
 
     # 2) Handle BNET export
     elif format.lower() == "bnet":
+        def clean_node_name(name: str) -> str:
+            import re
+            return re.sub(r"[^A-Za-z0-9_]", "_", name)
+
         # Check connectivity first
         if not is_connected(network):
             return "_Network is not fully connected. Please ensure the network is connected before exporting as bnet._"
@@ -257,7 +269,42 @@ def export_network(format: str = "sif") -> str:
             return "**Error:** No .bnet files were generated."
         out_path = bnet_files[0]
 
-        # Check for special characters in gene/node names in the bnet file
+        # Clean node names in the BNET file (both columns)
+        cleaned_names = set()
+        try:
+            # First pass: build mapping of original -> cleaned names
+            with open(out_path, "r") as f:
+                lines = f.readlines()
+            name_map = {}
+            for line in lines:
+                if "," in line:
+                    gene, _ = line.split(",", 1)
+                    gene_clean = clean_node_name(gene.strip())
+                    if gene_clean != gene.strip():
+                        cleaned_names.add(gene.strip())
+                    name_map[gene.strip()] = gene_clean
+            # Second pass: rewrite lines with cleaned names in both columns
+            new_lines = []
+            import re
+            for line in lines:
+                if "," in line:
+                    gene, expr = line.split(",", 1)
+                    gene_clean = name_map.get(gene.strip(), gene.strip())
+                    expr_clean = expr
+                    # Replace all gene names in the expression with their cleaned versions (word boundaries)
+                    for orig, clean in name_map.items():
+                        if orig != clean:
+                            expr_clean = re.sub(rf'(?<![A-Za-z0-9_]){re.escape(orig)}(?![A-Za-z0-9_])', clean, expr_clean)
+                    new_lines.append(f"{gene_clean},{expr_clean}")
+                else:
+                    new_lines.append(line)
+            # Overwrite the file with cleaned names
+            with open(out_path, "w") as f:
+                f.writelines(new_lines)
+        except Exception as e:
+            return f"**Error cleaning BNET gene names:** {str(e)}"
+
+        # Check for special characters in gene/node names in the bnet file (should be clean now)
         special_char_issues = []
         try:
             with open(out_path, "r") as f:
@@ -266,7 +313,6 @@ def export_network(format: str = "sif") -> str:
                         break  # Only check the first 1000 lines for performance
                     if "," in line:
                         gene = line.split(",", 1)[0].strip()
-                        # Allow only alphanumerics and underscores
                         import re
                         if re.search(r"[^A-Za-z0-9_]", gene):
                             special_char_issues.append(gene)
@@ -283,8 +329,10 @@ def export_network(format: str = "sif") -> str:
         md_lines.append(preview_md)
         if len(bnet_files) > 1:
             md_lines.append(f"\n_Warning: More than one .bnet file was found ({', '.join(bnet_files)}). Previewing only the first one._")
+        if cleaned_names:
+            md_lines.append(f"\n**Warning:** The following gene/node names were modified to remove special characters: {', '.join(sorted(cleaned_names))}")
         if special_char_issues:
-            md_lines.append(f"\n**Warning:** The following gene/node names contain special characters and may not be compatible: {', '.join(sorted(set(special_char_issues)))}")
+            md_lines.append(f"\n**Warning:** The following gene/node names still contain special characters and may not be compatible: {', '.join(sorted(set(special_char_issues)))}")
         return "\n".join(md_lines)
 
     # 3) Unsupported format
@@ -333,13 +381,12 @@ def list_genes_and_interactions() -> str:
 
     try:
         df = network.convert_edgelist_into_genesymbol()
-        # Exclude the 'resources' column if present
         if "resources" in df.columns:
             df = df.drop(columns=["resources"])
         if df.empty:
             return "_Network loaded but contains no interactions._\n\n" + clean_for_markdown(df).to_markdown(index=False, tablefmt="plain")
+        df = df[[c for c in ['source', 'target', 'Effect'] if c in df.columns]]
         return clean_for_markdown(df).to_markdown(index=False, tablefmt="plain")
-
     except Exception as e:
         # Try to get column headers from a failed conversion (fallback)
         try:
@@ -479,7 +526,7 @@ def remove_bimodal_interactions() -> str:
     if "Effect" not in network.edges.columns:
         return "No 'Effect' column found in network.edges."
     before = len(network.edges)
-    network.edges = network.edges[network.edges["Effect"].str.lower() != "bimodal"]
+    network.remove_bimodal_interactions()
     after = len(network.edges)
     removed = before - after
     return f"Removed {removed} bimodal interactions from the network."
@@ -497,7 +544,7 @@ def remove_undefined_interactions() -> str:
     if "Effect" not in network.edges.columns:
         return "No 'Effect' column found in network.edges."
     before = len(network.edges)
-    network.edges = network.edges[network.edges["Effect"].str.lower() != "undefined"]
+    network.remove_undefined_interactions()
     after = len(network.edges)
     removed = before - after
     return f"Removed {removed} undefined interactions from the network."
@@ -636,3 +683,53 @@ def clean_for_markdown(df: pd.DataFrame) -> pd.DataFrame:
 if __name__ == "__main__":
     hatch_mcp.logger.info("Starting MCP server")
     hatch_mcp.server.run()
+
+@hatch_mcp.server.tool()
+def get_references(node1: str, node2: str = None) -> str:
+    """
+    Retrieve references for interactions involving a node (or between two nodes).
+    - If only node1 is provided: show all interactions (edges) where node1 is source or target, with their references.
+    - If both node1 and node2 are provided: show only interactions between node1 and node2 (any direction), with references.
+    Returns a Markdown table with columns: source, target, effect, references (truncated to first 5, with count if more).
+    """
+    global network
+    if network is None:
+        return "No network exists. Please create a network first."
+    try:
+        df = network.convert_edgelist_into_genesymbol()
+    except Exception as e:
+        return f"**Error**: Unable to retrieve network edges. {str(e)}"
+    if df.empty:
+        return "_No interactions found in the network._"
+    # Filter by node(s)
+    if node2:
+        mask = ((df['source'] == node1) & (df['target'] == node2)) | ((df['source'] == node2) & (df['target'] == node1))
+        filtered = df[mask]
+    else:
+        mask = (df['source'] == node1) | (df['target'] == node1)
+        filtered = df[mask]
+    if filtered.empty:
+        return "_No matching interactions found._"
+    # Only keep relevant columns
+    cols = ['source', 'target', 'Effect', 'References']
+    filtered = filtered[[c for c in cols if c in filtered.columns]]
+    # Truncate references for display
+    def short_refs(refs):
+        if pd.isna(refs) or not refs or refs == 'None':
+            return ''
+        ref_list = [r.strip() for r in str(refs).replace(';', ',').split(',') if r.strip()]
+        if len(ref_list) > 5:
+            return '; '.join(ref_list[:5]) + f" (+{len(ref_list)-5} more)"
+        return '; '.join(ref_list)
+    filtered['References'] = filtered['References'].apply(short_refs)
+    # Clean for markdown
+    md = clean_for_markdown(filtered).to_markdown(index=False, tablefmt="plain")
+    return f"**References for interactions involving `{node1}`{' and `'+node2+'`' if node2 else ''}:**\n\n" + md
+
+def clean_node_name(name: str) -> str:
+    """
+    Clean a node/gene name to allow only alphanumerics and underscores.
+    Replace any other character with an underscore.
+    """
+    import re
+    return re.sub(r"[^A-Za-z0-9_]", "_", name)
