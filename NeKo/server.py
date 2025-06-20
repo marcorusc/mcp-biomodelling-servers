@@ -34,16 +34,33 @@ network = None
 # If the network is connected, it will return a Markdown formatted string with the network summary.
 # If the network is not reset, it will return an error message.
 @hatch_mcp.server.tool()
-def create_network(list_of_initial_genes: list[str], database="omnipath", sif_file: str=None) -> str:
+def create_network(list_of_initial_genes: list[str],
+                    database="omnipath",
+                      sif_file: str=None,
+                        max_len: int=2,
+                          algorithm: str="bfs",
+                            only_signed: bool=True,
+                              connect_with_bias: bool=False,
+                                consensus: bool=True) -> str:
     """
     Create a NeKo network from a list of genes and/or a SIF file.
     If the list of genes is empty but a SIF file is provided, load the network from the SIF file.
     If the list of genes is not empty and there is no SIF file, use just the list of genes.
     If both are provided, load the network from the SIF file and then add all genes in the list.
+    As optional parameters, you can specify the maximum length of paths to complete (default is 2),
+    the algorithm to use for path completion (the user can choose between "bfs" and "dfs" which stands for breadth-first search and depth-first search, respectively),
+    whether to only include signed interactions, whether to connect with bias, and whether to use consensus.
+    If the database is not supported, it will return an error message.
+    If the network is created successfully, it will return a Markdown formatted string with the network summary
     Args:
         list_of_initial_genes (list[str]): List of gene symbols.
         database (str): Database to use for network creation, either 'omnipath' or 'signor'.
         sif_file (str): Path to a SIF file to load the network from.
+        max_len (int): Maximum length of paths to complete. Defaults to 2.
+        algorithm (str): Algorithm to use for path completion, either 'bfs' or 'dfs'. Defaults to 'bfs'.
+        only_signed (bool): Whether to only include signed interactions. Defaults to True.
+        connect_with_bias (bool): Whether to connect with bias. Defaults to False.
+        consensus (bool): Whether to use consensus. Defaults to True.
     Returns:
         str: Status message or Markdown formatted string with network summary.
     """
@@ -79,11 +96,11 @@ def create_network(list_of_initial_genes: list[str], database="omnipath", sif_fi
     elif list_of_initial_genes:
         network = Network(list_of_initial_genes, resources=resources)
         network.complete_connection(
-            maxlen=3,
-            algorithm="bfs",
-            only_signed=True,
-            connect_with_bias=False,
-            consensus=True
+            maxlen=max_len,
+            algorithm=algorithm,
+            only_signed=only_signed,
+            connect_with_bias=connect_with_bias,
+            consensus=consensus
         )
     # Case 3: Neither provided
     else:
@@ -725,11 +742,3 @@ def get_references(node1: str, node2: str = None) -> str:
     # Clean for markdown
     md = clean_for_markdown(filtered).to_markdown(index=False, tablefmt="plain")
     return f"**References for interactions involving `{node1}`{' and `'+node2+'`' if node2 else ''}:**\n\n" + md
-
-def clean_node_name(name: str) -> str:
-    """
-    Clean a node/gene name to allow only alphanumerics and underscores.
-    Replace any other character with an underscore.
-    """
-    import re
-    return re.sub(r"[^A-Za-z0-9_]", "_", name)
