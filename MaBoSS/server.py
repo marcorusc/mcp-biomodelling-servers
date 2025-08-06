@@ -2,19 +2,63 @@ import logging
 import os
 import glob
 from pathlib import Path
-from hatchling import HatchMCP
+from hatch_mcp_server import HatchMCP
 import matplotlib.pyplot as plt
 import maboss
 import pandas as pd
 
 # Initialize MCP server with metadata
 hatch_mcp = HatchMCP("MaBoSS",
-                origin_citation="Origin citation for MaBoSS",
-                mcp_citation="MCP citation for MaBoSS")
+                origin_citation="Gautier Stoll, Barthélémy Caron, Eric Viara, Aurélien Dugourd, Andrei Zinovyev, Aurélien Naldi, Guido Kroemer, Emmanuel Barillot, Laurence Calzone, MaBoSS 2.0: an environment for stochastic Boolean modeling, Bioinformatics, Volume 33, Issue 14, July 2017, Pages 2226–2228, https://doi.org/10.1093/bioinformatics/btx123",
+                mcp_citation="https://github.com/marcorusc/Hatch_Pkg_Dev/tree/main/MaBoSS")
 
 sim = None  # Global variable to hold the simulation state
 
 result = None  # Global variable to hold the result of the last simulation
+
+
+# todo tool to clean generated files bnd cfg
+
+@hatch_mcp.server.tool()
+def get_network_nodes() -> str:
+    """
+    This function retrieves the nodes in the MaBoSS network.
+    It logs the request and returns the list of nodes as a string.
+    Returns:
+        str: List of nodes in the MaBoSS network.
+    """
+    global sim
+    if sim is None:
+        return "No MaBoSS simulation has been built yet. Please build a simulation first."
+
+    nodes = sim.network.keys() #ordered dict with the nodes of the network
+    nodes_list = list(nodes)
+    if not nodes_list:
+        return "No nodes found in the MaBoSS network."
+    hatch_mcp.logger.info(f"Retrieved nodes: {nodes_list}")
+    return f"Nodes in the MaBoSS network: {', '.join(nodes_list)}"
+
+@hatch_mcp.server.tool()
+def clean_generated_files() -> str:
+    """
+    This function cleans up the generated files from the MaBoSS simulation.
+    It removes the output.bnd and output.cfg files created by MaBoSS.
+    Returns:
+        str: Confirmation message indicating successful cleanup.
+    """
+    import os
+
+    try:
+        if os.path.exists("output.bnd"):
+            os.remove("output.bnd")
+            hatch_mcp.logger.info("Removed output.bnd file.")
+        if os.path.exists("output.cfg"):
+            os.remove("output.cfg")
+            hatch_mcp.logger.info("Removed output.cfg file.")
+        return "Generated files cleaned up successfully."
+    except Exception as e:
+        hatch_mcp.logger.error(f"Error during cleanup: {str(e)}")
+        return f"Error during cleanup: {str(e)}"
 
 # tool for creating the bnd and the cfg files from a bnet file
 @hatch_mcp.server.tool()
@@ -544,6 +588,23 @@ def clean_bnd_and_cfg() -> str:
     except Exception as e:
         hatch_mcp.logger.error(f"Error during cleanup: {str(e)}")
         return f"Error during cleanup: {str(e)}"
+    
+@hatch_mcp.server.tool()
+def list_available_tools() -> str:
+    """
+    When the user requests to list available tools,
+    this function retrieves the names of all registered tools in the HatchMCP server.
+    It logs the request and returns a formatted string listing all available tools.
+    Returns:
+        str: List of available tools in the HatchMCP server.
+    """
+    tools = hatch_mcp.server.get_tools()
+    if not tools:
+        return "No tools are currently available."
+    
+    tool_list = "\n".join([f"- {tool.name}: {tool.description}" for tool in tools])
+    hatch_mcp.logger.info(f"Available tools: {tool_list}")
+    return f"**Available Tools:**\n{tool_list}"
     
 def clean_for_markdown(df: pd.DataFrame) -> pd.DataFrame:
     """

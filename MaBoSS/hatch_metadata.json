@@ -1,7 +1,7 @@
 {
-  "package_schema_version": "1.1.0",
+  "package_schema_version": "1.2.0",
   "name": "MaBoSS",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A Hatch package for MaBoSS",
   "tags": [],
   "author": {
@@ -12,10 +12,76 @@
     "name": "MIT"
   },
   "entry_point": "server.py",
+  "dependencies": {
+    "python": [
+      {
+        "name": "maboss",
+        "version_constraint": "*",
+        "package_manager": "pip"
+      },
+      {
+        "name": "conda-package-handling",
+        "version_constraint": "*",
+        "package_manager": "pip"
+      }
+    ]
+  },
   "tools": [
     {
-      "name": "example_tool",
-      "description": "Example tool function"
+      "name": "bnet_to_bnd_and_cfg",
+      "description": "Process a bnet file and generate corresponding BND and CFG files using MaBoSS"
+    },
+    {
+      "name": "build_simulation",
+      "description": "Build a MaBoSS simulation from BND and CFG files"
+    },
+    {
+      "name": "run_simulation",
+      "description": "Run the MaBoSS simulation"
+    },
+    {
+      "name": "get_maboss_initial_state",
+      "description": "Get the initial state configuration for MaBoSS simulation"
+    },
+    {
+      "name": "get_maboss_logical_rules",
+      "description": "Get the logical rules from the MaBoSS model"
+    },
+    {
+      "name": "get_maboss_mutations",
+      "description": "Get the mutations configuration for MaBoSS simulation"
+    },
+    {
+      "name": "update_maboss_parameters",
+      "description": "Update parameters for the MaBoSS simulation"
+    },
+    {
+      "name": "set_maboss_output_nodes",
+      "description": "Set the output nodes for MaBoSS simulation"
+    },
+    {
+      "name": "set_maboss_initial_state",
+      "description": "Set the initial state for specific nodes in MaBoSS simulation"
+    },
+    {
+      "name": "simulate_mutation",
+      "description": "Simulate mutations by setting nodes to specific states"
+    },
+    {
+      "name": "visualize_network_trajectories",
+      "description": "Visualize network trajectories from MaBoSS simulation results"
+    },
+    {
+      "name": "get_simulation_result",
+      "description": "Get the results from the MaBoSS simulation"
+    },
+    {
+      "name": "check_bnd_and_cfg_name",
+      "description": "Check the validity of BND and CFG file names"
+    },
+    {
+      "name": "clean_bnd_and_cfg",
+      "description": "Clean BND and CFG files from the working directory"
     }
   ],
   "citations": {
