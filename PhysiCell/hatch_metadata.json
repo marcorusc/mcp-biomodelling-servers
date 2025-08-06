@@ -1,0 +1,28 @@
+{
+  "package_schema_version": "1.2.0",
+  "name": "PhysiCell",
+  "version": "0.1.0",
+  "description": "PhysiCell MCP server to create PhysiCell config file, ruleset and intial conditions, all the necessary to build a PhysiCell simulation starting from the template project",
+  "tags": [],
+  "author": {
+    "name": "Hatch User",
+    "email": ""
+  },
+  "license": {
+    "name": "MIT"
+  },
+  "entry_point": "server.py",
+  "dependencies": {
+    "python": [
+      {
+        "name": "physicell-settings",
+        "version_constraint": ">=0.3.0",
+        "package_manager": "pip"
+      }
+    ]
+  },
+  "citations": {
+    "origin": "Origin citation for PhysiCell",
+    "mcp": "MCP citation for PhysiCell"
+  }
+}

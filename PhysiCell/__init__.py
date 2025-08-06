@@ -1,0 +1,1 @@
+# Hatch package initialization
