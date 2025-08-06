@@ -1,22 +1,23 @@
 import io
 import sys
-import logging
 import os
 import glob
 import requests
-from hatchling import HatchMCP
+from hatch_mcp_server import HatchMCP
 
 from neko.core.network import Network
 from neko._outputs.exports import Exports
 from neko.inputs import Universe, signor
 from neko.core.tools import is_connected
 
+from utils import *
+
 import pandas as pd
 
 # Initialize MCP server with metadata
 hatch_mcp = HatchMCP("NeKo",
-                origin_citation="Origin citation for NeKo",
-                mcp_citation="MCP citation for NeKo")
+                origin_citation="NeKo: a tool for automatic network construction from prior knowledge, Marco Ruscone,  Eirini Tsirvouli,  Andrea Checcoli,  Denes Turei,  Emmanuel Barillot,  Julio Saez-Rodriguez,  Loredana Martignetti,  Åsmund Flobak,  Laurence Calzone, doi: https://doi.org/10.1101/2024.10.14.618311",
+                mcp_citation="https://github.com/marcorusc/Hatch_Pkg_Dev/tree/main/NeKo")
 
 # Global network object for persistent state
 network = None
@@ -43,26 +44,26 @@ def create_network(list_of_initial_genes: list[str],
                               connect_with_bias: bool=False,
                                 consensus: bool=True) -> str:
     """
-    Create a NeKo network from a list of genes and/or a SIF file.
-    If the list of genes is empty but a SIF file is provided, load the network from the SIF file.
-    If the list of genes is not empty and there is no SIF file, use just the list of genes.
-    If both are provided, load the network from the SIF file and then add all genes in the list.
-    As optional parameters, you can specify the maximum length of paths to complete (default is 2),
-    the algorithm to use for path completion (the user can choose between "bfs" and "dfs" which stands for breadth-first search and depth-first search, respectively),
-    whether to only include signed interactions, whether to connect with bias, and whether to use consensus.
-    If the database is not supported, it will return an error message.
-    If the network is created successfully, it will return a Markdown formatted string with the network summary
-    Args:
-        list_of_initial_genes (list[str]): List of gene symbols.
-        database (str): Database to use for network creation, either 'omnipath' or 'signor'.
-        sif_file (str): Path to a SIF file to load the network from.
-        max_len (int): Maximum length of paths to complete. Defaults to 2.
-        algorithm (str): Algorithm to use for path completion, either 'bfs' or 'dfs'. Defaults to 'bfs'.
-        only_signed (bool): Whether to only include signed interactions. Defaults to True.
-        connect_with_bias (bool): Whether to connect with bias. Defaults to False.
-        consensus (bool): Whether to use consensus. Defaults to True.
-    Returns:
-        str: Status message or Markdown formatted string with network summary.
+Create a NeKo network from a list of genes and/or a SIF file.
+If the list of genes is empty but a SIF file is provided, load the network from the SIF file.
+If the list of genes is not empty and there is no SIF file, use just the list of genes.
+If both are provided, load the network from the SIF file and then add all genes in the list.
+As optional parameters, you can specify the maximum length of paths to complete (default is 2),
+the algorithm to use for path completion (the user can choose between "bfs" and "dfs" which stands for breadth-first search and depth-first search, respectively),
+whether to only include signed interactions, whether to connect with bias, and whether to use consensus.
+If the database is not supported, it will return an error message.
+If the network is created successfully, it will return a Markdown formatted string with the network summary
+Args:
+list_of_initial_genes (list[str]): List of gene symbols.
+database (str): Database to use for network creation, either 'omnipath' or 'signor'.
+sif_file (str): Path to a SIF file to load the network from.
+max_len (int): Maximum length of paths to complete. Defaults to 2.
+algorithm (str): Algorithm to use for path completion, either 'bfs' or 'dfs'. Defaults to 'bfs'.
+only_signed (bool): Whether to only include signed interactions. Defaults to True.
+connect_with_bias (bool): Whether to connect with bias. Defaults to False.
+consensus (bool): Whether to use consensus. Defaults to True.
+Returns:
+str: Status message or Markdown formatted string with network summary.
     """
     global network
     hatch_mcp.logger.info(f"Creating NeKo network with initial genes: {list_of_initial_genes} and SIF file: {sif_file}")
@@ -102,21 +103,19 @@ def create_network(list_of_initial_genes: list[str],
             connect_with_bias=connect_with_bias,
             consensus=consensus
         )
-    # Case 3: Neither provided
+    # Case 3: Neither provided - enhanced guidance
     else:
-        return "_No initial genes or SIF file provided. Please provide at least one._"
+        return format_no_input_guidance()
 
-    # If there are no edges, return a Markdown note
+    # If there are no edges, return enhanced guidance instead of dead-end error
     try:
         df_edges = network.convert_edgelist_into_genesymbol()
     except Exception as e:
-        return f"**Error**: Unable to build network. {str(e)}"
+        return format_network_creation_error("build_failed", list_of_initial_genes, str(e))
 
     if df_edges.empty:
         hatch_mcp.logger.warning("No interactions found in the network. Please check the input parameters.")
-        # Build an empty table with the expected columns
-        empty_df = pd.DataFrame(columns=["source", "target", "Effect"])
-        return "_No interactions found in the network._\n\n" + clean_for_markdown(empty_df).to_markdown(index=False, tablefmt="plain")
+        return format_empty_network_response(list_of_initial_genes, database, max_len, only_signed)
 
     # Compute basic statistics
     num_edges = len(df_edges)
@@ -157,9 +156,13 @@ def add_gene(gene: str) -> str:
     """
     global network
     if network is None:
-        return "No network exists. Please create a network first."
-    network.add_node(gene)
-    return f"Gene {gene} added to the network."
+        return format_no_network_for_modification("add", gene)
+
+    try:
+        network.add_node(gene)
+        return f"**Gene added:** {gene}\n**Next step:** Use `get_network()` to view updated network or `export_network()` to save changes"
+    except Exception as e:
+        return f"**Error adding gene {gene}:** {str(e)}\n**Tip:** Ensure gene symbol is valid (e.g., 'TP53', not 'tp53')"
 
 @hatch_mcp.server.tool()
 def remove_gene(gene: str) -> str:
@@ -174,9 +177,22 @@ def remove_gene(gene: str) -> str:
     """
     global network
     if network is None:
-        return "No network exists. Please create a network first."
-    network.remove_node(gene)
-    return f"Gene {gene} removed from the network."
+        return format_no_network_for_modification("remove", gene)
+
+    try:
+        if gene not in network.nodes:
+            # List similar genes for suggestions
+            similar_genes = [g for g in network.nodes if gene.upper() in g.upper() or g.upper() in gene.upper()]
+            error_msg = f"**Gene not found:** {gene} is not in the current network"
+            if similar_genes:
+                error_msg += f"\n**Similar genes found:** {', '.join(similar_genes[:5])}"
+            error_msg += f"\n**Tip:** Use `get_network()` to see all available genes"
+            return error_msg
+        
+        network.remove_node(gene)
+        return f"**Gene removed:** {gene}\n**Next step:** Use `get_network()` to view updated network"
+    except Exception as e:
+        return f"**Error removing gene {gene}:** {str(e)}"
 
 # TO DO: Implement multiple network enrichment strategies (connect upstream, connect as atopo, etc...)
 
@@ -209,7 +225,7 @@ def export_network(format: str = "sif") -> str:
     global network
 
     if network is None:
-        return "_No network exists. Please create a network first._"
+        return format_no_network_guidance()
 
     exporter = Exports(network)
 
@@ -269,9 +285,9 @@ def export_network(format: str = "sif") -> str:
             import re
             return re.sub(r"[^A-Za-z0-9_]", "_", name)
 
-        # Check connectivity first
+        # Check connectivity first with enhanced guidance
         if not is_connected(network):
-            return "_Network is not fully connected. Please ensure the network is connected before exporting as bnet._"
+            return format_connectivity_guidance()
 
         # Export
         try:
@@ -350,11 +366,34 @@ def export_network(format: str = "sif") -> str:
             md_lines.append(f"\n**Warning:** The following gene/node names were modified to remove special characters: {', '.join(sorted(cleaned_names))}")
         if special_char_issues:
             md_lines.append(f"\n**Warning:** The following gene/node names still contain special characters and may not be compatible: {', '.join(sorted(set(special_char_issues)))}")
+        
+        # Enhanced cross-server workflow guidance
+        md_lines.extend([
+            "",
+            "🔗 **Cross-Server Workflow Options:**",
+            "",
+            "**Option 1: Boolean Simulation (MaBoSS)**",
+            f"   • Convert to simulation format: `bnet_to_bnd_and_cfg('{out_path}')`",
+            "   • Run Boolean dynamics: `run_simulation()` or `simulate_trajectories()`",
+            "   • Analyze steady states and pathway dynamics",
+            "",
+            "**Option 2: Multiscale Modeling (PhysiCell + PhysiBoSS)**",
+            f"   • Step 1: `bnet_to_bnd_and_cfg('{out_path}')`  # Generate BND/CFG",
+            "   • Step 2: `add_physiboss_model('<cell_type>', '<model.bnd>', '<model.cfg>')`",
+            "   • Step 3: Link Boolean states to cell behaviors (proliferation, death, migration)",
+            "   • Step 4: Run multiscale simulation with gene regulation driving cell decisions",
+            "",
+            "**File Status Check:**",
+            f"   • Inspect network: `inspect_bnet_file('{out_path}')`  # Detailed analysis",
+            "   • Validate for simulation: `check_simulation_files()`  # After conversion",
+            "   • Check PhysiBoSS readiness: `check_physiboss_files()`  # For multiscale"
+        ])
+        
         return "\n".join(md_lines)
 
-    # 3) Unsupported format
+    # 3) Unsupported format - provide guidance
     else:
-        return "_Unsupported format. Use `sif` or `bnet`._"
+        return format_unsupported_format_guidance(format)
 
 @hatch_mcp.server.tool()
 def network_dimension() -> str:
@@ -671,36 +710,6 @@ def check_disconnected_nodes() -> str:
     
     return "Disconnected nodes:\n" + "\n".join(disconnected_nodes)
 
-def clean_for_markdown(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    1. Convert every cell to a string.
-    2. Strip leading/trailing whitespace and collapse any internal whitespace to a single space.
-    3. Replace 'nan' or entirely-blank cells with an empty string.
-    4. Drop columns and rows that end up completely empty.
-    """
-    # 1) Make sure everything is a string so strip/regex-replace works
-    df_str = df.astype(str)
-
-    # 2) Strip leading/trailing whitespace, then collapse any run of whitespace/newlines to a single space
-    df_str = df_str.applymap(lambda val: " ".join(val.split()))
-
-    # 3) Replace the literal string 'nan' (that pandas sometimes shows for NaNs) with an actual empty string
-    df_str = df_str.replace("nan", "", regex=False)
-
-    # 4) Drop any columns that are now entirely empty
-    df_str = df_str.dropna(axis=1, how="all")  # drop cols where every entry is NaN (after replacement, NaN still possible)
-    df_str = df_str.loc[:, (df_str != "").any(axis=0)]  # also drop columns that are all empty strings
-
-    # 5) Drop any rows that are now entirely empty
-    df_str = df_str.dropna(axis=0, how="all")
-    df_str = df_str.loc[(df_str != "").any(axis=1), :]
-
-    return df_str
-
-if __name__ == "__main__":
-    hatch_mcp.logger.info("Starting MCP server")
-    hatch_mcp.server.run()
-
 @hatch_mcp.server.tool()
 def get_references(node1: str, node2: str = None) -> str:
     """
@@ -742,3 +751,7 @@ def get_references(node1: str, node2: str = None) -> str:
     # Clean for markdown
     md = clean_for_markdown(filtered).to_markdown(index=False, tablefmt="plain")
     return f"**References for interactions involving `{node1}`{' and `'+node2+'`' if node2 else ''}:**\n\n" + md
+
+if __name__ == "__main__":
+    hatch_mcp.logger.info("Starting MCP server")
+    hatch_mcp.server.run()

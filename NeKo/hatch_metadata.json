@@ -1,21 +1,110 @@
 {
-  "package_schema_version": "1.1.0",
+  "package_schema_version": "1.2.0",
   "name": "NeKo",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A Hatch package for NeKo",
   "tags": [],
   "author": {
-    "name": "Hatch User",
-    "email": ""
+    "name": "Marco Ruscone",
+    "email": "marco.ruscone@bsc.es"
   },
   "license": {
     "name": "MIT"
   },
   "entry_point": "server.py",
+  "dependencies": {
+    "python": [
+      {
+        "name": "wheel",
+        "version_constraint": "*",
+        "package_manager": "pip"
+      },
+      {
+        "name": "twine",
+        "version_constraint": "*",
+        "package_manager": "pip"
+      },
+      {
+        "name": "build",
+        "version_constraint": "*",
+        "package_manager": "pip"
+      },
+      {
+        "name": "requests",
+        "version_constraint": "*",
+        "package_manager": "pip"
+      },
+      {
+        "name": "nekomata",
+        "version_constraint": "*",
+        "package_manager": "pip"
+      }
+    ]
+  },
   "tools": [
     {
-      "name": "example_tool",
-      "description": "Example tool function"
+      "name": "create_network",
+      "description": "Create a NeKo network from a list of genes and/or a SIF file"
+    },
+    {
+      "name": "add_gene",
+      "description": "Add a gene to the current network"
+    },
+    {
+      "name": "remove_gene",
+      "description": "Remove a gene from the current network"
+    },
+    {
+      "name": "export_network",
+      "description": "Export the current network in specified format (SIF or BNET)"
+    },
+    {
+      "name": "network_dimension",
+      "description": "Get the dimensions (number of nodes and edges) of the current network"
+    },
+    {
+      "name": "list_genes_and_interactions",
+      "description": "List all genes and interactions in the current network"
+    },
+    {
+      "name": "find_paths",
+      "description": "Find paths between source and target genes in the network"
+    },
+    {
+      "name": "reset_network",
+      "description": "Reset the current network (clear all data)"
+    },
+    {
+      "name": "clean_generated_files",
+      "description": "Clean generated files from a specified folder"
+    },
+    {
+      "name": "get_help",
+      "description": "Get help information about NeKo tools and usage"
+    },
+    {
+      "name": "remove_bimodal_interactions",
+      "description": "Remove bimodal interactions from the current network"
+    },
+    {
+      "name": "remove_undefined_interactions",
+      "description": "Remove undefined interactions from the current network"
+    },
+    {
+      "name": "list_bnet_files",
+      "description": "List all BNET files in a specified folder"
+    },
+    {
+      "name": "check_bnet_files_names",
+      "description": "Check BNET file names for validity and consistency"
+    },
+    {
+      "name": "check_disconnected_nodes",
+      "description": "Check for disconnected nodes in the current network"
+    },
+    {
+      "name": "get_references",
+      "description": "Get references for interactions between specified nodes"
     }
   ],
   "citations": {
