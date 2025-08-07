@@ -366,29 +366,6 @@ def export_network(format: str = "sif") -> str:
             md_lines.append(f"\n**Warning:** The following gene/node names were modified to remove special characters: {', '.join(sorted(cleaned_names))}")
         if special_char_issues:
             md_lines.append(f"\n**Warning:** The following gene/node names still contain special characters and may not be compatible: {', '.join(sorted(set(special_char_issues)))}")
-        
-        # Enhanced cross-server workflow guidance
-        md_lines.extend([
-            "",
-            "🔗 **Cross-Server Workflow Options:**",
-            "",
-            "**Option 1: Boolean Simulation (MaBoSS)**",
-            f"   • Convert to simulation format: `bnet_to_bnd_and_cfg('{out_path}')`",
-            "   • Run Boolean dynamics: `run_simulation()` or `simulate_trajectories()`",
-            "   • Analyze steady states and pathway dynamics",
-            "",
-            "**Option 2: Multiscale Modeling (PhysiCell + PhysiBoSS)**",
-            f"   • Step 1: `bnet_to_bnd_and_cfg('{out_path}')`  # Generate BND/CFG",
-            "   • Step 2: `add_physiboss_model('<cell_type>', '<model.bnd>', '<model.cfg>')`",
-            "   • Step 3: Link Boolean states to cell behaviors (proliferation, death, migration)",
-            "   • Step 4: Run multiscale simulation with gene regulation driving cell decisions",
-            "",
-            "**File Status Check:**",
-            f"   • Inspect network: `inspect_bnet_file('{out_path}')`  # Detailed analysis",
-            "   • Validate for simulation: `check_simulation_files()`  # After conversion",
-            "   • Check PhysiBoSS readiness: `check_physiboss_files()`  # For multiscale"
-        ])
-        
         return "\n".join(md_lines)
 
     # 3) Unsupported format - provide guidance

@@ -15,23 +15,8 @@
   "dependencies": {
     "python": [
       {
-        "name": "wheel",
-        "version_constraint": "*",
-        "package_manager": "pip"
-      },
-      {
-        "name": "twine",
-        "version_constraint": "*",
-        "package_manager": "pip"
-      },
-      {
-        "name": "build",
-        "version_constraint": "*",
-        "package_manager": "pip"
-      },
-      {
-        "name": "requests",
-        "version_constraint": "*",
+        "name": "paramiko",
+        "version_constraint": "<4.0.0",
         "package_manager": "pip"
       },
       {
