@@ -1,23 +1,22 @@
 import logging
-import os
+import os, shutil
 import glob
 from pathlib import Path
-from hatch_mcp_server import HatchMCP
+#from hatch_mcp_server import HatchMCP
 import matplotlib.pyplot as plt
 import maboss
 import pandas as pd
 
-
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 
 mcp = FastMCP()
 
-# Initialize MCP server with metadata
+""" # Initialize MCP server with metadata
 hatch_mcp = HatchMCP("MaBoSS",
                      fast_mcp=mcp,
                 origin_citation="Gautier Stoll, Barthélémy Caron, Eric Viara, Aurélien Dugourd, Andrei Zinovyev, Aurélien Naldi, Guido Kroemer, Emmanuel Barillot, Laurence Calzone, MaBoSS 2.0: an environment for stochastic Boolean modeling, Bioinformatics, Volume 33, Issue 14, July 2017, Pages 2226–2228, https://doi.org/10.1093/bioinformatics/btx123",
                 mcp_citation="https://github.com/marcorusc/Hatch_Pkg_Dev/tree/main/MaBoSS")
-
+ """
 sim = None  # Global variable to hold the simulation state
 
 result = None  # Global variable to hold the result of the last simulation
@@ -26,7 +25,7 @@ result = None  # Global variable to hold the result of the last simulation
 # todo tool to clean generated files bnd cfg
 
 @mcp.tool()
-def get_network_nodes() -> str:
+def get_network_nodes(ctx: Context) -> str:
     """
     This function retrieves the nodes in the MaBoSS network.
     It logs the request and returns the list of nodes as a string.
@@ -41,11 +40,11 @@ def get_network_nodes() -> str:
     nodes_list = list(nodes)
     if not nodes_list:
         return "No nodes found in the MaBoSS network."
-    hatch_mcp.logger.info(f"Retrieved nodes: {nodes_list}")
+    ctx.info(f"Retrieved nodes: {nodes_list}")
     return f"Nodes in the MaBoSS network: {', '.join(nodes_list)}"
 
 @mcp.tool()
-def clean_generated_files() -> str:
+def clean_generated_files(ctx: Context) -> str:
     """
     This function cleans up the generated files from the MaBoSS simulation.
     It removes the output.bnd and output.cfg files created by MaBoSS.
@@ -57,18 +56,18 @@ def clean_generated_files() -> str:
     try:
         if os.path.exists("output.bnd"):
             os.remove("output.bnd")
-            hatch_mcp.logger.info("Removed output.bnd file.")
+            ctx.info("Removed output.bnd file.")
         if os.path.exists("output.cfg"):
             os.remove("output.cfg")
-            hatch_mcp.logger.info("Removed output.cfg file.")
+            ctx.info("Removed output.cfg file.")
         return "Generated files cleaned up successfully."
     except Exception as e:
-        hatch_mcp.logger.error(f"Error during cleanup: {str(e)}")
+        ctx.error(f"Error during cleanup: {str(e)}")
         return f"Error during cleanup: {str(e)}"
 
 # tool for creating the bnd and the cfg files from a bnet file
 @mcp.tool()
-def bnet_to_bnd_and_cfg(bnet_path: str) -> str:
+def bnet_to_bnd_and_cfg(bnet_path: str, ctx: Context) -> str:
     """
     This function processes a bnet file and generates
     the corresponding BND and CFG files using MaBoSS.
@@ -79,7 +78,7 @@ def bnet_to_bnd_and_cfg(bnet_path: str) -> str:
     Returns:
         str: Processed result.
     """
-    hatch_mcp.logger.info(f"Processing with MaBoSS tool. Input .bnet file: {bnet_path}")
+    ctx.info(f"Processing with MaBoSS tool. Input .bnet file: {bnet_path}")
     maboss.bnet_to_bnd_and_cfg(bnet_path, "output.bnd", "output.cfg")
     # check if the files were created
     # if the bnd and cfg files are created, return the paths
@@ -87,17 +86,17 @@ def bnet_to_bnd_and_cfg(bnet_path: str) -> str:
     try:
         with open("output.bnd", "r") as bnd_file:
             bnd_content = bnd_file.read()
-            hatch_mcp.logger.info(f"Read BND content: {bnd_content}")
+            ctx.info(f"Read BND content: {bnd_content}")
         with open("output.cfg", "r") as cfg_file:
             cfg_content = cfg_file.read()
-            hatch_mcp.logger.info(f"Read CFG content: {cfg_content}")
+            ctx.info(f"Read CFG content: {cfg_content}")
         return "MaBoSS bnd and cfg files created successfully. Output files: output.bnd, output.cfg"
     except FileNotFoundError as e:
-        hatch_mcp.logger.error(f"Error reading output files: {e}")
+        ctx.error(f"Error reading output files: {e}")
         return "Error in MaBoSS simulation creation. Output files not found."
     
 @mcp.tool()
-def build_simulation(bnd_path: str = "output.bnd", cfg_path: str = "output.cfg") -> str:
+async def build_simulation(ctx: Context, bnd_path: str = "output.bnd", cfg_path: str = "output.cfg") -> str:
     """
     When the user requests to create a simulation,
     or if it ask to build a simulation,
@@ -114,20 +113,24 @@ def build_simulation(bnd_path: str = "output.bnd", cfg_path: str = "output.cfg")
         str: Parameters of the MaBoSS simulation or an error message if the simulation creation fails.
     """
     global sim
-    hatch_mcp.logger.info(f"Creating MaBoSS simulation with BND: {bnd_path} and CFG: {cfg_path}")
+    await ctx.info(f"Creating MaBoSS simulation with BND: {bnd_path} and CFG: {cfg_path}")
+
+    await ctx.info(f"Current PATH environment variable: {os.environ.get('PATH')}")
+    await ctx.info(f"CONDA_PREFIX={os.environ.get('CONDA_PREFIX')}")
+    await ctx.info(f"which MaBoSS: {shutil.which('MaBoSS')}")
     sim = maboss.load(bnd_path, cfg_path)
     if sim:
-        hatch_mcp.logger.info("MaBoSS simulation completed successfully.")
+        ctx.info("MaBoSS simulation completed successfully.")
         parameters = sim.param # Ordered Dict with the parameters of the simulation
         parameters_str = "\n".join([f"{key}: {value}" for key, value in parameters.items()])
-        hatch_mcp.logger.info(f"Simulation parameters: {parameters_str}")
+        ctx.info(f"Simulation parameters: {parameters_str}")
         return f"MaBoSS simulation created successfully with the following parameters:\n{parameters_str}"
     else:
-        hatch_mcp.logger.error("Failed to create MaBoSS simulation.")
+        ctx.error("Failed to create MaBoSS simulation.")
         return "Error in MaBoSS simulation creation. Please check the BND and CFG files." 
 
 @mcp.tool()
-def run_simulation() -> str:
+def run_simulation(ctx: Context) -> str:
     """
     When the user requests to run a simulation,
     or if it asks to execute a simulation,
@@ -141,16 +144,16 @@ def run_simulation() -> str:
         return "No MaBoSS simulation has been built yet. Please build a simulation first."
 
     try:
-        hatch_mcp.logger.info("Running MaBoSS simulation...")
+        ctx.info("Running MaBoSS simulation...")
         result = sim.run()
-        hatch_mcp.logger.info("MaBoSS simulation completed successfully.")
+        ctx.info("MaBoSS simulation completed successfully.")
         return "MaBoSS simulation run completed successfully."
     except Exception as e:
-        hatch_mcp.logger.error(f"Error during MaBoSS simulation run: {str(e)}")
+        ctx.error(f"Error during MaBoSS simulation run: {str(e)}")
         return f"Error during MaBoSS simulation run: {str(e)}"
 
 @mcp.tool()
-def get_maboss_initial_state() -> str:
+def get_maboss_initial_state(ctx: Context) -> str:
     """
     When the user requests the initial state of the MaBoSS simulation,
     this function retrieves the initial state of the simulation.
@@ -164,15 +167,15 @@ def get_maboss_initial_state() -> str:
 
     try:
         initial_state = sim.get_initial_state()
-        hatch_mcp.logger.info(f"Initial state retrieved: {initial_state}")
+        ctx.info(f"Initial state retrieved: {initial_state}")
         return f"Initial state of the MaBoSS simulation: {initial_state}"
     except Exception as e:
-        hatch_mcp.logger.error(f"Error retrieving initial state: {str(e)}")
+        ctx.error(f"Error retrieving initial state: {str(e)}")
         return f"Error retrieving initial state: {str(e)}"
     
 
 @mcp.tool()
-def get_maboss_logical_rules() -> str:
+def get_maboss_logical_rules(ctx: Context) -> str:
     """
     When the user requests the logical rules of the MaBoSS simulation,
     this function retrieves the logical rules of the simulation.
@@ -186,14 +189,14 @@ def get_maboss_logical_rules() -> str:
 
     try:
         logical_rules = sim.get_logical_rules()
-        hatch_mcp.logger.info(f"Logical rules retrieved: {logical_rules}")
+        ctx.info(f"Logical rules retrieved: {logical_rules}")
         return f"Logical rules of the MaBoSS simulation:\n{logical_rules}"
     except Exception as e:
-        hatch_mcp.logger.error(f"Error retrieving logical rules: {str(e)}")
+        ctx.error(f"Error retrieving logical rules: {str(e)}")
         return f"Error retrieving logical rules: {str(e)}"
 
 @mcp.tool()
-def get_maboss_mutations() -> str:
+def get_maboss_mutations(ctx: Context) -> str:
     """
     When the user requests the mutations of the MaBoSS simulation,
     this function retrieves the mutations of the simulation.
@@ -207,14 +210,14 @@ def get_maboss_mutations() -> str:
 
     try:
         mutations = sim.get_mutations()
-        hatch_mcp.logger.info(f"Mutations retrieved: {mutations}")
+        ctx.info(f"Mutations retrieved: {mutations}")
         return f"Mutations of the MaBoSS simulation:\n{mutations}"
     except Exception as e:
-        hatch_mcp.logger.error(f"Error retrieving mutations: {str(e)}")
+        ctx.error(f"Error retrieving mutations: {str(e)}")
         return f"Error retrieving mutations: {str(e)}"
 
 @mcp.tool()
-def update_maboss_parameters(parameters: dict) -> str:
+def update_maboss_parameters(ctx: Context, parameters: dict) -> str:
     """
     When the user requests to update the parameters of the MaBoSS simulation,
     such as the time tick (time_tick) or the max time (max_time), or the sample count (sample_count),
@@ -233,14 +236,14 @@ def update_maboss_parameters(parameters: dict) -> str:
     try:
         for key, value in parameters.items():
             sim.param[key] = value
-        hatch_mcp.logger.info(f"MaBoSS parameters updated: {parameters}")
+        ctx.info(f"MaBoSS parameters updated: {parameters}")
         return "MaBoSS parameters updated successfully."
     except Exception as e:
-        hatch_mcp.logger.error(f"Error updating MaBoSS parameters: {str(e)}")
+        ctx.error(f"Error updating MaBoSS parameters: {str(e)}")
         return f"Error updating MaBoSS parameters: {str(e)}"
     
 @mcp.tool()
-def set_maboss_output_nodes(output_nodes: list) -> str:
+def set_maboss_output_nodes(ctx: Context, output_nodes: list) -> str:
     """
     When the user requests to set the output nodes of the MaBoSS simulation,
     this function sets the output nodes for the simulation.
@@ -255,16 +258,16 @@ def set_maboss_output_nodes(output_nodes: list) -> str:
         return "No MaBoSS simulation has been built yet. Please build a simulation first."
 
     try:
-        hatch_mcp.logger.info(f"Former MaBoSS output nodes: {sim.network.get_output()}")
+        ctx.info(f"Former MaBoSS output nodes: {sim.network.get_output()}")
         sim.network.set_output(output_nodes)
-        hatch_mcp.logger.info(f"MaBoSS output nodes set: {sim.network.get_output()}")
+        ctx.info(f"MaBoSS output nodes set: {sim.network.get_output()}")
         return f"MaBoSS output nodes set successfully: {sim.network.get_output()}"
     except Exception as e:
-        hatch_mcp.logger.error(f"Error setting MaBoSS output nodes: {str(e)}")
+        ctx.error(f"Error setting MaBoSS output nodes: {str(e)}")
         return f"Error setting MaBoSS output nodes: {str(e)}"
     
 @mcp.tool()
-def set_maboss_initial_state(nodes, probDict) -> str:
+def set_maboss_initial_state(ctx: Context, nodes, probDict) -> str:
     """
     When the user requests to set the initial state of the MaBoSS simulation,
     or if it asks to set the initial state probabilities,
@@ -310,17 +313,17 @@ def set_maboss_initial_state(nodes, probDict) -> str:
             if not isinstance(probDict, dict):
                 return "For multiple nodes, probDict must be a dict mapping tuples to probabilities."
 
-        hatch_mcp.logger.info(f"Former MaBoSS initial state: {sim.network.get_istate()}")
+        ctx.info(f"Former MaBoSS initial state: {sim.network.get_istate()}")
 
         sim.network.set_istate(node_arg, probDict)
-        hatch_mcp.logger.info(f"Current MaBoSS initial state: {sim.network.get_istate()}")
+        ctx.info(f"Current MaBoSS initial state: {sim.network.get_istate()}")
         return f"Initial state set for MaBoSS simulation: {sim.network.get_istate()}"
     except Exception as e:
-        hatch_mcp.logger.error(f"Error setting MaBoSS initial state: {str(e)}")
+        ctx.error(f"Error setting MaBoSS initial state: {str(e)}")
         return f"Error setting MaBoSS initial state: {str(e)}"
     
 @mcp.tool()
-def simulate_mutation(nodes, state="OFF") -> str:
+def simulate_mutation(ctx: Context, nodes, state="OFF") -> str:
     """
     When the user requests to run a simulation with mutation analysis, this tool simulates the effect of one or more node mutations on the MaBoSS network.
 
@@ -361,7 +364,7 @@ def simulate_mutation(nodes, state="OFF") -> str:
         return "No MaBoSS simulation has been built yet. Please build a simulation first."
 
     try:
-        hatch_mcp.logger.info("Running MaBoSS simulation with mutation analysis...")
+        ctx.info("Running MaBoSS simulation with mutation analysis...")
         mutated_simulation = sim.copy()
 
         # Normalize nodes and state(s)
@@ -386,7 +389,7 @@ def simulate_mutation(nodes, state="OFF") -> str:
         # Apply mutations
         for node, s in zip(node_list, state_list):
             mutated_simulation.mutate(node, s)
-            hatch_mcp.logger.info(f"Applied mutation: {node} -> {s}")
+            ctx.info(f"Applied mutation: {node} -> {s}")
 
         result = mutated_simulation.run()
         df_prob = result.get_last_states_probtraj()
@@ -406,11 +409,11 @@ def simulate_mutation(nodes, state="OFF") -> str:
         ]
         return "\n".join(md_lines)
     except Exception as e:
-        hatch_mcp.logger.error(f"Error running MaBoSS simulation with mutation: {str(e)}")
+        ctx.error(f"Error running MaBoSS simulation with mutation: {str(e)}")
         return f"Error running MaBoSS simulation with mutation: {str(e)}"
     
 @mcp.tool()
-def visualize_network_trajectories() -> str:
+def visualize_network_trajectories(ctx: Context) -> str:
     """
     When the user requests to visualize network trajectories,
     this function retrieves the last simulation result and plots the network trajectories.
@@ -418,7 +421,7 @@ def visualize_network_trajectories() -> str:
     Returns:
         str: The file path to the saved plot, or an error message.
     """
-    hatch_mcp.logger.info("Request to visualize network trajectories received.")
+    ctx.info("Request to visualize network trajectories received.")
     global result
     if result is None:
         return "No simulation has been run yet. Please run a simulation first."
@@ -431,10 +434,10 @@ def visualize_network_trajectories() -> str:
         output_path = "network_trajectory.png"
         fig.savefig(output_path)
         plt.close(fig)
-        hatch_mcp.logger.info(f"Network trajectory plot saved to {output_path}")
+        ctx.info(f"Network trajectory plot saved to {output_path}")
         return f"Network trajectory plot saved: {output_path}\nYou can open it with your image viewer."
     except Exception as e:
-        hatch_mcp.logger.error(f"Error saving network trajectory plot: {str(e)}")
+        ctx.error(f"Error saving network trajectory plot: {str(e)}")
         return f"Error saving network trajectory plot: {str(e)}"
     
 @mcp.tool()
@@ -573,7 +576,7 @@ def check_bnd_and_cfg_name() -> str:
     return "\n".join(file_list)
     
 @mcp.tool()
-def clean_bnd_and_cfg() -> str:
+def clean_bnd_and_cfg(ctx: Context) -> str:
     """
     When the user requests to clean up the BND and CFG files,
     this function removes the output.bnd and output.cfg files created by MaBoSS.
@@ -586,31 +589,15 @@ def clean_bnd_and_cfg() -> str:
     try:
         if os.path.exists("output.bnd"):
             os.remove("output.bnd")
-            hatch_mcp.logger.info("Removed output.bnd file.")
+            ctx.info("Removed output.bnd file.")
         if os.path.exists("output.cfg"):
             os.remove("output.cfg")
-            hatch_mcp.logger.info("Removed output.cfg file.")
+            ctx.info("Removed output.cfg file.")
         return "BND and CFG files cleaned up successfully."
     except Exception as e:
-        hatch_mcp.logger.error(f"Error during cleanup: {str(e)}")
+        ctx.error(f"Error during cleanup: {str(e)}")
         return f"Error during cleanup: {str(e)}"
     
-@mcp.tool()
-def list_available_tools() -> str:
-    """
-    When the user requests to list available tools,
-    this function retrieves the names of all registered tools in the HatchMCP server.
-    It logs the request and returns a formatted string listing all available tools.
-    Returns:
-        str: List of available tools in the HatchMCP server.
-    """
-    tools = hatch_mcp.server.get_tools()
-    if not tools:
-        return "No tools are currently available."
-    
-    tool_list = "\n".join([f"- {tool.name}: {tool.description}" for tool in tools])
-    hatch_mcp.logger.info(f"Available tools: {tool_list}")
-    return f"**Available Tools:**\n{tool_list}"
     
 def clean_for_markdown(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -640,5 +627,4 @@ def clean_for_markdown(df: pd.DataFrame) -> pd.DataFrame:
 
 
 if __name__ == "__main__":
-    hatch_mcp.logger.info("Starting MCP server")
-    hatch_mcp.server.run()
+    mcp.run()

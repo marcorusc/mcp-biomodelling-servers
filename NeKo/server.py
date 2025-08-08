@@ -3,7 +3,8 @@ import sys
 import os
 import glob
 import requests
-from hatch_mcp_server import HatchMCP
+import logging
+#from hatch_mcp_server import HatchMCP
 
 from neko.core.network import Network
 from neko._outputs.exports import Exports
@@ -15,15 +16,15 @@ from utils import *
 import pandas as pd
 
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 
-mcp = FastMCP()
+mcp = FastMCP("NeKo")
 
-# Initialize MCP server with metadata
+""" # Initialize MCP server with metadata
 hatch_mcp = HatchMCP("NeKo",
                 fast_mcp=mcp,
                 origin_citation="NeKo: a tool for automatic network construction from prior knowledge, Marco Ruscone,  Eirini Tsirvouli,  Andrea Checcoli,  Denes Turei,  Emmanuel Barillot,  Julio Saez-Rodriguez,  Loredana Martignetti,  Åsmund Flobak,  Laurence Calzone, doi: https://doi.org/10.1101/2024.10.14.618311",
-                mcp_citation="https://github.com/marcorusc/Hatch_Pkg_Dev/tree/main/NeKo")
+                mcp_citation="https://github.com/marcorusc/Hatch_Pkg_Dev/tree/main/NeKo") """
 
 # Global network object for persistent state
 network = None
@@ -42,13 +43,15 @@ network = None
 # If the network is not reset, it will return an error message.
 @mcp.tool()
 def create_network(list_of_initial_genes: list[str],
-                    database="omnipath",
-                      sif_file: str=None,
-                        max_len: int=2,
-                          algorithm: str="bfs",
-                            only_signed: bool=True,
-                              connect_with_bias: bool=False,
-                                consensus: bool=True) -> str:
+                   ctx: Context,
+                   database="omnipath",
+                   sif_file: str=None,
+                   max_len: int=2,
+                   algorithm: str="bfs",
+                   only_signed: bool=True,
+                    connect_with_bias: bool=False,
+                    consensus: bool=True,
+                    ) -> str:
     """
 Create a NeKo network from a list of genes and/or a SIF file.
 If the list of genes is empty but a SIF file is provided, load the network from the SIF file.
@@ -72,16 +75,16 @@ Returns:
 str: Status message or Markdown formatted string with network summary.
     """
     global network
-    hatch_mcp.logger.info(f"Creating NeKo network with initial genes: {list_of_initial_genes} and SIF file: {sif_file}")
-
+    ctx.info(f"Creating NeKo network with initial genes: {list_of_initial_genes} and SIF file: {sif_file}")
+    logging.info(f"Creating NeKo network with initial genes: {list_of_initial_genes} and SIF file: {sif_file}") 
     # Validate database choice
     if database not in ["omnipath", "signor"]:
         return "_Unsupported database. Use `omnipath` or `signor`._"
 
     # If using SIGNOR, download and build the SIGNOR resource
     if database == "signor":
-        hatch_mcp.logger.info("Downloading SIGNOR database...")
-        hatch_mcp.logger.info("SIGNOR database downloaded successfully.")
+        ctx.info("Downloading SIGNOR database...")
+        ctx.info("SIGNOR database downloaded successfully.")
         signor_res = signor()
         signor_res.build()
         resources = signor_res.interactions
@@ -120,7 +123,7 @@ str: Status message or Markdown formatted string with network summary.
         return format_network_creation_error("build_failed", list_of_initial_genes, str(e))
 
     if df_edges.empty:
-        hatch_mcp.logger.warning("No interactions found in the network. Please check the input parameters.")
+        ctx.warning("No interactions found in the network. Please check the input parameters.")
         return format_empty_network_response(list_of_initial_genes, database, max_len, only_signed)
 
     # Compute basic statistics
@@ -128,7 +131,7 @@ str: Status message or Markdown formatted string with network summary.
     unique_nodes = pd.unique(df_edges[["source", "target"]].values.ravel())
     num_nodes = len(unique_nodes)
 
-    hatch_mcp.logger.info("Network created successfully.")
+    ctx.info("Network created successfully.")
 
     # Prepare a preview of the first 100 interactions
     preview_df = df_edges.head(100)
@@ -736,5 +739,4 @@ def get_references(node1: str, node2: str = None) -> str:
     return f"**References for interactions involving `{node1}`{' and `'+node2+'`' if node2 else ''}:**\n\n" + md
 
 if __name__ == "__main__":
-    hatch_mcp.logger.info("Starting MCP server")
-    hatch_mcp.server.run()
+    mcp.run()

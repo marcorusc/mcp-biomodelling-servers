@@ -16,7 +16,7 @@ import glob
 import time
 from pathlib import Path
 from typing import Optional
-from hatch_mcp_server import HatchMCP
+#from hatch_mcp_server import HatchMCP
 
 # Add the physicell_config package to Python path  
 current_dir = Path(__file__).parent
@@ -47,16 +47,16 @@ from session_manager import (
     get_current_session, ensure_session
 )
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 
 mcp = FastMCP()
 
 # Initialize MCP server
-hatch_mcp = HatchMCP("PhysiCell-Config-Builder",
+""" hatch_mcp = HatchMCP("PhysiCell-Config-Builder",
                      fast_mcp=mcp,
                      origin_citation="PhysiCell: An Open Source Physics-Based Cell Simulator",
                      mcp_citation="https://github.com/marcorusc/Hatch_Pkg_Dev/tree/main/PhysiCell")
-
+ """
 # Legacy global variables for backward compatibility
 # These are now managed through the session manager
 config = None
@@ -1332,28 +1332,21 @@ def get_simulation_summary() -> str:
     if not session.config:
         return "No simulation configured yet. Use `create_simulation_domain()` to start."
     
-    # Get component counts safely
+    # Get component counts using correct PhysiCell Settings API
     try:
-        substrates = list(session.config.substrates.substrate_names) if hasattr(session.config.substrates, 'substrate_names') else []
+        substrates = list(session.config.substrates.get_substrates().keys())
     except:
         substrates = []
     
     try:
-        cell_types = list(session.config.cell_types.cell_type_names) if hasattr(session.config.cell_types, 'cell_type_names') else []
+        cell_types = list(session.config.cell_types.get_cell_types().keys())
     except:
         cell_types = []
     
-    # Get rules count using new or legacy API
+    # Get rules count using cell_rules_csv API
     rules_count = 0
     try:
-        # Try new API first (CellRulesModule)
-        try:
-            from physicell_config.modules.cell_rules import CellRulesModule
-            cell_rules = CellRulesModule(session.config)
-            rules_count = len(cell_rules.rules)
-        except (ImportError, AttributeError):
-            # Fall back to legacy API
-            rules_count = len(session.config.cell_rules_csv.get_rules()) if session.config.cell_rules_csv else 0
+        rules_count = len(session.config.cell_rules_csv.get_rules())
     except:
         rules_count = 0
     
@@ -1422,14 +1415,14 @@ str: Markdown-formatted export status with file details
         return "**Error:** No simulation configured. Create domain and add components first."
     
     try:
-        # Get simulation info for summary
+        # Get simulation info for summary using correct API
         try:
-            substrates = list(session.config.substrates.substrate_names) if hasattr(session.config.substrates, 'substrate_names') else []
+            substrates = list(session.config.substrates.get_substrates().keys())
         except:
             substrates = []
         
         try:
-            cell_types = list(session.config.cell_types.cell_type_names) if hasattr(session.config.cell_types, 'cell_type_names') else []
+            cell_types = list(session.config.cell_types.get_cell_types().keys())
         except:
             cell_types = []
         
@@ -1481,34 +1474,15 @@ str: Markdown-formatted export status with file details
         return "**Error:** No simulation configured. Create domain and add components first."
     
     try:
-        # Try new API first (CellRulesModule)
-        try:
-            from physicell_config.modules.cell_rules import CellRulesModule
-            cell_rules = CellRulesModule(session.config)
-            rule_count = len(cell_rules.rules)
-            
-            if rule_count == 0:
-                return "**No cell rules to export**\n\nUse add_single_cell_rule() to create signal-behavior relationships first."
-            
-            # Export rules to CSV in expected format
-            fieldnames = ["cell_type", "signal", "direction", "behavior", "min_signal", "max_signal", "hill_power", "half_max"]
-            import csv
-            with open(filename, "w", newline="") as csvfile:
-                writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-                writer.writeheader()
-                for rule in cell_rules.rules:
-                    writer.writerow(rule)
-            
-        except (ImportError, AttributeError):
-            # Fall back to legacy CSV API
-            rules = session.config.cell_rules_csv
-            rule_count = len(rules.get_rules())
-            
-            if rule_count == 0:
-                return "**No cell rules to export**\n\nUse add_single_cell_rule() to create signal-behavior relationships first."
-            
-            # Export cell rules CSV using legacy method
-            rules.generate_csv(filename)
+        # Use the cell_rules_csv API directly
+        rules = session.config.cell_rules_csv
+        rule_count = len(rules.get_rules())
+        
+        if rule_count == 0:
+            return "**No cell rules to export**\n\nUse add_single_cell_rule() to create signal-behavior relationships first."
+        
+        # Export cell rules CSV using the standard method
+        rules.generate_csv(filename)
         
         result = f"## Cell Rules CSV Exported\n\n"
         result += f"**File:** {filename}\n"
@@ -1655,5 +1629,4 @@ export_xml_configuration("tumor_sim.xml")
 Most parameters are optional with sensible defaults!"""
 
 if __name__ == "__main__":
-    hatch_mcp.logger.info("Starting MCP server")
-    hatch_mcp.server.run()
+    mcp.run()
