@@ -14,8 +14,14 @@ from utils import *
 
 import pandas as pd
 
+
+from mcp.server.fastmcp import FastMCP
+
+mcp = FastMCP()
+
 # Initialize MCP server with metadata
 hatch_mcp = HatchMCP("NeKo",
+                fast_mcp=mcp,
                 origin_citation="NeKo: a tool for automatic network construction from prior knowledge, Marco Ruscone,  Eirini Tsirvouli,  Andrea Checcoli,  Denes Turei,  Emmanuel Barillot,  Julio Saez-Rodriguez,  Loredana Martignetti,  Åsmund Flobak,  Laurence Calzone, doi: https://doi.org/10.1101/2024.10.14.618311",
                 mcp_citation="https://github.com/marcorusc/Hatch_Pkg_Dev/tree/main/NeKo")
 
@@ -34,7 +40,7 @@ network = None
 # If the network is not connected, it will return a Markdown formatted string with a warning message.
 # If the network is connected, it will return a Markdown formatted string with the network summary.
 # If the network is not reset, it will return an error message.
-@hatch_mcp.server.tool()
+@mcp.tool()
 def create_network(list_of_initial_genes: list[str],
                     database="omnipath",
                       sif_file: str=None,
@@ -144,7 +150,7 @@ str: Status message or Markdown formatted string with network summary.
 
     return "\n".join(md_lines)
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def add_gene(gene: str) -> str:
     """
     Add a gene to the current network. The gene must be a valid gene symbol.
@@ -164,7 +170,7 @@ def add_gene(gene: str) -> str:
     except Exception as e:
         return f"**Error adding gene {gene}:** {str(e)}\n**Tip:** Ensure gene symbol is valid (e.g., 'TP53', not 'tp53')"
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def remove_gene(gene: str) -> str:
     """
     Remove a gene from the current network. The gene must be a valid gene symbol.
@@ -202,7 +208,7 @@ def remove_gene(gene: str) -> str:
 
 # TO DO: implement GO enrichment
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def export_network(format: str = "sif") -> str:
     """
     When the user asks to export the current network,
@@ -372,7 +378,7 @@ def export_network(format: str = "sif") -> str:
     else:
         return format_unsupported_format_guidance(format)
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def network_dimension() -> str:
     """
     When the user asks for the dimension of the current network,
@@ -389,7 +395,7 @@ def network_dimension() -> str:
         return "No network exists. Please create a network first."
     return f"Nodes: {len(network.nodes)}, Edges: {len(network.edges)}"
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def list_genes_and_interactions() -> str:
     """
     When the user asks for a list of genes and interactions in the current network,
@@ -431,7 +437,7 @@ def list_genes_and_interactions() -> str:
         empty_df = pd.DataFrame(columns=cols)
         return f"**Error**: {str(e)}\n\n_Unable to retrieve data._\n\n" + clean_for_markdown(empty_df).to_markdown(index=False, tablefmt="plain")
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def find_paths(source: str, target: str, maxlen: int = 3) -> str:
     """
     When the user asks for paths between two genes in the network,
@@ -482,7 +488,7 @@ def find_paths(source: str, target: str, maxlen: int = 3) -> str:
         sys.stdout = old_stdout
         return f"**Error:** {str(e)}"
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def reset_network() -> str:
     """
     When the user asks to reset the current network,
@@ -501,7 +507,7 @@ def reset_network() -> str:
     network = None
     return "Network reset."
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def clean_generated_files(folder_path: str = ".") -> str:
     """
     When the user asks to clean up generated files,
@@ -526,7 +532,7 @@ def clean_generated_files(folder_path: str = ".") -> str:
 
     return f"Cleaned {len(bnet_files)} .bnet files from {folder_path}."
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def get_help() -> str:
     """
     Get a description of available NeKo MCP tools and their usage.
@@ -546,7 +552,7 @@ def get_help() -> str:
         "- get_help()\n"
     )
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def remove_bimodal_interactions() -> str:
     """
     Remove all 'bimodal' interactions from the current network object in memory.
@@ -564,7 +570,7 @@ def remove_bimodal_interactions() -> str:
     removed = before - after
     return f"Removed {removed} bimodal interactions from the network."
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def remove_undefined_interactions() -> str:
     """
     Remove all 'undefined' interactions from the current network object in memory.
@@ -583,7 +589,7 @@ def remove_undefined_interactions() -> str:
     return f"Removed {removed} undefined interactions from the network."
 
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def list_bnet_files(folder_path: str = ".") -> list:
     """
     List all .bnet files in the specified folder.
@@ -634,7 +640,7 @@ def clean_bnet_headers(folder_path: str = ".") -> str:
     else:
         return "No .bnet files needed cleaning."
     
-@hatch_mcp.server.tool()
+@mcp.tool()
 def check_bnet_files_names(folder_path: str = ".") -> str:
     """
     When the user asks to check for .bnet files,
@@ -660,7 +666,7 @@ def check_bnet_files_names(folder_path: str = ".") -> str:
     file_list = [os.path.basename(f) for f in bnet_files]
     return "Found .bnet files:\n" + "\n".join(file_list)
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def check_disconnected_nodes() -> str:
     """
     When the user asks to check for disconnected nodes in the current network,
@@ -687,7 +693,7 @@ def check_disconnected_nodes() -> str:
     
     return "Disconnected nodes:\n" + "\n".join(disconnected_nodes)
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def get_references(node1: str, node2: str = None) -> str:
     """
     Retrieve references for interactions involving a node (or between two nodes).

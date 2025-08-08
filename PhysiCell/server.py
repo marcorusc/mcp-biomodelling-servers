@@ -47,8 +47,13 @@ from session_manager import (
     get_current_session, ensure_session
 )
 
+from mcp.server.fastmcp import FastMCP
+
+mcp = FastMCP()
+
 # Initialize MCP server
 hatch_mcp = HatchMCP("PhysiCell-Config-Builder",
+                     fast_mcp=mcp,
                      origin_citation="PhysiCell: An Open Source Physics-Based Cell Simulator",
                      mcp_citation="https://github.com/marcorusc/Hatch_Pkg_Dev/tree/main/PhysiCell")
 
@@ -76,7 +81,7 @@ def _set_legacy_scenario_context(context):
 # SESSION MANAGEMENT TOOLS
 # ============================================================================
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def create_session(set_as_default: bool = True, session_name: Optional[str] = None) -> str:
     """
     Create a new simulation session for managing PhysiCell configurations.
@@ -102,7 +107,7 @@ def create_session(set_as_default: bool = True, session_name: Optional[str] = No
     
     return result
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def list_sessions() -> str:
     """
     List all active simulation sessions with their status and progress.
@@ -140,7 +145,7 @@ def list_sessions() -> str:
     
     return result
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def switch_session(session_id: str) -> str:
     """
     Switch to a different session as the default for subsequent operations.
@@ -170,7 +175,7 @@ def switch_session(session_id: str) -> str:
     else:
         return "Error: Session not found."
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def get_workflow_status() -> str:
     """
     Get the current workflow status and recommended next steps.
@@ -207,7 +212,7 @@ def get_workflow_status() -> str:
     
     return result
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def delete_session(session_id: str) -> str:
     """
     Delete a simulation session permanently.
@@ -224,7 +229,7 @@ def delete_session(session_id: str) -> str:
     else:
         return "Error: Session not found"
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def set_maboss_context(model_name: str, bnd_file_path: str, cfg_file_path: str,
                       target_cell_type: str, available_nodes: str = "",
                       output_nodes: str = "", simulation_results: str = "",
@@ -274,7 +279,7 @@ def set_maboss_context(model_name: str, bnd_file_path: str, cfg_file_path: str,
     
     return result
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def get_maboss_context() -> str:
     """
     Get the stored MaBoSS context for the current session.
@@ -324,7 +329,7 @@ import time
 # BIOLOGICAL SCENARIO ANALYSIS
 # ============================================================================
 
-@hatch_mcp.server.resource(
+@mcp.resource(
     uri="docs://tools/analyze_biological_scenario",
     name="Documentation for analyze_biological_scenario",
     description="Stores a description of the biological scenario for simulation context.",
@@ -352,7 +357,7 @@ This does not perform automatic analysis, but stores your description for contex
 Only one scenario is stored at a time; calling again will overwrite the previous context.
             """
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def analyze_biological_scenario(biological_scenario: str) -> str:
     """
     Store a biological scenario description to provide context for subsequent simulation setup.
@@ -383,7 +388,7 @@ def analyze_biological_scenario(biological_scenario: str) -> str:
 # SIMULATION SETUP
 # ============================================================================
 
-@hatch_mcp.server.resource(
+@mcp.resource(
     uri="docs://tools/create_simulation_domain",
     name="Documentation for create_simulation_domain",
     description="Creates a 3D simulation domain with specified size and time duration.",
@@ -414,7 +419,7 @@ This should be the first configuration step for every new simulation.
 After creating the domain, you can add substrates and cell types.
 """
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def create_simulation_domain(domain_x: float, domain_y: float, 
                            domain_z: float, dx: float = 20.0, 
                            max_time: float = 7200.0) -> str:
@@ -469,7 +474,7 @@ def create_simulation_domain(domain_x: float, domain_y: float,
     
     return result
 
-@hatch_mcp.server.resource(
+@mcp.resource(
     uri="docs://tools/add_single_substrate",
     name="Documentation for add_single_substrate",
     description="Adds a chemical substrate (e.g., oxygen) with its physical/chemical properties.",
@@ -509,7 +514,7 @@ Call this once for each substrate you want to add.
 For multiple substrates, repeat with different names and values.
     """
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def add_single_substrate(substrate_name: str, diffusion_coefficient: float, decay_rate: float,
                         initial_condition: float, units: str = "dimensionless",
                         dirichlet_enabled: bool = False, dirichlet_value: Optional[float] = None) -> str:
@@ -574,7 +579,7 @@ def add_single_substrate(substrate_name: str, diffusion_coefficient: float, deca
     
     return result
 
-@hatch_mcp.server.resource(
+@mcp.resource(
     uri="docs://tools/add_single_cell_type",
     name="Documentation for add_single_cell_type",
     description="Adds a new cell type with a selected cell cycle model.",
@@ -602,7 +607,7 @@ Call this once for each cell type.
 For custom cycle models, consult get_available_cycle_models.
                 """
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def add_single_cell_type(cell_type_name: str, cycle_model: str = "Ki67_basic") -> str:
     """
     Add a cell type (cancer, immune, fibroblast, etc.) to the simulation.
@@ -647,7 +652,7 @@ def add_single_cell_type(cell_type_name: str, cycle_model: str = "Ki67_basic") -
 
 
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def configure_cell_parameters(cell_type: str, volume_total: float = 2500.0, 
                              volume_nuclear: float = 500.0, fluid_fraction: float = 0.75,
                              motility_speed: float = 0.5, persistence_time: float = 5.0,
@@ -700,7 +705,7 @@ str: Success message with configured parameters
     except Exception as e:
         return f"Error configuring cell type '{cell_type}': {str(e)}"
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def set_substrate_interaction(cell_type: str, substrate: str, 
                              secretion_rate: float = 0.0, uptake_rate: float = 0.0) -> str:
     """
@@ -737,7 +742,7 @@ str: Success message with interaction details
 # PARAMETER DISCOVERY AND DEFAULTS
 # ============================================================================
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def get_available_cycle_models() -> str:
     """
 When the user asks about cell cycle models, what cycles are available, or needs to choose a cycle type,
@@ -764,7 +769,7 @@ str: Markdown-formatted list of available cell cycle models with descriptions
 # SIGNAL AND BEHAVIOR DISCOVERY
 # ============================================================================
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def list_all_available_signals() -> str:
     """
     Get the complete list of PhysiCell signals that can be used in cell rules.
@@ -820,7 +825,7 @@ def list_all_available_signals() -> str:
     
     return result
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def list_all_available_behaviors() -> str:
     """
     Get the complete list of PhysiCell behaviors that can be controlled by rules.
@@ -881,7 +886,7 @@ def list_all_available_behaviors() -> str:
 # CELL RULES AND PHYSIBOSS
 # ============================================================================
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def add_single_cell_rule(cell_type: str, signal: str, direction: str, behavior: str,
                         min_signal: float = 0, max_signal: float = 1, 
                         hill_power: float = 4.0, half_max: float = 0.5) -> str:
@@ -984,7 +989,7 @@ def add_single_cell_rule(cell_type: str, signal: str, direction: str, behavior: 
     
     return result
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def add_physiboss_model(cell_type: str, bnd_file: str, cfg_file: str) -> str:
     """
 When the user asks to add boolean networks, intracellular models, or MaBoSS models,
@@ -1054,7 +1059,7 @@ str: Success message with PhysiBoSS model details
     except Exception as e:
         return f"Error adding PhysiBoSS model: {str(e)}"
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def configure_physiboss_settings(cell_type: str, intracellular_dt: float = 6.0,
                                 time_stochasticity: int = 0, scaling: float = 1.0,
                                 start_time: float = 0.0, inheritance_global: bool = False) -> str:
@@ -1120,7 +1125,7 @@ str: Success message with PhysiBoSS settings details
     except Exception as e:
         return f"Error configuring PhysiBoSS settings: {str(e)}"
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def add_physiboss_input_link(cell_type: str, physicell_signal: str, 
                             boolean_node: str, action: str = "activation",
                             threshold: float = 1.0, smoothing: int = 0) -> str:
@@ -1185,7 +1190,7 @@ str: Success message with input link details
     except Exception as e:
         return f"Error adding PhysiBoSS input link: {str(e)}"
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def add_physiboss_output_link(cell_type: str, boolean_node: str,
                              physicell_behavior: str, action: str = "activation",
                              value: float = 1000000, base_value: float = 0,
@@ -1254,7 +1259,7 @@ str: Success message with output link details
     except Exception as e:
         return f"Error adding PhysiBoSS output link: {str(e)}"
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def apply_physiboss_mutation(cell_type: str, node_name: str, fixed_value: int) -> str:
     """
 When the user asks to simulate mutations, fix gene states, or apply genetic changes,
@@ -1311,7 +1316,7 @@ str: Success message with mutation details
 # UTILITY AND EXPORT TOOLS
 # ============================================================================
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def get_simulation_summary() -> str:
     """
     Get a comprehensive summary of the current simulation configuration.
@@ -1399,7 +1404,7 @@ def get_simulation_summary() -> str:
 
     return result
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def export_xml_configuration(filename: str = "PhysiCell_settings.xml") -> str:
     """
 When the user asks to export the simulation, save the configuration, or generate XML,
@@ -1457,7 +1462,7 @@ str: Markdown-formatted export status with file details
     except Exception as e:
         return f"Error exporting XML configuration: {str(e)}"
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def export_cell_rules_csv(filename: str = "cell_rules.csv") -> str:
     """
 When the user asks to export rules, save cell behaviors, or generate CSV,
@@ -1531,7 +1536,7 @@ def clean_for_markdown(text: str) -> str:
         text = str(text)
     return text.replace("|", "\\|").replace("\n", " ").strip()
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def list_generated_files(folder_path: str = ".") -> str:
     """
 When the user asks to see generated files or check what files have been created,
@@ -1565,7 +1570,7 @@ str: List of PhysiCell-related files found
     
     return result
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def clean_generated_files(folder_path: str = ".") -> str:
     """
 When the user asks to clean up generated files or remove old configurations,
@@ -1593,7 +1598,7 @@ str: Status message indicating cleaned files
     
     return f"**Cleaned {len(all_files)} PhysiCell files** from {folder_path}:\n" + "\n".join([f"- {os.path.basename(f)}" for f in all_files])
 
-@hatch_mcp.server.resource(
+@mcp.resource(
     uri="docs://tools/index",
     name="Tool Documentation Index",
     description="Links to all tool documentation resources.",
@@ -1610,7 +1615,7 @@ def docs_tools_index() -> str:
 ... (add links to all tool docs)
 """
 
-@hatch_mcp.server.tool()
+@mcp.tool()
 def get_help() -> str:
     """
     When the user asks for help, available commands, or how to use the server,
