@@ -33,13 +33,12 @@ from physicell_config.config.embedded_signals_behaviors import (
 )
 from physicell_config.config.embedded_defaults import get_default_parameters
 
-# Try to import PhysiBoSS - will be instantiated in functions if available
+# Try to import PhysiBoSS module - only need to check availability
 try:
-    from physicell_config.modules.physiboss import PhysiBoSSModule as PhysiBoSS
+    import physicell_config.modules.physiboss
     PHYSIBOSS_AVAILABLE = True
 except ImportError:
     PHYSIBOSS_AVAILABLE = False
-    PhysiBoSS = None
 
 # Import session management
 from session_manager import (
@@ -1017,11 +1016,8 @@ str: Success message with PhysiBoSS model details
         return "Error: PhysiBoSS module not available in this PhysiCell configuration package"
     
     try:
-        # Create PhysiBoSS instance
-        physiboss_config = PhysiBoSS(session.config)
-        
-        # Add intracellular model
-        physiboss_config.add_intracellular_model(
+        # Use direct config.physiboss API (simpler and more reliable)
+        session.config.physiboss.add_intracellular_model(
             cell_type_name=cell_type,
             model_type="maboss",
             bnd_filename=bnd_file,
@@ -1092,11 +1088,8 @@ str: Success message with PhysiBoSS settings details
         return "Error: PhysiBoSS module not available in this PhysiCell configuration package"
     
     try:
-        # Create PhysiBoSS instance
-        physiboss_config = PhysiBoSS(session.config)
-        
-        # Set intracellular settings
-        physiboss_config.set_intracellular_settings(
+        # Use direct config.physiboss API (simpler and more reliable)
+        session.config.physiboss.set_intracellular_settings(
             cell_type_name=cell_type,
             intracellular_dt=intracellular_dt,
             time_stochasticity=time_stochasticity,
@@ -1159,11 +1152,8 @@ str: Success message with input link details
         return "Error: PhysiBoSS module not available in this PhysiCell configuration package"
     
     try:
-        # Create PhysiBoSS instance
-        physiboss_config = PhysiBoSS(session.config)
-        
-        # Add intracellular input
-        physiboss_config.add_intracellular_input(
+        # Use direct config.physiboss API (simpler and more reliable)
+        session.config.physiboss.add_intracellular_input(
             cell_type_name=cell_type,
             physicell_name=physicell_signal,
             intracellular_name=boolean_node,
@@ -1226,11 +1216,8 @@ str: Success message with output link details
         return "Error: PhysiBoSS module not available in this PhysiCell configuration package"
     
     try:
-        # Create PhysiBoSS instance
-        physiboss_config = PhysiBoSS(session.config)
-        
-        # Add intracellular output
-        physiboss_config.add_intracellular_output(
+        # Use direct config.physiboss API (simpler and more reliable)
+        session.config.physiboss.add_intracellular_output(
             cell_type_name=cell_type,
             physicell_name=physicell_behavior,
             intracellular_name=boolean_node,
@@ -1287,11 +1274,8 @@ str: Success message with mutation details
         return "Error: PhysiBoSS module not available in this PhysiCell configuration package"
     
     try:
-        # Create PhysiBoSS instance
-        physiboss_config = PhysiBoSS(session.config)
-        
-        # Add intracellular mutation
-        physiboss_config.add_intracellular_mutation(
+        # Use direct config.physiboss API (simpler and more reliable)
+        session.config.physiboss.add_intracellular_mutation(
             cell_type_name=cell_type,
             intracellular_name=node_name,
             value=fixed_value
