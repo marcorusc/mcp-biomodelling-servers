@@ -31,6 +31,8 @@ class WorkflowStep(Enum):
     PHYSIBOSS_OUTPUTS_LINKED = "physiboss_outputs_linked"
     PHYSIBOSS_MUTATIONS_APPLIED = "physiboss_mutations_applied"
     READY_FOR_EXPORT = "ready_for_export"
+    XML_LOADED = "xml_loaded"
+    XML_ANALYZED = "xml_analyzed"
 
 @dataclass
 class MaBoSSContext:
@@ -64,9 +66,23 @@ class SessionState:
     physiboss_output_links_count: int = 0
     physiboss_mutations_count: int = 0
     
+    # XML-related fields
+    loaded_from_xml: bool = False
+    original_xml_path: Optional[str] = None
+    xml_modification_count: int = 0
+    loaded_substrates: List[str] = field(default_factory=list)
+    loaded_cell_types: List[str] = field(default_factory=list)
+    loaded_physiboss_models: List[str] = field(default_factory=list)
+    has_existing_rules: bool = False
+    
     def mark_step_complete(self, step: WorkflowStep):
         """Mark a workflow step as completed."""
         self.completed_steps.add(step)
+        self.last_accessed = time.time()
+    
+    def mark_xml_modification(self):
+        """Track modifications to XML-loaded configuration."""
+        self.xml_modification_count += 1
         self.last_accessed = time.time()
     
     def is_step_complete(self, step: WorkflowStep) -> bool:
@@ -77,6 +93,24 @@ class SessionState:
         """Get recommended next steps based on current progress."""
         recommendations = []
         
+        # If loaded from XML, different workflow
+        if self.loaded_from_xml:
+            if WorkflowStep.XML_ANALYZED not in self.completed_steps:
+                recommendations.append("analyze_loaded_configuration - Review loaded components")
+            elif len(self.loaded_cell_types) > 0:
+                recommendations.append("configure_cell_parameters - Adjust existing cell types")
+                recommendations.append("add_single_cell_rule - Add behavior rules")
+            
+            if len(self.loaded_substrates) > 0 and len(self.loaded_cell_types) > 0:
+                recommendations.append("set_substrate_interaction - Configure cell-substrate interactions")
+            
+            if len(self.loaded_physiboss_models) > 0:
+                recommendations.append("configure_physiboss_settings - Adjust intracellular models")
+            
+            recommendations.append("export_xml_configuration - Save modified configuration")
+            return recommendations
+        
+        # Original workflow for new configurations
         if WorkflowStep.SCENARIO_ANALYSIS not in self.completed_steps:
             recommendations.append("analyze_biological_scenario - Set the biological context")
         elif WorkflowStep.DOMAIN_SETUP not in self.completed_steps:
@@ -371,3 +405,66 @@ def ensure_session() -> SessionState:
         session_id = session_manager.create_session()
         session = session_manager.get_session(session_id)
     return session
+
+def analyze_and_update_session_from_config(session: SessionState, config):
+    """Update session state from loaded PhysiCell configuration."""
+    # Extract substrates
+    session.loaded_substrates = []
+    try:
+        if hasattr(config, 'substrates'):
+            if hasattr(config.substrates, 'substrate_list'):
+                session.loaded_substrates = list(config.substrates.substrate_list.keys())
+            elif hasattr(config.substrates, 'get_substrates'):
+                session.loaded_substrates = list(config.substrates.get_substrates().keys())
+    except:
+        pass
+    session.substrates_count = len(session.loaded_substrates)
+    
+    # Extract cell types
+    session.loaded_cell_types = []
+    try:
+        if hasattr(config, 'cell_types'):
+            if hasattr(config.cell_types, 'cell_type_list'):
+                session.loaded_cell_types = list(config.cell_types.cell_type_list.keys())
+            elif hasattr(config.cell_types, 'get_cell_types'):
+                session.loaded_cell_types = list(config.cell_types.get_cell_types().keys())
+    except:
+        pass
+    session.cell_types_count = len(session.loaded_cell_types)
+    
+    # Extract PhysiBoSS models
+    session.loaded_physiboss_models = []
+    for cell_type_name in session.loaded_cell_types:
+        try:
+            cell_type = config.cell_types.get_cell_type(cell_type_name)
+            if (cell_type and hasattr(cell_type, 'phenotype') and 
+                hasattr(cell_type.phenotype, 'intracellular') and 
+                cell_type.phenotype.intracellular):
+                session.loaded_physiboss_models.append(cell_type_name)
+        except:
+            pass
+    session.physiboss_models_count = len(session.loaded_physiboss_models)
+    
+    # Check for existing rules
+    session.has_existing_rules = False
+    try:
+        if hasattr(config, 'cell_rules') and hasattr(config.cell_rules, 'rulesets'):
+            session.has_existing_rules = len(config.cell_rules.rulesets) > 0
+    except:
+        pass
+    
+    # Mark appropriate steps complete based on loaded content
+    if session.substrates_count > 0 or session.cell_types_count > 0:
+        session.mark_step_complete(WorkflowStep.DOMAIN_SETUP)
+    
+    if session.substrates_count > 0:
+        session.mark_step_complete(WorkflowStep.SUBSTRATES_ADDED)
+    
+    if session.cell_types_count > 0:
+        session.mark_step_complete(WorkflowStep.CELL_TYPES_ADDED)
+    
+    if session.physiboss_models_count > 0:
+        session.mark_step_complete(WorkflowStep.PHYSIBOSS_MODELS_ADDED)
+    
+    if session.has_existing_rules:
+        session.mark_step_complete(WorkflowStep.RULES_CONFIGURED)

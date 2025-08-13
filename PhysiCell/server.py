@@ -43,7 +43,7 @@ except ImportError:
 # Import session management
 from session_manager import (
     session_manager, SessionState, WorkflowStep, MaBoSSContext,
-    get_current_session, ensure_session
+    get_current_session, ensure_session, analyze_and_update_session_from_config
 )
 
 from mcp.server.fastmcp import Context, FastMCP
@@ -323,6 +323,206 @@ def get_maboss_context() -> str:
     return result
 
 import time
+
+# ============================================================================
+# XML CONFIGURATION LOADING
+# ============================================================================
+
+@mcp.tool()
+def load_xml_configuration(filepath: str, session_name: Optional[str] = None) -> str:
+    """
+    Load an existing PhysiCell XML configuration file into the current session.
+    After loading, use existing tools like configure_cell_parameters() to modify.
+    
+    Args:
+        filepath: Path to the PhysiCell XML configuration file
+        session_name: Optional name for the session (useful for tracking)
+    
+    Returns:
+        str: Summary of loaded configuration and next steps
+    """
+    try:
+        session = ensure_session()
+        xml_path = Path(filepath)
+        
+        if not xml_path.exists():
+            return f"File not found: {filepath}"
+        
+        if not xml_path.is_file():
+            return f"Path is not a file: {filepath}"
+        
+        # Create new config and load XML
+        config = PhysiCellConfig()
+        
+        # First validate the XML
+        is_valid, error_msg = config.validate_xml_file(str(xml_path))
+        if not is_valid:
+            return f"Invalid XML: {error_msg}"
+        
+        # Load the XML configuration
+        config.load_xml(str(xml_path))
+        session.config = config
+        _set_legacy_config(config)  # Backward compatibility
+        
+        # Update session state
+        session.loaded_from_xml = True
+        session.original_xml_path = str(xml_path.absolute())
+        session.mark_step_complete(WorkflowStep.XML_LOADED)
+        
+        # Analyze loaded content and update session counters
+        analyze_and_update_session_from_config(session, config)
+        
+        # Concise summary
+        parts = [f"{len(session.loaded_substrates)} substrates"]
+        parts.append(f"{len(session.loaded_cell_types)} cell types")
+        if session.loaded_physiboss_models:
+            parts.append(f"{len(session.loaded_physiboss_models)} PhysiBoSS")
+        if session.has_existing_rules:
+            parts.append("rules")
+        
+        result = f"Loaded {xml_path.name}: {', '.join(parts)}"
+        result += f"\nNext: analyze_loaded_configuration() or start modifying with existing tools"
+        return result
+        
+    except Exception as e:
+        return f"Load error: {str(e)}"
+
+@mcp.tool()
+def validate_xml_file(filepath: str) -> str:
+    """
+    Validate a PhysiCell XML configuration file without loading it.
+    
+    Args:
+        filepath: Path to the XML file to validate
+    
+    Returns:
+        str: Validation results
+    """
+    try:
+        xml_path = Path(filepath)
+        if not xml_path.exists():
+            return f"File not found: {filepath}"
+        
+        config = PhysiCellConfig()
+        is_valid, error_msg = config.validate_xml_file(str(xml_path))
+        
+        return f"Valid PhysiCell XML: {xml_path.name}" if is_valid else f"Invalid: {error_msg}"
+            
+    except Exception as e:
+        return f"Validation error: {str(e)}"
+
+@mcp.tool()
+def analyze_loaded_configuration() -> str:
+    """
+    Show overview of loaded XML configuration with modification instructions.
+    
+    Returns:
+        str: Configuration analysis and next steps
+    """
+    session = get_current_session()
+    if not session or not session.config or not session.loaded_from_xml:
+        return "No XML configuration loaded. Use load_xml_configuration() first."
+    
+    config = session.config
+    lines = []
+    
+    # Source info
+    if session.original_xml_path:
+        lines.append(f"Source: {Path(session.original_xml_path).name}")
+        if session.xml_modification_count > 0:
+            lines.append(f"Modified: {session.xml_modification_count} times")
+    
+    # Domain
+    try:
+        domain_size = f"{config.domain.x_max-config.domain.x_min}x{config.domain.y_max-config.domain.y_min}x{config.domain.z_max-config.domain.z_min}"
+        lines.append(f"Domain: {domain_size} μm")
+    except:
+        lines.append("Domain: configured")
+    
+    # Components with modification hints
+    if session.loaded_substrates:
+        lines.append(f"Substrates ({len(session.loaded_substrates)}): {', '.join(session.loaded_substrates)}")
+        lines.append("  → Modify interactions: set_substrate_interaction(cell_type, substrate, ...)")
+    
+    if session.loaded_cell_types:
+        lines.append(f"Cell types ({len(session.loaded_cell_types)}): {', '.join(session.loaded_cell_types)}")
+        lines.append("  → Modify parameters: configure_cell_parameters(cell_type, ...)")
+        lines.append("  → Add rules: add_single_cell_rule(cell_type, signal, ...)")
+    
+    if session.loaded_physiboss_models:
+        lines.append(f"PhysiBoSS ({len(session.loaded_physiboss_models)}): {', '.join(session.loaded_physiboss_models)}")
+        lines.append("  → Configure: configure_physiboss_settings(cell_type, ...)")
+    
+    lines.append("Use list_loaded_components() for detailed properties")
+    
+    session.mark_step_complete(WorkflowStep.XML_ANALYZED)
+    return "\n".join(lines)
+
+@mcp.tool()
+def list_loaded_components(component_type: str = "all") -> str:
+    """
+    List loaded components with details and modification instructions.
+    
+    Args:
+        component_type: "substrates", "cell_types", "physiboss", or "all"
+    
+    Returns:
+        str: Detailed component information
+    """
+    session = get_current_session()
+    if not session or not session.config or not session.loaded_from_xml:
+        return "No XML configuration loaded. Use load_xml_configuration() first."
+    
+    config = session.config
+    lines = []
+    
+    if component_type in ["all", "substrates"] and session.loaded_substrates:
+        lines.append("SUBSTRATES:")
+        for name in session.loaded_substrates:
+            try:
+                substrate = config.substrates.get_substrate(name)
+                if substrate:
+                    lines.append(f"  {name}: D={substrate.diffusion_coefficient}, decay={substrate.decay_rate}, init={substrate.initial_condition}")
+            except:
+                lines.append(f"  {name}: properties not accessible")
+        lines.append("  → Add interactions: set_substrate_interaction(cell_type, substrate, secretion_rate=X, uptake_rate=Y)")
+        lines.append("")
+    
+    if component_type in ["all", "cell_types"] and session.loaded_cell_types:
+        lines.append("CELL TYPES:")
+        for name in session.loaded_cell_types:
+            try:
+                cell_type = config.cell_types.get_cell_type(name)
+                if cell_type:
+                    vol = cell_type.phenotype.volume.total
+                    speed = cell_type.phenotype.motility.speed
+                    cycle = cell_type.cycle_model
+                    
+                    physiboss = ""
+                    if (hasattr(cell_type, 'phenotype') and hasattr(cell_type.phenotype, 'intracellular') and 
+                        cell_type.phenotype.intracellular):
+                        physiboss = ", PhysiBoSS enabled"
+                    
+                    lines.append(f"  {name}: vol={vol}, speed={speed}, cycle={cycle}{physiboss}")
+            except:
+                lines.append(f"  {name}: properties not accessible")
+        
+        lines.append("  → Modify parameters: configure_cell_parameters(cell_type, volume_total=X, motility_speed=Y, ...)")
+        lines.append("  → Add rules: add_single_cell_rule(cell_type, signal, direction, behavior, ...)")
+        lines.append("")
+    
+    if component_type in ["all", "physiboss"] and session.loaded_physiboss_models:
+        lines.append("PHYSIBOSS MODELS:")
+        for name in session.loaded_physiboss_models:
+            lines.append(f"  {name}: Intracellular boolean network enabled")
+        lines.append("  → Configure: configure_physiboss_settings(cell_type, intracellular_dt=X, ...)")
+        lines.append("  → Add links: add_physiboss_input_link() / add_physiboss_output_link()")
+        lines.append("")
+    
+    if not lines:
+        return f"No {component_type} components found in loaded configuration"
+    
+    return "\n".join(lines).strip()
 
 # ============================================================================
 # BIOLOGICAL SCENARIO ANALYSIS
@@ -695,6 +895,11 @@ str: Success message with configured parameters
         config.cell_types.set_death_rate(cell_type, 'apoptosis', apoptosis_rate)
         config.cell_types.set_death_rate(cell_type, 'necrosis', necrosis_rate)
         
+        # Track modification if loaded from XML
+        session = get_current_session()
+        if session and session.loaded_from_xml:
+            session.mark_xml_modification()
+        
         result = f"**Configured parameters for {cell_type}:**\n"
         result += f"- **Volume:** {volume_total:g} μm³ (nuclear: {volume_nuclear:g} μm³)\n"
         result += f"- **Motility:** {motility_speed:g} μm/min (persistence: {persistence_time:g} min)\n"
@@ -733,6 +938,12 @@ str: Success message with interaction details
         config.cell_types.add_secretion(cell_type, substrate, 
                                       secretion_rate=secretion_rate,
                                       uptake_rate=uptake_rate)
+        
+        # Track modification if loaded from XML
+        session = get_current_session()
+        if session and session.loaded_from_xml:
+            session.mark_xml_modification()
+        
         return f"**Substrate interaction set:** {cell_type} ↔ {substrate} (secretion: {secretion_rate:g}, uptake: {uptake_rate:g} min⁻¹)"
     except Exception as e:
         return f"Error setting substrate interaction: {str(e)}"
@@ -945,8 +1156,21 @@ def add_single_cell_rule(cell_type: str, signal: str, direction: str, behavior: 
         }
         cell_rules.rules.append(rule)
         
+        # Also add to legacy API for export compatibility
+        rules = session.config.cell_rules_csv
+        rules.add_rule(
+            cell_type=cell_type.strip(),
+            signal=signal.strip(),
+            direction=direction,
+            behavior=behavior.strip(),
+            base_value=min_signal,  # Map min_signal to base_value
+            half_max=half_max,
+            hill_power=hill_power,
+            apply_to_dead=0
+        )
+        
     except (ImportError, AttributeError):
-        # Fall back to legacy CSV API
+        # Fall back to legacy CSV API only
         rules = session.config.cell_rules_csv
         rules.add_rule(
             cell_type=cell_type.strip(),
@@ -965,6 +1189,10 @@ def add_single_cell_rule(cell_type: str, signal: str, direction: str, behavior: 
     
     # Update legacy global for backward compatibility
     _set_legacy_config(session.config)
+    
+    # Track modification if loaded from XML
+    if session.loaded_from_xml:
+        session.mark_xml_modification()
     
     # Format result
     result = f"**Cell rule added:**\n"
@@ -1425,6 +1653,17 @@ str: Markdown-formatted export status with file details
         
         result = f"## XML Configuration Exported\n\n"
         result += f"**File:** {filename} ({xml_size}KB)\n"
+        
+        # Show XML modification info if loaded from XML
+        if session.loaded_from_xml and session.original_xml_path:
+            original_name = Path(session.original_xml_path).name
+            if session.xml_modification_count > 0:
+                result += f"**Source:** Modified {session.xml_modification_count} times from {original_name}\n"
+            else:
+                result += f"**Source:** Exported from {original_name} (no modifications)\n"
+        else:
+            result += f"**Source:** Created from scratch\n"
+        
         result += f"**Substrates:** {len(substrates)} ({', '.join(substrates[:3]) if substrates else 'None'}{'...' if len(substrates) > 3 else ''})\n"
         result += f"**Cell Types:** {len(cell_types)} ({', '.join(cell_types[:3]) if cell_types else 'None'}{'...' if len(cell_types) > 3 else ''})\n"
         result += f"**Progress:** {session.get_progress_percentage():.0f}%\n\n"
@@ -1458,14 +1697,28 @@ str: Markdown-formatted export status with file details
         return "**Error:** No simulation configured. Create domain and add components first."
     
     try:
-        # Use the cell_rules_csv API directly
+        # Check for rules in both new API and legacy API
+        rule_count = 0
+        
+        # Try new API first
+        try:
+            from physicell_config.modules.cell_rules import CellRulesModule
+            cell_rules = CellRulesModule(session.config)
+            new_api_rules = getattr(cell_rules, 'rules', [])
+            rule_count += len(new_api_rules)
+        except (ImportError, AttributeError):
+            pass
+        
+        # Check legacy CSV API
         rules = session.config.cell_rules_csv
-        rule_count = len(rules.get_rules())
+        legacy_rules = rules.get_rules()
+        rule_count += len(legacy_rules)
         
         if rule_count == 0:
             return "**No cell rules to export**\n\nUse add_single_cell_rule() to create signal-behavior relationships first."
         
-        # Export cell rules CSV using the standard method
+        # For now, export using the legacy CSV API (since that's what PhysiCell expects)
+        # TODO: If new API rules exist, we might need to convert them to legacy format
         rules.generate_csv(filename)
         
         result = f"## Cell Rules CSV Exported\n\n"
