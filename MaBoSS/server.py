@@ -109,8 +109,15 @@ async def build_simulation(ctx: Context, bnd_path: str = "output.bnd", cfg_path:
     Args:
         bnd_path (str): Path to the .bnd file.
         cfg_path (str): Path to the .cfg file.
+    Usage order (recommended):
+        1. bnet_to_bnd_and_cfg -> build_simulation
+        2. show_maboss_parameters (inspect defaults)
+        3. update_maboss_parameters (reduce sample_count, set thread_count, etc.)
+        4. set_maboss_output_nodes / set_maboss_initial_state (optional)
+        5. run_simulation
+
     Returns:
-        str: Parameters of the MaBoSS simulation or an error message if the simulation creation fails.
+        str: Parameters of the MaBoSS simulation or an error message if creation fails.
     """
     global sim
     await ctx.info(f"Creating MaBoSS simulation with BND: {bnd_path} and CFG: {cfg_path}")
@@ -136,8 +143,11 @@ def run_simulation(ctx: Context) -> str:
     or if it asks to execute a simulation,
     this function runs the MaBoSS simulation that has been built.
     It logs the process and handles any errors that may occur during the simulation run.
+    Tip: Tune performance first via update_maboss_parameters (e.g. sample_count, thread_count)
+    before running large simulations.
+
     Returns:
-        str: Result of the MaBoSS simulation run or an error message if the run fails.
+        str: Result status or an error message.
     """
     global sim, result
     if sim is None:
@@ -217,30 +227,89 @@ def get_maboss_mutations(ctx: Context) -> str:
         return f"Error retrieving mutations: {str(e)}"
 
 @mcp.tool()
-def update_maboss_parameters(ctx: Context, parameters: dict) -> str:
-    """
-    When the user requests to update the parameters of the MaBoSS simulation,
-    such as the time tick (time_tick) or the max time (max_time), or the sample count (sample_count),
-    or the discrete time (discrete_time), etc...
-    this function updates the parameters of the simulation with the provided values.
-    It logs the process and returns a confirmation message.
+def update_maboss_parameters(ctx: Context, parameters: dict = None) -> str:
+    """Update one or more MaBoSS simulation parameters.
+
+    Call without arguments to list current parameters and usage hints.
+
+    Common keys:
+        sample_count   (int)   Number of trajectories (reduces stochastic noise; large = slower)
+        max_time       (float) Simulation time horizon
+        time_tick      (float) Time discretization step
+        discrete_time  (int)   0/1 toggle for discrete time mode
+        thread_count   (int)   Parallel threads for faster sampling (environment dependent)
+
     Args:
-        parameters (dict): Dictionary containing parameter names and their new values.
+        parameters: dict of {name: value}. Omitted or empty -> show current values.
     Returns:
-        str: Confirmation message indicating successful parameter update.
+        str: Confirmation or a table of current parameters.
     """
     global sim
     if sim is None:
         return "No MaBoSS simulation has been built yet. Please build a simulation first."
-
     try:
+        if not parameters:
+            # Just display current parameters
+            current = {k: v for k, v in sim.param.items()}
+            ctx.info("Listing current MaBoSS parameters")
+            df = pd.DataFrame([[k, v] for k, v in current.items()], columns=["parameter","value"])
+            return "Current MaBoSS parameters (call update_maboss_parameters with a parameters dict to modify):\n" + df.to_markdown(index=False, tablefmt="plain")
+        allowed = set(sim.param.keys())  # Accept only existing keys to avoid silent typos
+        unknown = [k for k in parameters.keys() if k not in allowed]
+        if unknown:
+            return ("Unsupported parameter(s): " + ", ".join(unknown) +
+                    "\nUse update_maboss_parameters() with no args to list valid keys.")
         for key, value in parameters.items():
             sim.param[key] = value
         ctx.info(f"MaBoSS parameters updated: {parameters}")
-        return "MaBoSS parameters updated successfully."
+        summary = ", ".join(f"{k}={v}" for k, v in parameters.items())
+        return f"Parameters updated: {summary}" 
     except Exception as e:
         ctx.error(f"Error updating MaBoSS parameters: {str(e)}")
         return f"Error updating MaBoSS parameters: {str(e)}"
+
+@mcp.tool()
+def show_maboss_parameters(ctx: Context) -> str:
+    """Show current MaBoSS simulation parameters (read-only helper)."""
+    global sim
+    if sim is None:
+        return "No MaBoSS simulation has been built yet. Please build a simulation first."
+    current = {k: v for k, v in sim.param.items()}
+    df = pd.DataFrame([[k, v] for k, v in current.items()], columns=["parameter","value"])
+    return df.to_markdown(index=False, tablefmt="plain")
+
+@mcp.tool()
+def get_maboss_help_json(ctx: Context) -> str:
+    """Machine-readable help for MaBoSS tools (JSON string)."""
+    import json
+    tools = {
+        "workflow": [
+            "bnet_to_bnd_and_cfg",
+            "build_simulation",
+            "show_maboss_parameters",
+            "update_maboss_parameters",
+            "set_maboss_output_nodes",
+            "set_maboss_initial_state",
+            "run_simulation",
+            "simulate_mutation",
+            "get_simulation_result (if exists)",
+            "plot_simulation_results (if exists)"
+        ],
+        "notes": [
+            "Call update_maboss_parameters with no arguments to list valid keys.",
+            "Reduce sample_count and set thread_count early to speed iteration.",
+            "Always rebuild or verify simulation after changing BND/CFG files.",
+            "Use set_maboss_output_nodes to limit outputs and reduce result size."
+        ],
+        "key_parameters": {
+            "sample_count": "Number of trajectories (runtime vs precision).",
+            "thread_count": "Parallel threads (if backend supports).",
+            "max_time": "Simulation horizon.",
+            "time_tick": "Time discretization step.",
+            "discrete_time": "0/1 toggle for discrete time mode."
+        }
+    }
+    return json.dumps(tools, ensure_ascii=False)
     
 @mcp.tool()
 def set_maboss_output_nodes(ctx: Context, output_nodes: list) -> str:
