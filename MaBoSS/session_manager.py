@@ -70,6 +70,16 @@ class MaBoSSSessionManager:
         self._lock = Lock()
         self._max_sessions = max_sessions
 
+    def _resolve_session_id(self, session_id: str) -> Optional[str]:
+        """Resolve an exact or unique prefix session ID to a full UUID."""
+        if session_id in self._sessions:
+            return session_id
+
+        matches = [sid for sid in self._sessions if sid.startswith(session_id)]
+        if len(matches) == 1:
+            return matches[0]
+        return None
+
     # -- CRUD ----------------------------------------------------------
 
     def create_session(self, set_as_default: bool = True) -> str:
@@ -89,7 +99,10 @@ class MaBoSSSessionManager:
             sid = session_id if session_id is not None else self._default_session_id
             if sid is None:
                 return None
-            sess = self._sessions.get(sid)
+            resolved_id = self._resolve_session_id(sid)
+            if resolved_id is None:
+                return None
+            sess = self._sessions.get(resolved_id)
             if sess:
                 sess.touch()
             return sess
@@ -111,16 +124,18 @@ class MaBoSSSessionManager:
 
     def set_default(self, session_id: str) -> bool:
         with self._lock:
-            if session_id in self._sessions:
-                self._default_session_id = session_id
+            resolved_id = self._resolve_session_id(session_id)
+            if resolved_id is not None:
+                self._default_session_id = resolved_id
                 return True
             return False
 
     def delete_session(self, session_id: str) -> bool:
         with self._lock:
-            if session_id in self._sessions:
-                del self._sessions[session_id]
-                if self._default_session_id == session_id:
+            resolved_id = self._resolve_session_id(session_id)
+            if resolved_id in self._sessions:
+                del self._sessions[resolved_id]
+                if self._default_session_id == resolved_id:
                     self._default_session_id = next(iter(self._sessions), None)
                 return True
             return False

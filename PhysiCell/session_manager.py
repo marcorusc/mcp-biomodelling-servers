@@ -225,6 +225,16 @@ class SessionManager:
         self._max_sessions = max_sessions
         self._auto_cleanup_hours = auto_cleanup_hours
         self._default_session_id: Optional[str] = None
+
+    def _resolve_session_id(self, session_id: str) -> Optional[str]:
+        """Resolve an exact or unique prefix session ID to a full UUID."""
+        if session_id in self._sessions:
+            return session_id
+
+        matches = [sid for sid in self._sessions if sid.startswith(session_id)]
+        if len(matches) == 1:
+            return matches[0]
+        return None
         
     def create_session(self, set_as_default: bool = True, session_name: Optional[str] = None) -> str:
         """Create a new simulation session."""
@@ -259,8 +269,12 @@ class SessionManager:
                 
             if session_id is None:
                 return None
-                
-            session = self._sessions.get(session_id)
+
+            resolved_id = self._resolve_session_id(session_id)
+            if resolved_id is None:
+                return None
+
+            session = self._sessions.get(resolved_id)
             if session:
                 session.last_accessed = time.time()
             return session
@@ -272,8 +286,9 @@ class SessionManager:
     def set_default_session(self, session_id: str) -> bool:
         """Set the default session."""
         with self._lock:
-            if session_id in self._sessions:
-                self._default_session_id = session_id
+            resolved_id = self._resolve_session_id(session_id)
+            if resolved_id is not None:
+                self._default_session_id = resolved_id
                 return True
             return False
     
@@ -285,12 +300,13 @@ class SessionManager:
     def delete_session(self, session_id: str) -> bool:
         """Delete a specific session."""
         with self._lock:
-            if session_id in self._sessions:
-                del self._sessions[session_id]
-                if self._default_session_id == session_id:
+            resolved_id = self._resolve_session_id(session_id)
+            if resolved_id in self._sessions:
+                del self._sessions[resolved_id]
+                if self._default_session_id == resolved_id:
                     # Set new default if available
                     self._default_session_id = next(iter(self._sessions.keys()), None)
-                logger.info(f"Deleted session {session_id[:8]}...")
+                logger.info(f"Deleted session {resolved_id[:8]}...")
                 return True
             return False
     
@@ -328,6 +344,8 @@ class SessionManager:
         session = self.get_session(session_id)
         if not session:
             return False
+
+        resolved_id = session.session_id
             
         try:
             session_data = session.to_dict()
@@ -337,10 +355,10 @@ class SessionManager:
             with open(filepath, 'w') as f:
                 json.dump(session_data, f, indent=2)
             
-            logger.info(f"Saved session {session_id[:8]}... to {filepath}")
+            logger.info(f"Saved session {resolved_id[:8]}... to {filepath}")
             return True
         except Exception as e:
-            logger.error(f"Failed to save session {session_id[:8]}...: {e}")
+            logger.error(f"Failed to save session {resolved_id[:8]}...: {e}")
             return False
     
     def get_session_stats(self) -> dict:

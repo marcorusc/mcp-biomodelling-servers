@@ -97,6 +97,13 @@ class TestMaBoSSSessionManager:
         assert sess is not None
         assert sess.session_id == sid
 
+    def test_get_session_by_short_prefix(self):
+        mgr = self._fresh()
+        sid = mgr.create_session()
+        sess = mgr.get_session(sid[:8])
+        assert sess is not None
+        assert sess.session_id == sid
+
     def test_get_unknown_session_returns_none(self):
         mgr = self._fresh()
         assert mgr.get_session("nonexistent") is None
@@ -117,6 +124,14 @@ class TestMaBoSSSessionManager:
         assert result is True
         assert mgr.get_default_session_id() == sid1
 
+    def test_set_default_by_short_prefix(self):
+        mgr = self._fresh()
+        sid1 = mgr.create_session()
+        _sid2 = mgr.create_session()
+        result = mgr.set_default(sid1[:8])
+        assert result is True
+        assert mgr.get_default_session_id() == sid1
+
     def test_set_default_unknown_returns_false(self):
         mgr = self._fresh()
         assert mgr.set_default("ghost") is False
@@ -125,6 +140,13 @@ class TestMaBoSSSessionManager:
         mgr = self._fresh()
         sid = mgr.create_session()
         result = mgr.delete_session(sid)
+        assert result is True
+        assert mgr.get_session(sid) is None
+
+    def test_delete_session_by_short_prefix(self):
+        mgr = self._fresh()
+        sid = mgr.create_session()
+        result = mgr.delete_session(sid[:8])
         assert result is True
         assert mgr.get_session(sid) is None
 

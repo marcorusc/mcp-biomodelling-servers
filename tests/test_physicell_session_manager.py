@@ -147,6 +147,13 @@ class TestSessionManager:
         assert sess is not None
         assert sess.session_id == sid
 
+    def test_get_session_by_short_prefix(self):
+        mgr = self._fresh()
+        sid = mgr.create_session()
+        sess = mgr.get_session(sid[:8])
+        assert sess is not None
+        assert sess.session_id == sid
+
     def test_get_session_no_default_returns_none(self):
         mgr = self._fresh()
         assert mgr.get_session() is None
@@ -168,6 +175,13 @@ class TestSessionManager:
         assert mgr.set_default_session(sid1) is True
         assert mgr.get_default_session_id() == sid1
 
+    def test_set_default_session_by_short_prefix(self):
+        mgr = self._fresh()
+        sid1 = mgr.create_session()
+        _sid2 = mgr.create_session()
+        assert mgr.set_default_session(sid1[:8]) is True
+        assert mgr.get_default_session_id() == sid1
+
     def test_set_default_unknown_returns_false(self):
         mgr = self._fresh()
         assert mgr.set_default_session("ghost") is False
@@ -176,6 +190,12 @@ class TestSessionManager:
         mgr = self._fresh()
         sid = mgr.create_session()
         assert mgr.delete_session(sid) is True
+        assert mgr.get_session(sid) is None
+
+    def test_delete_session_by_short_prefix(self):
+        mgr = self._fresh()
+        sid = mgr.create_session()
+        assert mgr.delete_session(sid[:8]) is True
         assert mgr.get_session(sid) is None
 
     def test_delete_default_promotes_next(self):
