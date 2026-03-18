@@ -471,6 +471,82 @@ async def run_simulation(
         await ctx.error(f"Error during MaBoSS simulation run: {str(e)}")
         return f"Error during MaBoSS simulation run: {str(e)}"
 
+@mcp.tool()
+async def export_maboss_bnd_cfg(
+    ctx: Context,
+    prefix: Annotated[str, Field(
+        default="updated",
+        description=(
+            "Prefix for output filenames written to the session artifact directory. "
+            "Produces '<prefix>.bnd' and '<prefix>.cfg'. Example: 'run2' -> run2.bnd/run2.cfg."
+        ),
+    )] = "updated",
+    overwrite: Annotated[bool, Field(
+        default=False,
+        description="If True, overwrite existing files with the same names in the artifact directory.",
+    )] = False,
+    session_id: Optional[str] = Field(
+        default=None,
+        description="Session to export from. Omit to use the active default session.",
+    ),
+) -> str:
+    """Export the current in-memory MaBoSS simulation to .bnd and .cfg files.
+
+    Writes files to: <server>/artifacts/<session_id>/<prefix>.bnd and <prefix>.cfg
+    """
+    sess = ensure_session(session_id)
+    if sess.sim is None:
+        return "No MaBoSS simulation has been built yet. Call build_simulation first."
+
+    try:
+        prefix = (prefix or "").strip()
+        if not prefix:
+            return "Invalid prefix. Must be a non-empty string."
+
+        # Optionally normalize prefix a bit (avoid spaces)
+        prefix = prefix.replace(" ", "_")
+
+        art_dir = get_artifact_dir(_SERVER_ROOT, sess.session_id)
+        bnd_name = f"{prefix}.bnd"
+        cfg_name = f"{prefix}.cfg"
+
+        bnd_out = str(safe_artifact_path(art_dir, bnd_name))
+        cfg_out = str(safe_artifact_path(art_dir, cfg_name))
+
+        if not overwrite:
+            for p in (bnd_out, cfg_out):
+                if os.path.exists(p):
+                    return (
+                        f"Refusing to overwrite existing file: {p}\n"
+                        f"Choose a different prefix or set overwrite=True."
+                    )
+
+        await ctx.info(f"Exporting MaBoSS model -> {bnd_out}, {cfg_out}")
+
+        # Write .bnd
+        with open(bnd_out, "w") as fbnd:
+            sess.sim.print_bnd(out=fbnd)
+
+        # Write .cfg
+        with open(cfg_out, "w") as fcfg:
+            sess.sim.print_cfg(out=fcfg)
+
+        # Sanity check
+        for path, label in [(bnd_out, "BND"), (cfg_out, "CFG")]:
+            if not os.path.exists(path):
+                return f"Error: expected {label} file was not created at {path}."
+
+        await ctx.info(f"Export complete: {bnd_out}, {cfg_out}")
+        return (
+            f"Exported current MaBoSS model successfully.\n"
+            f"  BND: {bnd_out}\n"
+            f"  CFG: {cfg_out}"
+        )
+
+    except Exception as e:
+        await ctx.error(f"Error exporting MaBoSS model: {str(e)}")
+        return f"Error exporting MaBoSS model: {str(e)}"
+
 
 # ---------------------------------------------------------------------------
 # Inspection tools (read-only, no side effects)
@@ -516,7 +592,6 @@ def get_maboss_initial_state(
     except Exception as e:
         return f"Error retrieving initial state: {e}"
 
-
 @mcp.tool()
 def get_maboss_logical_rules(
     session_id: Optional[str] = Field(
@@ -532,6 +607,96 @@ def get_maboss_logical_rules(
         return str(sess.sim.get_logical_rules())
     except Exception as e:
         return f"Error retrieving logical rules: {e}"
+
+
+@mcp.tool()
+async def change_maboss_rule(
+    ctx: Context,
+    node: Annotated[str, Field(description="Name of the node to change the rule for.")],
+    new_rule: Annotated[str, Field(description="New rule string to replace the existing rule.")],
+    session_id: Optional[str] = Field(
+        default=None,
+        description="Session to update. Omit to use the active default session.",
+    ),
+) -> str:
+    """Change the Boolean rule for a specific node in the MaBoSS simulation network.
+
+    The new rule is validated before being kept. If invalid, the previous rule is restored.
+    Call get_maboss_logical_rules() first to inspect the current rules.
+    """
+    sess = ensure_session(session_id)
+    if sess.sim is None:
+        return (
+            "No MaBoSS simulation has been built yet. "
+            "Call bnet_to_bnd_and_cfg then build_simulation first."
+        )
+
+    try:
+        if not isinstance(node, str) or not node.strip():
+            return "Invalid node name. Must be a non-empty string."
+
+        if not isinstance(new_rule, str) or not new_rule.strip():
+            return "Invalid new_rule. Must be a non-empty string."
+
+        node = node.strip()
+        new_rule = new_rule.strip()
+
+        # Check node existence
+        try:
+            target_node = sess.sim.network[node]
+        except Exception:
+            try:
+                available_nodes = list(sess.sim.network.keys())
+                return (
+                    f"Unknown node '{node}'. "
+                    f"Available nodes: {', '.join(available_nodes)}"
+                )
+            except Exception:
+                return f"Unknown node '{node}'."
+
+        # Save previous rule
+        old_rule = target_node.logExp
+        await ctx.info(f"Previous rule for {node}: {old_rule}")
+
+        # Apply new rule
+        target_node.logExp = new_rule
+
+        # Validate the updated model
+        try:
+            check_result = sess.sim.check()
+        except Exception as check_exc:
+            target_node.logExp = old_rule
+            await ctx.error(
+                f"Validation failed unexpectedly after updating {node}: {check_exc}"
+            )
+            return (
+                f"Rule change aborted for '{node}'. "
+                f"Validation could not be completed: {check_exc}"
+            )
+
+        if check_result:
+            # pyMaBoSS may return parser/check errors as a non-empty result
+            target_node.logExp = old_rule
+            await ctx.error(
+                f"Invalid rule for {node}. Change reverted. Errors: {check_result}"
+            )
+            return (
+                f"Rule change rejected for '{node}'. The previous rule has been restored.\n"
+                f"Previous rule: {old_rule}\n"
+                f"Proposed rule: {new_rule}\n"
+                f"Validation errors: {check_result}"
+            )
+
+        await ctx.info(f"Updated rule for {node}: {target_node.logExp}")
+        return (
+            f"Rule changed successfully for '{node}'.\n"
+            f"Previous rule: {old_rule}\n"
+            f"New rule: {target_node.logExp}"
+        )
+
+    except Exception as e:
+        await ctx.error(f"Error changing MaBoSS rule: {str(e)}")
+        return f"Error changing MaBoSS rule: {str(e)}"
 
 
 @mcp.tool()
