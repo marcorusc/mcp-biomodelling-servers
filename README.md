@@ -1,5 +1,9 @@
 # MCP Bio‑Modelling Servers
 
+<!-- mcp-name: io.github.marcorusc/NeKo -->
+<!-- mcp-name: io.github.marcorusc/MaBoSS -->
+<!-- mcp-name: io.github.marcorusc/PhysiCell -->
+
 This repository centralizes **Model Context Protocol (MCP)** servers that wrap Python‑based *mechanistic / systems biology* modelling tools. Each subfolder contains a `server.py` entrypoint plus a README describing the specific tool interface.
 
 Current servers (see their own READMEs & upstream docs):

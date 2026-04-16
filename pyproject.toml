@@ -1,0 +1,85 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mcp-biomodelling-servers"
+version = "1.0.0"
+description = "MCP servers for biological modelling: NeKo network analysis, MaBoSS Boolean dynamics, and PhysiCell multiscale simulation"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+keywords = ["mcp", "systems-biology", "bioinformatics", "neko", "maboss", "physicell"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+]
+dependencies = [
+    "fastmcp",
+    "pandas",
+    "matplotlib",
+    "pydantic",
+    "nekomata",
+    "paramiko",
+    "maboss",
+    "physicell-settings>=0.3.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/marcorusc/mcp-biomodelling-servers"
+Repository = "https://github.com/marcorusc/mcp-biomodelling-servers"
+
+[project.scripts]
+mcp-neko-server = "mcp_biomodelling_servers.neko:main"
+mcp-maboss-server = "mcp_biomodelling_servers.maboss:main"
+mcp-physicell-server = "mcp_biomodelling_servers.physicell:main"
+
+# ---------------------------------------------------------------------------
+# Build configuration
+# Each server directory is mapped into the mcp_biomodelling_servers namespace
+# package so that server.py's `Path(__file__).parent.parent` resolves to the
+# mcp_biomodelling_servers/ directory, where artifact_manager.py lives.
+# ---------------------------------------------------------------------------
+[tool.hatch.build.targets.wheel]
+packages = [
+    "mcp_biomodelling_servers",
+    "NeKo",
+    "MaBoSS",
+    "PhysiCell",
+]
+exclude = [
+    "**/artifacts/**",
+    "**/exports/**",
+    "**/pypath_log/**",
+    "tests/**",
+    "**/*.bnet",
+    "**/*.sif",
+    "**/server.json",
+]
+
+[tool.hatch.build.targets.wheel.sources]
+# Remap server directories into the package namespace so that installed paths
+# look like:  mcp_biomodelling_servers/NeKo/server.py  (parent.parent = mcp_biomodelling_servers/)
+"NeKo"      = "mcp_biomodelling_servers/NeKo"
+"MaBoSS"    = "mcp_biomodelling_servers/MaBoSS"
+"PhysiCell" = "mcp_biomodelling_servers/PhysiCell"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "mcp_biomodelling_servers/",
+    "NeKo/",
+    "MaBoSS/",
+    "PhysiCell/",
+    "artifact_manager.py",
+    "README.md",
+    "pyproject.toml",
+]
+exclude = [
+    "**/artifacts/**",
+    "**/exports/**",
+    "**/pypath_log/**",
+    "tests/**",
+]

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.marcorusc/MaBoSS",
+  "title": "MaBoSS Boolean Network Simulator",
+  "description": "MCP server for Boolean network simulation and attractor analysis using MaBoSS",
+  "repository": {
+    "url": "https://github.com/marcorusc/mcp-biomodelling-servers",
+    "source": "github",
+    "subfolder": "MaBoSS"
+  },
+  "version": "1.0.0",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "mcp-biomodelling-servers",
+      "version": "1.0.0",
+      "runtimeHint": "uvx",
+      "runtimeArguments": [
+        { "type": "named",     "name": "--from", "value": "mcp-biomodelling-servers" },
+        { "type": "positional", "value": "mcp-maboss-server" }
+      ],
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

@@ -16,6 +16,7 @@ dist/
 build/
 *.egg-info/
 *.egg
+hatch_metadata.json
 
 # Test & lint caches
 .pytest_cache/
