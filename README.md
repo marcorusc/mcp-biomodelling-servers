@@ -4,17 +4,45 @@
 <!-- mcp-name: io.github.marcorusc/MaBoSS -->
 <!-- mcp-name: io.github.marcorusc/PhysiCell -->
 
+[![PyPI](https://img.shields.io/pypi/v/mcp-biomodelling-servers)](https://pypi.org/project/mcp-biomodelling-servers/)
+[![MCP Registry](https://img.shields.io/badge/MCP_Registry-active-brightgreen)](https://registry.modelcontextprotocol.io)
+
 This repository centralizes **Model Context Protocol (MCP)** servers that wrap Python‑based *mechanistic / systems biology* modelling tools. Each subfolder contains a `server.py` entrypoint plus a README describing the specific tool interface.
 
 Current servers (see their own READMEs & upstream docs):
 
-| Tool | Folder | Upstream Documentation |
-|------|--------|------------------------|
-| MaBoSS | `MaBoSS/` | https://github.com/colomoto/pyMaBoSS |
-| NeKo | `NeKo/` | https://github.com/sysbio-curie/Neko |
-| PhysiCell (settings wrapper) | `PhysiCell/` | https://github.com/marcorusc/PhysiCell_Settings |
+| Tool | Folder | Upstream Documentation | MCP Registry |
+|------|--------|------------------------|--------------|
+| MaBoSS | `MaBoSS/` | https://github.com/colomoto/pyMaBoSS | `io.github.marcorusc/MaBoSS` |
+| NeKo | `NeKo/` | https://github.com/sysbio-curie/Neko | `io.github.marcorusc/NeKo` |
+| PhysiCell (settings wrapper) | `PhysiCell/` | https://github.com/marcorusc/PhysiCell_Settings | `io.github.marcorusc/PhysiCell` |
 
 All servers are Python processes speaking MCP over stdio.
+
+---
+## Installation
+
+### Option A — pip (recommended)
+```bash
+pip install mcp-biomodelling-servers
+```
+
+Then run any server directly:
+```bash
+mcp-neko-server
+mcp-maboss-server
+mcp-physicell-server
+```
+
+### Option B — uvx (no install needed)
+```bash
+uvx --from mcp-biomodelling-servers mcp-neko-server
+uvx --from mcp-biomodelling-servers mcp-maboss-server
+uvx --from mcp-biomodelling-servers mcp-physicell-server
+```
+
+### Option C — from source (Conda, full control)
+Clone this repo and set up a Conda environment with all dependencies (see [Environment Assumption](#environment-assumption) below).
 
 ---
 ## MCP Background
@@ -38,13 +66,37 @@ All tools are Python‑based. Create (and manage) a single Conda environment tha
 
 ---
 ## Configure in VS Code (GitHub Copilot Chat / MCP)
-1. Clone this repo somewhere stable (no spaces in path recommended).
-2. Open VS Code.
-3. Ensure the Copilot Chat (or other MCP‑capable) extension is installed and updated.
-4. Press `Ctrl + Shift + P` and search for the command that opens the MCP configuration JSON (e.g. “MCP: Open Configuration” or locate `mcp.json`). On Linux it typically lives at: `~/.config/Code/User/mcp.json`.
-5. Add entries pointing to each `server.py` using the Conda environment’s Python.
+1. Open VS Code and ensure the Copilot Chat (or other MCP-capable) extension is installed.
+2. Press `Ctrl + Shift + P` → "MCP: Open Configuration" (or edit `~/.config/Code/User/mcp.json` directly).
+3. Add entries for each server.
 
-Example (adapt paths to your system; based on the working setup):
+### Simple setup (uvx / pip install)
+If you installed via pip or want to use uvx, no paths are needed:
+
+```jsonc
+{
+  "servers": {
+    "neko": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["--from", "mcp-biomodelling-servers", "mcp-neko-server"]
+    },
+    "maboss": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["--from", "mcp-biomodelling-servers", "mcp-maboss-server"]
+    },
+    "physicell": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["--from", "mcp-biomodelling-servers", "mcp-physicell-server"]
+    }
+  }
+}
+```
+
+### Advanced setup (Conda environment, from source)
+Use this if you need a custom Conda environment (e.g. for native MaBoSS binaries or local development):
 
 ```jsonc
 {
@@ -74,30 +126,18 @@ Example (adapt paths to your system; based on the working setup):
         "/absolute/path/to/mcp-biomodelling-servers/PhysiCell/server.py"
       ]
     }
-  },
-  "inputs": [
-    {
-      "id": "memory_file_path",
-      "type": "promptString",
-      "description": "Path to the memory storage file",
-      "password": false
-    }
-  ]
+  }
 }
 ```
 
-Notes:
-- Replace `/home/you/...` and `/absolute/path/to/...` with your actual directories.
-- Keep all three servers referencing the *same* Conda interpreter to share installed libraries.
-- Add further environment variables (e.g. data directories) per tool README if required.
+Replace `/home/you/...` and `/absolute/path/to/...` with your actual directories. Keep all three servers referencing the *same* Conda interpreter to share installed libraries.
 
 After saving, reload / restart VS Code so the MCP client reconnects.
 
 Activation / usage guidance in VS Code: https://code.visualstudio.com/docs/copilot/chat/mcp-servers
 
-You should then see the servers’ tools listed in the Copilot Chat “/tools” (or similar) UI. Invoke them by name with required parameters.
+You should then see the servers' tools listed in the Copilot Chat "/tools" (or similar) UI. Invoke them by name with required parameters.
 
----
 ## Adding Another Server
 1. Create a new folder with `server.py` and a README describing the underlying modelling tool and dependencies.
 2. Follow existing server structure for registering MCP tools.
