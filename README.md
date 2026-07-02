@@ -20,6 +20,14 @@ mechanistic and systems-biology modelling:
 All three servers use MCP over stdio and are distributed together as
 `mcp-biomodelling-servers`.
 
+## Publication
+
+For more details, please check the related article:
+
+> **"Intelligent tool orchestration for rapid mechanistic model prototyping: MCP servers as AI-biology interfaces"**<br>
+> Marco Ruscone, Miguel Vazquez & Alfonso Valencia, *npj Systems Biology and Applications* (2026)<br>
+> [https://doi.org/10.1038/s41540-026-00767-3](https://doi.org/10.1038/s41540-026-00767-3)
+
 ## Requirements
 
 - Python 3.10–3.14.
