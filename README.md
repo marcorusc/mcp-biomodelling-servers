@@ -18,7 +18,14 @@ Current servers (see their own READMEs & upstream docs):
 | PhysiCell (settings wrapper) | `PhysiCell/` | https://github.com/marcorusc/PhysiCell_Settings | `io.github.marcorusc/PhysiCell` |
 
 All servers are Python processes speaking MCP over stdio.
+---
+## Publication
 
+For more details, please check the related article:
+
+> **"Intelligent tool orchestration for rapid mechanistic model prototyping: MCP servers as AI-biology interfaces"**  
+> Marco Ruscone, Miguel Vazquez & Alfonso Valencia, *npj Systems Biology and Applications* (2026)  
+> [https://doi.org/10.1038/s41540-026-00767-3](https://doi.org/10.1038/s41540-026-00767-3)
 ---
 ## Installation
 
