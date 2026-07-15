@@ -52,9 +52,9 @@ from session_manager import (
     get_current_session, ensure_session, analyze_and_update_session_from_config
 )
 
-from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.mcpserver import Context, MCPServer
 
-mcp = FastMCP("PhysiCell")
+mcp = MCPServer("PhysiCell")
 
 # ============================================================================
 # SESSION MANAGEMENT TOOLS

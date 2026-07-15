@@ -41,9 +41,9 @@ from neko.core.strategies import (
 import pandas as pd
 
 
-from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.mcpserver import Context, MCPServer
 
-mcp = FastMCP("NeKo")
+mcp = MCPServer("NeKo")
 
 # NOTE: Previous implementation used a single global `network` object.
 # Now session-based management (see `session_manager.py`).

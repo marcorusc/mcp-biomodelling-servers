@@ -12,11 +12,11 @@ import io
 import pandas as pd
 from pydantic import Field
 
-from mcp.server.fastmcp import Context, FastMCP, Image
+from mcp.server.mcpserver import Context, MCPServer, Image
 from session_manager import session_manager, ensure_session, MaBoSSSession
 from artifact_manager import get_artifact_dir, safe_artifact_path, list_artifacts, clean_artifacts, write_session_meta, list_artifact_sessions as _list_artifact_sessions_on_disk
 
-mcp = FastMCP("MaBoSS")
+mcp = MCPServer("MaBoSS")
 
 _SERVER_ROOT = Path(__file__).parent
 
