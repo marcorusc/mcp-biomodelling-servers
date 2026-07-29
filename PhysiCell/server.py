@@ -24,7 +24,14 @@ sys.path.insert(0, str(current_dir))
 
 # Make repo root importable for shared artifact_manager
 sys.path.insert(0, str(current_dir.parent))
-from artifact_manager import get_artifact_dir, list_artifacts, clean_artifacts, write_session_meta, list_artifact_sessions as _list_artifact_sessions_on_disk
+from artifact_manager import (
+    clean_artifacts,
+    get_artifact_dir,
+    list_artifacts,
+    list_artifact_sessions as _list_artifact_sessions_on_disk,
+    safe_artifact_path,
+    write_session_meta,
+)
 from mcp_biomodelling_servers import __version__
 
 _SERVER_ROOT = current_dir
@@ -109,6 +116,29 @@ def _require_physiboss() -> None:
             "PhysiBoSS support is not available in the installed "
             "`physicell-settings` package."
         )
+
+
+def _validate_export_filename(filename: str, expected_suffix: str) -> str:
+    """Require a plain export basename with the expected file extension."""
+    if not filename or not filename.strip():
+        raise ValueError("Export filename cannot be empty.")
+    if filename != filename.strip():
+        raise ValueError("Export filename cannot contain surrounding whitespace.")
+    if "\x00" in filename:
+        raise ValueError("Export filename cannot contain null bytes.")
+    if filename in {".", ".."}:
+        raise ValueError(f"Invalid export filename: {filename!r}.")
+    if Path(filename).is_absolute() or "/" in filename or "\\" in filename:
+        raise ValueError(
+            "Export filename must be a basename without directory components: "
+            f"{filename!r}."
+        )
+    if Path(filename).suffix.lower() != expected_suffix.lower():
+        raise ValueError(
+            f"Export filename must use the {expected_suffix} extension: "
+            f"{filename!r}."
+        )
+    return filename
 
 
 # ============================================================================
@@ -1448,6 +1478,9 @@ def export_xml_configuration(
         str: Export status, file path, and execution instructions.
     """
     session = _require_configuration(session_id)
+    filename = _validate_export_filename(filename, ".xml")
+    art_dir = get_artifact_dir(_SERVER_ROOT, session.session_id)
+    out_path = str(safe_artifact_path(art_dir, filename))
     
     try:
         # Get simulation info for summary using correct API
@@ -1468,8 +1501,6 @@ def export_xml_configuration(
             cell_types = [f"cell_type_{i+1}" for i in range(session.cell_types_count)]
         
         # Export XML configuration to session artifact directory
-        art_dir = get_artifact_dir(_SERVER_ROOT, session.session_id)
-        out_path = str(art_dir / filename)
         xml_content = session.config.generate_xml()
         with open(out_path, 'w') as f:
             f.write(xml_content)
@@ -1516,6 +1547,9 @@ def export_cell_rules_csv(
         str: Export status and file path.
     """
     session = _require_configuration(session_id)
+    filename = _validate_export_filename(filename, ".csv")
+    art_dir = get_artifact_dir(_SERVER_ROOT, session.session_id)
+    out_path = str(safe_artifact_path(art_dir, filename))
 
     try:
         rule_count = len(session.config.cell_rules.get_rules())
@@ -1532,8 +1566,6 @@ def export_cell_rules_csv(
 
     try:
         # Export using the CellRulesModule API to the session artifact directory
-        art_dir = get_artifact_dir(_SERVER_ROOT, session.session_id)
-        out_path = str(art_dir / filename)
         session.config.cell_rules.generate_csv(out_path)
 
         # Register the ruleset so the XML references the correct relative path.

@@ -92,6 +92,33 @@ def _create_session(config: object | None = None) -> str:
     return session_id
 
 
+def _xml_export_config(generate_calls: list[str]) -> SimpleNamespace:
+    def generate_xml() -> str:
+        generate_calls.append("generate_xml")
+        return "<PhysiCell_settings/>"
+
+    return SimpleNamespace(generate_xml=generate_xml)
+
+
+def _cell_rules_export_config(
+    generate_calls: list[str],
+    ruleset_calls: list[dict[str, Any]],
+) -> SimpleNamespace:
+    def generate_csv(path: str) -> None:
+        generate_calls.append(path)
+        Path(path).write_text("cell_type,signal,behavior\n", encoding="utf-8")
+
+    def add_ruleset(**kwargs: Any) -> None:
+        ruleset_calls.append(kwargs)
+
+    cell_rules = SimpleNamespace(
+        get_rules=lambda: [object()],
+        generate_csv=generate_csv,
+        add_ruleset=add_ruleset,
+    )
+    return SimpleNamespace(cell_rules=cell_rules)
+
+
 @pytest.fixture(autouse=True)
 def isolated_sessions(
     monkeypatch: pytest.MonkeyPatch,
@@ -259,6 +286,166 @@ def test_export_without_rules_is_tool_error() -> None:
 
     assert result.is_error is True
     assert "No cell rules are available to export" in result.content[0].text
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "../outside.xml",
+        "nested/settings.xml",
+        r"..\outside.xml",
+        "settings.csv",
+        " settings.xml ",
+        "bad\x00.xml",
+    ],
+)
+def test_unsafe_xml_export_filename_is_tool_error(filename: str) -> None:
+    generate_calls: list[str] = []
+    session_id = _create_session(_xml_export_config(generate_calls))
+
+    result = _run(
+        _call_tool(
+            "export_xml_configuration",
+            {"filename": filename, "session_id": session_id},
+        )
+    )
+
+    assert result.is_error is True
+    assert "Export filename" in result.content[0].text
+    assert generate_calls == []
+
+
+def test_absolute_xml_export_path_cannot_escape_artifacts(tmp_path: Path) -> None:
+    generate_calls: list[str] = []
+    session_id = _create_session(_xml_export_config(generate_calls))
+    outside_path = tmp_path / "outside.xml"
+
+    result = _run(
+        _call_tool(
+            "export_xml_configuration",
+            {"filename": str(outside_path), "session_id": session_id},
+        )
+    )
+
+    assert result.is_error is True
+    assert "without directory components" in result.content[0].text
+    assert generate_calls == []
+    assert not outside_path.exists()
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "../outside.csv",
+        "nested/rules.csv",
+        r"..\outside.csv",
+        "rules.xml",
+    ],
+)
+def test_unsafe_csv_export_filename_is_tool_error(filename: str) -> None:
+    generate_calls: list[str] = []
+    ruleset_calls: list[dict[str, Any]] = []
+    config = _cell_rules_export_config(generate_calls, ruleset_calls)
+    session_id = _create_session(config)
+
+    result = _run(
+        _call_tool(
+            "export_cell_rules_csv",
+            {"filename": filename, "session_id": session_id},
+        )
+    )
+
+    assert result.is_error is True
+    assert "Export filename" in result.content[0].text
+    assert generate_calls == []
+    assert ruleset_calls == []
+
+
+def test_absolute_csv_export_path_cannot_escape_artifacts(tmp_path: Path) -> None:
+    generate_calls: list[str] = []
+    ruleset_calls: list[dict[str, Any]] = []
+    config = _cell_rules_export_config(generate_calls, ruleset_calls)
+    session_id = _create_session(config)
+    outside_path = tmp_path / "outside.csv"
+
+    result = _run(
+        _call_tool(
+            "export_cell_rules_csv",
+            {"filename": str(outside_path), "session_id": session_id},
+        )
+    )
+
+    assert result.is_error is True
+    assert "without directory components" in result.content[0].text
+    assert generate_calls == []
+    assert ruleset_calls == []
+    assert not outside_path.exists()
+
+
+@pytest.mark.parametrize(
+    ("filename", "expected_name"),
+    [
+        (None, "PhysiCell_settings.xml"),
+        ("custom-settings.xml", "custom-settings.xml"),
+        ("CUSTOM.XML", "CUSTOM.XML"),
+    ],
+)
+def test_valid_xml_export_stays_in_session_artifacts(
+    tmp_path: Path,
+    filename: str | None,
+    expected_name: str,
+) -> None:
+    generate_calls: list[str] = []
+    session_id = _create_session(_xml_export_config(generate_calls))
+    arguments = {"session_id": session_id}
+    if filename is not None:
+        arguments["filename"] = filename
+
+    result = _run(_call_tool("export_xml_configuration", arguments))
+
+    output_path = tmp_path / "artifacts" / session_id / expected_name
+    assert result.is_error is False
+    assert generate_calls == ["generate_xml"]
+    assert output_path.read_text(encoding="utf-8") == "<PhysiCell_settings/>"
+    assert str(output_path) in result.content[0].text
+
+
+@pytest.mark.parametrize(
+    ("filename", "expected_name"),
+    [
+        (None, "cell_rules.csv"),
+        ("custom-rules.csv", "custom-rules.csv"),
+        ("RULES.CSV", "RULES.CSV"),
+    ],
+)
+def test_valid_csv_export_stays_in_session_artifacts(
+    tmp_path: Path,
+    filename: str | None,
+    expected_name: str,
+) -> None:
+    generate_calls: list[str] = []
+    ruleset_calls: list[dict[str, Any]] = []
+    config = _cell_rules_export_config(generate_calls, ruleset_calls)
+    session_id = _create_session(config)
+    arguments = {"session_id": session_id}
+    if filename is not None:
+        arguments["filename"] = filename
+
+    result = _run(_call_tool("export_cell_rules_csv", arguments))
+
+    output_path = tmp_path / "artifacts" / session_id / expected_name
+    assert result.is_error is False
+    assert generate_calls == [str(output_path)]
+    assert output_path.read_text(encoding="utf-8").startswith("cell_type")
+    assert ruleset_calls == [
+        {
+            "name": "default",
+            "folder": str(output_path),
+            "filename": expected_name,
+            "enabled": True,
+        }
+    ]
+    assert str(output_path) in result.content[0].text
 
 
 def test_empty_status_results_remain_successful() -> None:
