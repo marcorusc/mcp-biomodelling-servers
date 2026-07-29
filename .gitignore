@@ -37,6 +37,9 @@ NeKo/artifacts/
 MaBoSS/artifacts/
 PhysiCell/artifacts/
 
+# Local upgrade tracking
+MCP_V2_UPGRADE_PLAN.md
+
 # IDE
 .idea/
 .vscode/
