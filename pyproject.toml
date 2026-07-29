@@ -19,6 +19,7 @@ classifiers = [
 ]
 dependencies = [
     "mcp>=2,<3",
+    "anyio>=4.9",
     "pandas",
     "matplotlib",
     "pydantic",

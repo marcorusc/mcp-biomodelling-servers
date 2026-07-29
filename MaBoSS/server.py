@@ -1,24 +1,35 @@
+import inspect
+import logging
 import os
 import sys
-import logging
+from functools import wraps
 from pathlib import Path
-from typing import Annotated, Optional, List, Union
+from typing import Annotated
 
 # Make the repo root importable so we can use the shared artifact_manager
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import matplotlib.pyplot as plt
-import maboss
 import io
-import pandas as pd
-from pydantic import Field
 
-from mcp.server.mcpserver import Context, MCPServer, Image
+import anyio
+import maboss
+import matplotlib.pyplot as plt
+import pandas as pd
+from mcp.server.mcpserver import Context, Image, MCPServer
 from mcp.server.mcpserver.exceptions import ResourceNotFoundError
 from mcp.types import CallToolResult, TextContent
+from pydantic import Field
+from session_manager import ensure_session, session_manager
+
+from artifact_manager import (
+    clean_artifacts,
+    get_artifact_dir,
+    list_artifacts,
+    safe_artifact_path,
+    write_session_meta,
+)
+from artifact_manager import list_artifact_sessions as _list_artifact_sessions_on_disk
 from mcp_biomodelling_servers import __version__
-from session_manager import session_manager, ensure_session, MaBoSSSession
-from artifact_manager import get_artifact_dir, safe_artifact_path, list_artifacts, clean_artifacts, write_session_meta, list_artifact_sessions as _list_artifact_sessions_on_disk
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +43,19 @@ mcp = MCPServer(
 )
 
 _SERVER_ROOT = Path(__file__).parent
+
+
+def _session_locked(handler):
+    """Run a synchronous handler under its session's exclusive lease."""
+    signature = inspect.signature(handler)
+
+    @wraps(handler)
+    def locked_handler(*args, **kwargs):
+        arguments = signature.bind_partial(*args, **kwargs).arguments
+        with session_manager.session_scope(arguments.get("session_id")):
+            return handler(*args, **kwargs)
+
+    return locked_handler
 
 # ---------------------------------------------------------------------------
 # Agent manual — single source of truth for workflows and operating rules.
@@ -111,6 +135,7 @@ def maboss_agent_manual_resource() -> str:
     description="Comma-separated list of node names in the loaded MaBoSS network.",
     mime_type="text/plain",
 )
+@_session_locked
 def resource_network_nodes(session_id: str) -> str:
     """Return the node names for the given session."""
     sess = ensure_session(session_id)
@@ -130,6 +155,7 @@ def resource_network_nodes(session_id: str) -> str:
     description="Current MaBoSS simulation parameters as a Markdown table. Use update_maboss_parameters to modify.",
     mime_type="text/markdown",
 )
+@_session_locked
 def resource_parameters(session_id: str) -> str:
     """Return current parameter table for the given session."""
     sess = ensure_session(session_id)
@@ -150,6 +176,7 @@ def resource_parameters(session_id: str) -> str:
     description="Initial state probability configuration of the MaBoSS simulation.",
     mime_type="text/plain",
 )
+@_session_locked
 def resource_initial_state(session_id: str) -> str:
     """Return the initial state for the given session."""
     sess = ensure_session(session_id)
@@ -166,6 +193,7 @@ def resource_initial_state(session_id: str) -> str:
     description="Boolean logical rules of the MaBoSS network.",
     mime_type="text/plain",
 )
+@_session_locked
 def resource_logical_rules(session_id: str) -> str:
     """Return the logical rules for the given session."""
     sess = ensure_session(session_id)
@@ -182,6 +210,7 @@ def resource_logical_rules(session_id: str) -> str:
     description="Mutation settings currently applied to the MaBoSS network.",
     mime_type="text/plain",
 )
+@_session_locked
 def resource_mutations(session_id: str) -> str:
     """Return mutation settings for the given session."""
     sess = ensure_session(session_id)
@@ -203,6 +232,7 @@ def resource_mutations(session_id: str) -> str:
     ),
     mime_type="text/markdown",
 )
+@_session_locked
 def resource_simulation_result(session_id: str) -> str:
     """Return the last simulation result for the given session."""
     sess = ensure_session(session_id)
@@ -228,9 +258,11 @@ def resource_simulation_result(session_id: str) -> str:
     description="List of artifact files (BND, CFG, PNG, …) generated for a session.",
     mime_type="text/markdown",
 )
+@_session_locked
 def resource_generated_files(session_id: str) -> str:
     """Return a Markdown list of artifact files for the given session."""
-    files = list_artifacts(_SERVER_ROOT, session_id=session_id)
+    sess = ensure_session(session_id)
+    files = list_artifacts(_SERVER_ROOT, session_id=sess.session_id)
     if not files:
         return "No artifact files found for this session."
     return "## Artifact files\n\n" + "\n".join(f"- {f}" for f in files)
@@ -246,7 +278,7 @@ def create_session(
         default=True,
         description="When True (default), the new session becomes the active default for subsequent calls.",
     ),
-    label: Optional[str] = Field(
+    label: str | None = Field(
         default=None,
         description="Optional human-readable label (e.g. 'TP53-MYC Boolean run'). Stored on disk so the session can be rediscovered after a server restart.",
     ),
@@ -256,8 +288,11 @@ def create_session(
     Returns the session ID (UUID) that must be passed to pipeline tools when running
     multiple independent simulations in parallel.
     """
-    sid = session_manager.create_session(set_as_default=set_as_default)
-    write_session_meta(_SERVER_ROOT, sid, server_name="MaBoSS", label=label)
+    with session_manager.create_session_scope(
+        set_as_default=set_as_default,
+    ) as session:
+        sid = session.session_id
+        write_session_meta(_SERVER_ROOT, sid, server_name="MaBoSS", label=label)
     label_info = f" ({label})" if label else ""
     return f"Session created: {sid}{label_info}" + (" (set as default)" if set_as_default else "")
 
@@ -329,14 +364,18 @@ def delete_session(
     ),
 ) -> str:
     """Delete a MaBoSS session and optionally its artifact files."""
-    removed_files = 0
-    if clean_files:
-        removed_files = clean_artifacts(_SERVER_ROOT, session_id)
-    if session_manager.delete_session(session_id):
-        return f"Session {session_id} deleted." + (
-            f" Removed {removed_files} artifact file(s)." if clean_files else ""
-        )
-    raise ValueError(f"Session not found: {session_id}")
+    session = session_manager.get_session(session_id)
+    if session is None or not session_manager.delete_session(session_id):
+        raise ValueError(f"Session not found: {session_id}")
+
+    removed_files = (
+        clean_artifacts(_SERVER_ROOT, session.session_id)
+        if clean_files
+        else 0
+    )
+    return f"Session {session.session_id} deleted." + (
+        f" Removed {removed_files} artifact file(s)." if clean_files else ""
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -344,10 +383,10 @@ def delete_session(
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
-async def bnet_to_bnd_and_cfg(
+@_session_locked
+def bnet_to_bnd_and_cfg(
     bnet_path: Annotated[str, Field(description="Absolute or CWD-relative path to the .bnet file to convert.")],
-    ctx: Context,
-    session_id: Optional[str] = Field(
+    session_id: str | None = Field(
         default=None,
         description="Session to write the output files into. Omit to use the active default session.",
     ),
@@ -386,17 +425,17 @@ async def bnet_to_bnd_and_cfg(
 
 
 @mcp.tool()
-async def build_simulation(
-    ctx: Context,
-    session_id: Optional[str] = Field(
+@_session_locked
+def build_simulation(
+    session_id: str | None = Field(
         default=None,
         description="Session to load the simulation into. Omit to use the active default session.",
     ),
-    bnd_path: Optional[str] = Field(
+    bnd_path: str | None = Field(
         default=None,
         description="Path to the .bnd file. Omit to use the file generated by bnet_to_bnd_and_cfg for this session.",
     ),
-    cfg_path: Optional[str] = Field(
+    cfg_path: str | None = Field(
         default=None,
         description="Path to the .cfg file. Omit to use the file generated by bnet_to_bnd_and_cfg for this session.",
     ),
@@ -443,7 +482,7 @@ async def build_simulation(
 @mcp.tool()
 async def run_simulation(
     ctx: Context,
-    session_id: Optional[str] = Field(
+    session_id: str | None = Field(
         default=None,
         description="Session to run. Omit to use the active default session.",
     ),
@@ -457,43 +496,53 @@ async def run_simulation(
     before running large simulations. After completion, read the result from
     maboss://session/{id}/result.
     """
-    sess = ensure_session(session_id)
-    if sess.sim is None:
-        raise RuntimeError(
-            "No MaBoSS simulation has been built yet. "
-            "Call bnet_to_bnd_and_cfg then build_simulation first."
-        )
-    try:
-        await ctx.report_progress(0, 2)
-        logger.info("Running MaBoSS simulation")
-        run_result = sess.sim.run()
-        sess.set_result(run_result)
+    await ctx.report_progress(0, 2)
 
-        # Persist the result table to disk so list_generated_files shows it
-        try:
-            art_dir = get_artifact_dir(_SERVER_ROOT, sess.session_id)
-            csv_path = safe_artifact_path(art_dir, "result.csv")
-            df_result = run_result.get_last_states_probtraj()
-            if not df_result.empty:
-                df_result.to_csv(csv_path, index=False)
-                logger.info("Result saved to %s", csv_path)
-        except Exception as csv_err:
-            logger.warning("Could not save result CSV: %s", csv_err, exc_info=True)
+    def run_locked() -> None:
+        with session_manager.session_scope(session_id):
+            sess = ensure_session(session_id)
+            if sess.sim is None:
+                raise RuntimeError(
+                    "No MaBoSS simulation has been built yet. "
+                    "Call bnet_to_bnd_and_cfg then build_simulation first."
+                )
+            try:
+                logger.info("Running MaBoSS simulation")
+                run_result = sess.sim.run()
+            except Exception as e:
+                logger.exception("Error during MaBoSS simulation run")
+                raise RuntimeError(
+                    f"Error during MaBoSS simulation run: {e}"
+                ) from e
+            sess.set_result(run_result)
 
-        await ctx.report_progress(2, 2)
-        logger.info("MaBoSS simulation completed successfully")
-        return (
-            f"MaBoSS simulation completed successfully.\n"
-            f"Call `get_simulation_result()` to read the state probability table.\n"
-            f"The result is also saved to the session artifact directory as result.csv."
-        )
-    except Exception as e:
-        logger.exception("Error during MaBoSS simulation run")
-        raise RuntimeError(f"Error during MaBoSS simulation run: {e}") from e
+            # Persist the result table so list_generated_files shows it.
+            try:
+                art_dir = get_artifact_dir(_SERVER_ROOT, sess.session_id)
+                csv_path = safe_artifact_path(art_dir, "result.csv")
+                df_result = run_result.get_last_states_probtraj()
+                if not df_result.empty:
+                    df_result.to_csv(csv_path, index=False)
+                    logger.info("Result saved to %s", csv_path)
+            except Exception as csv_err:
+                logger.warning(
+                    "Could not save result CSV: %s",
+                    csv_err,
+                    exc_info=True,
+                )
+
+    await anyio.to_thread.run_sync(run_locked)
+    await ctx.report_progress(2, 2)
+    logger.info("MaBoSS simulation completed successfully")
+    return (
+        "MaBoSS simulation completed successfully.\n"
+        "Call `get_simulation_result()` to read the state probability table.\n"
+        "The result is also saved to the session artifact directory as result.csv."
+    )
 
 @mcp.tool()
-async def export_maboss_bnd_cfg(
-    ctx: Context,
+@_session_locked
+def export_maboss_bnd_cfg(
     prefix: Annotated[str, Field(
         default="updated",
         description=(
@@ -505,7 +554,7 @@ async def export_maboss_bnd_cfg(
         default=False,
         description="If True, overwrite existing files with the same names in the artifact directory.",
     )] = False,
-    session_id: Optional[str] = Field(
+    session_id: str | None = Field(
         default=None,
         description="Session to export from. Omit to use the active default session.",
     ),
@@ -579,8 +628,9 @@ async def export_maboss_bnd_cfg(
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
+@_session_locked
 def get_maboss_nodes(
-    session_id: Optional[str] = Field(
+    session_id: str | None = Field(
         default=None,
         description="Session to query. Omit to use the active default session.",
     ),
@@ -602,8 +652,9 @@ def get_maboss_nodes(
 
 
 @mcp.tool()
+@_session_locked
 def get_maboss_initial_state(
-    session_id: Optional[str] = Field(
+    session_id: str | None = Field(
         default=None,
         description="Session to query. Omit to use the active default session.",
     ),
@@ -623,8 +674,9 @@ def get_maboss_initial_state(
         raise RuntimeError(f"Error retrieving initial state: {e}") from e
 
 @mcp.tool()
+@_session_locked
 def get_maboss_logical_rules(
-    session_id: Optional[str] = Field(
+    session_id: str | None = Field(
         default=None,
         description="Session to query. Omit to use the active default session.",
     ),
@@ -642,11 +694,11 @@ def get_maboss_logical_rules(
 
 
 @mcp.tool()
-async def change_maboss_rule(
-    ctx: Context,
+@_session_locked
+def change_maboss_rule(
     node: Annotated[str, Field(description="Name of the node to change the rule for.")],
     new_rule: Annotated[str, Field(description="New rule string to replace the existing rule.")],
-    session_id: Optional[str] = Field(
+    session_id: str | None = Field(
         default=None,
         description="Session to update. Omit to use the active default session.",
     ),
@@ -676,15 +728,16 @@ async def change_maboss_rule(
         # Check node existence
         try:
             target_node = sess.sim.network[node]
-        except Exception:
+        # pyMaBoSS does not expose a stable lookup exception contract.
+        except Exception as node_error:  # noqa: BLE001
             try:
                 available_nodes = list(sess.sim.network.keys())
-            except Exception:
-                raise ValueError(f"Unknown node '{node}'.")
+            except Exception as list_error:  # noqa: BLE001
+                raise ValueError(f"Unknown node '{node}'.") from list_error
             raise ValueError(
                 f"Unknown node '{node}'. "
                 f"Available nodes: {', '.join(available_nodes)}"
-            )
+            ) from node_error
 
         # Save previous rule
         old_rule = target_node.logExp
@@ -736,8 +789,9 @@ async def change_maboss_rule(
 
 
 @mcp.tool()
+@_session_locked
 def get_maboss_mutations(
-    session_id: Optional[str] = Field(
+    session_id: str | None = Field(
         default=None,
         description="Session to query. Omit to use the active default session.",
     ),
@@ -759,9 +813,9 @@ def get_maboss_mutations(
 # ---------------------------------------------------------------------------
 
 @mcp.tool()
-async def update_maboss_parameters(
-    ctx: Context,
-    parameters: Optional[dict] = Field(
+@_session_locked
+def update_maboss_parameters(
+    parameters: dict | None = Field(  # noqa: B008
         default=None,
         description=(
             "Dict of {parameter_name: value} to update. "
@@ -770,7 +824,7 @@ async def update_maboss_parameters(
             "discrete_time (0|1), thread_count (int)."
         ),
     ),
-    session_id: Optional[str] = Field(
+    session_id: str | None = Field(
         default=None,
         description="Session to update. Omit to use the active default session.",
     ),
@@ -817,10 +871,10 @@ async def update_maboss_parameters(
 
 
 @mcp.tool()
-async def set_maboss_output_nodes(
-    ctx: Context,
-    output_nodes: Annotated[List[str], Field(description="List of node names to mark as output nodes (e.g. ['Apoptosis', 'Proliferation']).")],
-    session_id: Optional[str] = Field(
+@_session_locked
+def set_maboss_output_nodes(
+    output_nodes: Annotated[list[str], Field(description="List of node names to mark as output nodes (e.g. ['Apoptosis', 'Proliferation']).")],
+    session_id: str | None = Field(
         default=None,
         description="Session to update. Omit to use the active default session.",
     ),
@@ -847,15 +901,15 @@ async def set_maboss_output_nodes(
 
 
 @mcp.tool()
-async def set_maboss_initial_state(
-    ctx: Context,
-    nodes: Annotated[Union[str, List[str]], Field(
+@_session_locked
+def set_maboss_initial_state(
+    nodes: Annotated[str | list[str], Field(
         description=(
             "Node name (str) or list of node names to set initial state for. "
             "E.g. 'node1' or ['node1', 'node2']."
         )
     )],
-    probDict: Annotated[Union[List[float], dict], Field(
+    probDict: Annotated[list[float] | dict, Field(
         description=(
             "Probability specification. "
             "Single node: list [P(OFF), P(ON)] or dict {0: P(OFF), 1: P(ON)}. "
@@ -863,7 +917,7 @@ async def set_maboss_initial_state(
             "e.g. {(0, 0): 0.4, (1, 0): 0.6}."
         )
     )],
-    session_id: Optional[str] = Field(
+    session_id: str | None = Field(
         default=None,
         description="Session to update. Omit to use the active default session.",
     ),
@@ -921,10 +975,10 @@ async def set_maboss_initial_state(
 @mcp.tool()
 async def simulate_mutation(
     ctx: Context,
-    nodes: Annotated[Union[str, List[str]], Field(
+    nodes: Annotated[str | list[str], Field(
         description="Node name (str) or list of node names to mutate. E.g. 'FoxO3' or ['FoxO3', 'AKT']."
     )],
-    state: Annotated[Union[str, List[str]], Field(
+    state: Annotated[str | list[str], Field(
         default="OFF",
         description=(
             "Mutation state(s): 'ON', 'OFF', or 'WT'. "
@@ -932,7 +986,7 @@ async def simulate_mutation(
             "A list must match the length of nodes, e.g. ['OFF', 'ON']."
         ),
     )] = "OFF",
-    session_id: Optional[str] = Field(
+    session_id: str | None = Field(
         default=None,
         description="Session to use. Omit to use the active default session.",
     ),
@@ -947,65 +1001,78 @@ async def simulate_mutation(
         simulate_mutation('FoxO3', 'OFF')
         simulate_mutation(['FoxO3', 'AKT'], ['OFF', 'ON'])
     """
-    sess = ensure_session(session_id)
-    if sess.sim is None:
-        raise RuntimeError(
-            "No MaBoSS simulation has been built yet. "
-            "Call bnet_to_bnd_and_cfg then build_simulation first."
-        )
-    try:
-        await ctx.report_progress(0, 3)
-        logger.info("Running mutant simulation")
-        mutated_simulation = sess.sim.copy()
+    node_list = [nodes] if isinstance(nodes, str) else list(nodes)
+    if isinstance(state, str):
+        state_list = [state] * len(node_list)
+    else:
+        state_list = list(state)
+        if len(state_list) != len(node_list):
+            raise ValueError("Length of 'state' must match length of 'nodes'.")
 
-        node_list = [nodes] if isinstance(nodes, str) else list(nodes)
+    valid_states = {"ON", "OFF", "WT"}
+    for mutation_state in state_list:
+        if mutation_state not in valid_states:
+            raise ValueError(
+                f"Invalid mutation state '{mutation_state}'. "
+                f"Must be one of {valid_states}."
+            )
 
-        if isinstance(state, str):
-            state_list = [state] * len(node_list)
-        else:
-            state_list = list(state)
-            if len(state_list) != len(node_list):
-                raise ValueError("Length of 'state' must match length of 'nodes'.")
+    await ctx.report_progress(0, 3)
+    await ctx.report_progress(1, 3)
 
-        valid_states = {"ON", "OFF", "WT"}
-        for s in state_list:
-            if s not in valid_states:
-                raise ValueError(
-                    f"Invalid mutation state '{s}'. Must be one of {valid_states}."
+    def run_mutation_locked() -> pd.DataFrame:
+        with session_manager.session_scope(session_id):
+            sess = ensure_session(session_id)
+            if sess.sim is None:
+                raise RuntimeError(
+                    "No MaBoSS simulation has been built yet. "
+                    "Call bnet_to_bnd_and_cfg then build_simulation first."
                 )
+            try:
+                logger.info("Running mutant simulation")
+                mutated_simulation = sess.sim.copy()
+                for node, mutation_state in zip(
+                    node_list,
+                    state_list,
+                    strict=True,
+                ):
+                    mutated_simulation.mutate(node, mutation_state)
+                    logger.info(
+                        "Applied mutation: %s -> %s",
+                        node,
+                        mutation_state,
+                    )
+                mutation_result = mutated_simulation.run()
+                return mutation_result.get_last_states_probtraj()
+            except ValueError:
+                raise
+            except Exception as e:
+                logger.exception("Error running mutant simulation")
+                raise RuntimeError(
+                    f"Error running mutant simulation: {e}"
+                ) from e
 
-        await ctx.report_progress(1, 3)
-        for node, s in zip(node_list, state_list):
-            mutated_simulation.mutate(node, s)
-            logger.info("Applied mutation: %s -> %s", node, s)
+    df_prob = await anyio.to_thread.run_sync(run_mutation_locked)
+    await ctx.report_progress(2, 3)
 
-        mut_result = mutated_simulation.run()
-        await ctx.report_progress(2, 3)
-        df_prob = mut_result.get_last_states_probtraj()
+    if df_prob.empty:
+        return "_Simulation completed but returned no trajectory data._"
 
-        if df_prob.empty:
-            return "_Simulation completed but returned no trajectory data._"
-
-        df_prob = clean_for_markdown(df_prob)
-        md_table = df_prob.to_markdown(index=False, tablefmt="plain")
-        await ctx.report_progress(3, 3)
-        return "\n".join([
-            "**MaBoSS Mutant Simulation: State Probability Trajectory**",
-            "",
-            f"_Mutations applied: {dict(zip(node_list, state_list))}_",
-            "",
-            md_table,
-        ])
-    except ValueError:
-        raise
-    except Exception as e:
-        logger.exception("Error running mutant simulation")
-        raise RuntimeError(f"Error running mutant simulation: {e}") from e
+    df_prob = clean_for_markdown(df_prob)
+    md_table = df_prob.to_markdown(index=False, tablefmt="plain")
+    await ctx.report_progress(3, 3)
+    return "\n".join([
+        "**MaBoSS Mutant Simulation: State Probability Trajectory**",
+        "",
+        f"_Mutations applied: {dict(zip(node_list, state_list, strict=True))}_",
+        "",
+        md_table,
+    ])
 
 
 @mcp.tool()
-async def visualize_network_trajectories(
-    ctx: Context,
+@_session_locked
+def visualize_network_trajectories(
     session_id: str | None = None,
     until: float | None = Field(
         default=None,
@@ -1081,8 +1148,9 @@ async def visualize_network_trajectories(
 
 
 @mcp.tool()
+@_session_locked
 def get_simulation_result(
-    session_id: Optional[str] = Field(
+    session_id: str | None = Field(
         default=None,
         description="Session to query. Omit to use the active default session.",
     ),
@@ -1119,7 +1187,7 @@ def get_simulation_result(
 
 @mcp.tool()
 def list_generated_files(
-    session_id: Optional[str] = Field(
+    session_id: str | None = Field(
         default=None,
         description=(
             "Session whose artifact files to list. "
@@ -1131,8 +1199,9 @@ def list_generated_files(
     if session_id == "all":
         files = list_artifacts(_SERVER_ROOT, session_id=None)
     else:
-        sess = ensure_session(session_id)
-        files = list_artifacts(_SERVER_ROOT, session_id=sess.session_id)
+        with session_manager.session_scope(session_id):
+            sess = ensure_session(session_id)
+            files = list_artifacts(_SERVER_ROOT, session_id=sess.session_id)
 
     if not files:
         return "No artifact files found."
@@ -1140,9 +1209,9 @@ def list_generated_files(
 
 
 @mcp.tool()
-async def clean_generated_files(
-    ctx: Context,
-    session_id: Optional[str] = Field(
+@_session_locked
+def clean_generated_files(
+    session_id: str | None = Field(
         default=None,
         description="Session whose artifact files to remove. Omit to use the active default session.",
     ),
