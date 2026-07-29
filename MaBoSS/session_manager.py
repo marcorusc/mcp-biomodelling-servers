@@ -15,8 +15,6 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from threading import Lock
-from typing import Dict, Optional
-
 
 # ---------------------------------------------------------------------------
 # Session dataclass
@@ -65,12 +63,12 @@ class MaBoSSSessionManager:
     """Thread-safe manager for MaBoSS sessions."""
 
     def __init__(self, max_sessions: int = 15) -> None:
-        self._sessions: Dict[str, MaBoSSSession] = {}
-        self._default_session_id: Optional[str] = None
+        self._sessions: dict[str, MaBoSSSession] = {}
+        self._default_session_id: str | None = None
         self._lock = Lock()
         self._max_sessions = max_sessions
 
-    def _resolve_session_id(self, session_id: str) -> Optional[str]:
+    def _resolve_session_id(self, session_id: str) -> str | None:
         """Resolve an exact or unique prefix session ID to a full UUID."""
         if session_id in self._sessions:
             return session_id
@@ -94,7 +92,7 @@ class MaBoSSSessionManager:
                 self._default_session_id = sid
             return sid
 
-    def get_session(self, session_id: Optional[str] = None) -> Optional[MaBoSSSession]:
+    def get_session(self, session_id: str | None = None) -> MaBoSSSession | None:
         with self._lock:
             sid = session_id if session_id is not None else self._default_session_id
             if sid is None:
@@ -107,7 +105,7 @@ class MaBoSSSessionManager:
                 sess.touch()
             return sess
 
-    def list_sessions(self) -> Dict[str, dict]:
+    def list_sessions(self) -> dict[str, dict]:
         with self._lock:
             return {
                 sid: {
@@ -140,7 +138,7 @@ class MaBoSSSessionManager:
                 return True
             return False
 
-    def get_default_session_id(self) -> Optional[str]:
+    def get_default_session_id(self) -> str | None:
         return self._default_session_id
 
 
@@ -151,7 +149,7 @@ class MaBoSSSessionManager:
 session_manager = MaBoSSSessionManager()
 
 
-def ensure_session(session_id: Optional[str] = None) -> MaBoSSSession:
+def ensure_session(session_id: str | None = None) -> MaBoSSSession:
     """Return the requested session, auto-creating a default if none exists."""
     sess = session_manager.get_session(session_id)
     if sess is None:

@@ -4,14 +4,14 @@ Thread-safe, session-based state management for multi-hypothesis workflows.
 """
 
 import json
+import logging
 import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from threading import RLock
-from typing import Any, Dict, List, Optional, Set
-import logging
+from typing import Any
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -40,8 +40,8 @@ class MaBoSSContext:
     model_name: str = ""
     bnd_file_path: str = ""
     cfg_file_path: str = ""
-    available_nodes: List[str] = field(default_factory=list)
-    output_nodes: List[str] = field(default_factory=list)
+    available_nodes: list[str] = field(default_factory=list)
+    output_nodes: list[str] = field(default_factory=list)
     simulation_results: str = ""  # Summary of MaBoSS simulation behavior
     target_cell_type: str = ""  # Which cell type this model targets
     biological_context: str = ""  # Original biological question/context
@@ -50,11 +50,11 @@ class MaBoSSContext:
 class SessionState:
     """Represents the state of a PhysiCell simulation session."""
     session_id: str
-    session_name: Optional[str] = None  # Human-readable name for cross-server linking
-    config: Optional[object] = None  # PhysiCellConfig instance
+    session_name: str | None = None  # Human-readable name for cross-server linking
+    config: object | None = None  # PhysiCellConfig instance
     scenario_context: str = ""
-    maboss_context: Optional[MaBoSSContext] = None  # Context from MaBoSS analysis
-    completed_steps: Set[WorkflowStep] = field(default_factory=set)
+    maboss_context: MaBoSSContext | None = None  # Context from MaBoSS analysis
+    completed_steps: set[WorkflowStep] = field(default_factory=set)
     created_at: float = field(default_factory=time.time)
     last_accessed: float = field(default_factory=time.time)
     substrates_count: int = 0
@@ -68,11 +68,11 @@ class SessionState:
     
     # XML-related fields
     loaded_from_xml: bool = False
-    original_xml_path: Optional[str] = None
+    original_xml_path: str | None = None
     xml_modification_count: int = 0
-    loaded_substrates: List[str] = field(default_factory=list)
-    loaded_cell_types: List[str] = field(default_factory=list)
-    loaded_physiboss_models: List[str] = field(default_factory=list)
+    loaded_substrates: list[str] = field(default_factory=list)
+    loaded_cell_types: list[str] = field(default_factory=list)
+    loaded_physiboss_models: list[str] = field(default_factory=list)
     has_existing_rules: bool = False
     
     def mark_step_complete(self, step: WorkflowStep):
@@ -89,7 +89,7 @@ class SessionState:
         """Check if a workflow step is completed."""
         return step in self.completed_steps
     
-    def get_next_recommended_steps(self) -> List[str]:
+    def get_next_recommended_steps(self) -> list[str]:
         """Get recommended next steps based on current progress."""
         recommendations = []
         
@@ -185,7 +185,7 @@ class SessionState:
     
     def to_dict(self) -> dict:
         """Convert session state to dictionary for serialization."""
-        result: Dict[str, Any] = {
+        result: dict[str, Any] = {
             'session_id': self.session_id,
             'session_name': self.session_name,
             'scenario_context': self.scenario_context,
@@ -220,13 +220,13 @@ class SessionManager:
     """Thread-safe session manager for PhysiCell configurations."""
     
     def __init__(self, max_sessions: int = 10, auto_cleanup_hours: float = 24.0):
-        self._sessions: Dict[str, SessionState] = {}
+        self._sessions: dict[str, SessionState] = {}
         self._lock = RLock()  # RLock allows re-entry (e.g. set_maboss_context -> get_session)
         self._max_sessions = max_sessions
         self._auto_cleanup_hours = auto_cleanup_hours
-        self._default_session_id: Optional[str] = None
+        self._default_session_id: str | None = None
 
-    def _resolve_session_id(self, session_id: str) -> Optional[str]:
+    def _resolve_session_id(self, session_id: str) -> str | None:
         """Resolve an exact or unique prefix session ID to a full UUID."""
         if session_id in self._sessions:
             return session_id
@@ -236,7 +236,7 @@ class SessionManager:
             return matches[0]
         return None
         
-    def create_session(self, set_as_default: bool = True, session_name: Optional[str] = None) -> str:
+    def create_session(self, set_as_default: bool = True, session_name: str | None = None) -> str:
         """Create a new simulation session."""
         with self._lock:
             # Cleanup old sessions if needed
@@ -261,7 +261,7 @@ class SessionManager:
                        (f" ({session_name})" if session_name else ""))
             return session_id
     
-    def get_session(self, session_id: Optional[str] = None) -> Optional[SessionState]:
+    def get_session(self, session_id: str | None = None) -> SessionState | None:
         """Get session by ID, or default session if ID is None."""
         with self._lock:
             if session_id is None:
@@ -279,7 +279,7 @@ class SessionManager:
                 session.last_accessed = time.time()
             return session
     
-    def get_default_session_id(self) -> Optional[str]:
+    def get_default_session_id(self) -> str | None:
         """Get the default session ID."""
         return self._default_session_id
     
@@ -292,7 +292,7 @@ class SessionManager:
                 return True
             return False
     
-    def list_sessions(self) -> List[SessionState]:
+    def list_sessions(self) -> list[SessionState]:
         """List all active sessions."""
         with self._lock:
             return list(self._sessions.values())
@@ -310,7 +310,7 @@ class SessionManager:
                 return True
             return False
     
-    def cleanup_old_sessions(self, max_age_hours: Optional[float] = None) -> int:
+    def cleanup_old_sessions(self, max_age_hours: float | None = None) -> int:
         """Clean up sessions older than specified hours."""
         if max_age_hours is None:
             max_age_hours = self._auto_cleanup_hours
@@ -318,7 +318,7 @@ class SessionManager:
         with self._lock:
             return self._cleanup_old_sessions(max_age_hours * 3600)
 
-    def _cleanup_old_sessions(self, max_age_seconds: Optional[float] = None) -> int:
+    def _cleanup_old_sessions(self, max_age_seconds: float | None = None) -> int:
         """Internal cleanup method (assumes lock is held)."""
         if max_age_seconds is None:
             max_age_seconds = self._auto_cleanup_hours * 3600
@@ -357,8 +357,13 @@ class SessionManager:
             
             logger.info(f"Saved session {resolved_id[:8]}... to {filepath}")
             return True
-        except Exception as e:
-            logger.error(f"Failed to save session {resolved_id[:8]}...: {e}")
+        except (OSError, TypeError, ValueError) as error:
+            logger.error(
+                "Failed to save session %s...: %s",
+                resolved_id[:8],
+                error,
+                exc_info=True,
+            )
             return False
     
     def get_session_stats(self) -> dict:
@@ -386,7 +391,7 @@ class SessionManager:
                 'oldest_session_age_hours': oldest_age
             }
     
-    def set_maboss_context(self, session_id: Optional[str], maboss_context: MaBoSSContext) -> bool:
+    def set_maboss_context(self, session_id: str | None, maboss_context: MaBoSSContext) -> bool:
         """Set MaBoSS context for a session."""
         with self._lock:
             session = self.get_session(session_id)
@@ -396,7 +401,7 @@ class SessionManager:
                 return True
             return False
     
-    def find_session_by_name(self, session_name: str) -> Optional[SessionState]:
+    def find_session_by_name(self, session_name: str) -> SessionState | None:
         """Find session by human-readable name."""
         with self._lock:
             for session in self._sessions.values():
@@ -404,7 +409,7 @@ class SessionManager:
                     return session
             return None
     
-    def get_maboss_context(self, session_id: Optional[str] = None) -> Optional[MaBoSSContext]:
+    def get_maboss_context(self, session_id: str | None = None) -> MaBoSSContext | None:
         """Get MaBoSS context from session."""
         session = self.get_session(session_id)
         return session.maboss_context if session else None
@@ -412,11 +417,11 @@ class SessionManager:
 # Global session manager instance
 session_manager = SessionManager()
 
-def get_current_session(session_id: Optional[str] = None) -> Optional[SessionState]:
+def get_current_session(session_id: str | None = None) -> SessionState | None:
     """Convenience function to get a session by ID, or the current default session."""
     return session_manager.get_session(session_id)
 
-def ensure_session(session_id: Optional[str] = None) -> SessionState:
+def ensure_session(session_id: str | None = None) -> SessionState:
     """Return the requested session, the default session, or create one if none exists."""
     session = session_manager.get_session(session_id)
     if session is None:
@@ -435,8 +440,9 @@ def analyze_and_update_session_from_config(session: SessionState, config):
                 session.loaded_substrates = list(config.substrates.substrate_list.keys())
             elif hasattr(config.substrates, 'get_substrates'):
                 session.loaded_substrates = list(config.substrates.get_substrates().keys())
-    except Exception:
-        pass
+    # PhysiCell-settings objects do not expose a stable exception contract.
+    except Exception:  # noqa: BLE001
+        logger.debug("Could not inspect PhysiCell substrates", exc_info=True)
     session.substrates_count = len(session.loaded_substrates)
 
     # Extract cell types
@@ -447,8 +453,9 @@ def analyze_and_update_session_from_config(session: SessionState, config):
                 session.loaded_cell_types = list(config.cell_types.cell_type_list.keys())
             elif hasattr(config.cell_types, 'get_cell_types'):
                 session.loaded_cell_types = list(config.cell_types.get_cell_types().keys())
-    except Exception:
-        pass
+    # PhysiCell-settings objects do not expose a stable exception contract.
+    except Exception:  # noqa: BLE001
+        logger.debug("Could not inspect PhysiCell cell types", exc_info=True)
     session.cell_types_count = len(session.loaded_cell_types)
 
     # Extract PhysiBoSS models
@@ -460,8 +467,13 @@ def analyze_and_update_session_from_config(session: SessionState, config):
                 hasattr(cell_type.phenotype, 'intracellular') and
                 cell_type.phenotype.intracellular):
                 session.loaded_physiboss_models.append(cell_type_name)
-        except Exception:
-            pass
+        # PhysiCell-settings objects do not expose a stable exception contract.
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "Could not inspect PhysiBoSS model for cell type %s",
+                cell_type_name,
+                exc_info=True,
+            )
     session.physiboss_models_count = len(session.loaded_physiboss_models)
 
     # Check for existing rules
@@ -469,8 +481,9 @@ def analyze_and_update_session_from_config(session: SessionState, config):
     try:
         if hasattr(config, 'cell_rules') and hasattr(config.cell_rules, 'rulesets'):
             session.has_existing_rules = len(config.cell_rules.rulesets) > 0
-    except Exception:
-        pass
+    # PhysiCell-settings objects do not expose a stable exception contract.
+    except Exception:  # noqa: BLE001
+        logger.debug("Could not inspect PhysiCell rules", exc_info=True)
     
     # Mark appropriate steps complete based on loaded content
     if session.substrates_count > 0 or session.cell_types_count > 0:

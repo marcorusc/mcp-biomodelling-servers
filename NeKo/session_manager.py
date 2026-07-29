@@ -6,11 +6,14 @@ Future extensions: TTL cleanup, persistence, concurrent locks per session.
 """
 from __future__ import annotations
 
+import logging
+import time
 import uuid
 from dataclasses import dataclass, field
 from threading import Lock
-from typing import Any, Dict, Optional, Literal, cast
-import time
+from typing import Any, Literal, cast
+
+logger = logging.getLogger(__name__)
 
 # Verbosity levels
 Verbosity = Literal["summary", "preview", "full"]
@@ -57,13 +60,13 @@ class NeKoSession:
     def get_completion_params(self):
         # Map max_len to maxlen argument expected by Network.complete_connection
         params = self.default_params.copy()
-        return dict(
-            maxlen=params.get("max_len", 2),
-            algorithm=params.get("algorithm", "bfs"),
-            only_signed=params.get("only_signed", True),
-            connect_with_bias=params.get("connect_with_bias", False),
-            consensus=params.get("consensus", True)
-        )
+        return {
+            "maxlen": params.get("max_len", 2),
+            "algorithm": params.get("algorithm", "bfs"),
+            "only_signed": params.get("only_signed", True),
+            "connect_with_bias": params.get("connect_with_bias", False),
+            "consensus": params.get("consensus", True),
+        }
 
     def get_edges_df(self):
         """Return cached edges DataFrame (gene symbol converted)."""
@@ -72,7 +75,9 @@ class NeKoSession:
         if self._edges_cache is None or self._edges_cache_dirty:
             try:
                 df = self.network.convert_edgelist_into_genesymbol()
-            except Exception:
+            # NeKo/database adapters do not expose a stable exception contract.
+            except Exception:  # noqa: BLE001
+                logger.debug("Could not build the NeKo edge cache", exc_info=True)
                 df = None
             self._edges_cache = df
             self._edges_cache_dirty = False
@@ -80,12 +85,12 @@ class NeKoSession:
 
 class NeKoSessionManager:
     def __init__(self, max_sessions: int = 15):
-        self._sessions: Dict[str, NeKoSession] = {}
-        self._default_session_id: Optional[str] = None
+        self._sessions: dict[str, NeKoSession] = {}
+        self._default_session_id: str | None = None
         self._lock = Lock()
         self._max_sessions = max_sessions
 
-    def _resolve_session_id(self, session_id: str) -> Optional[str]:
+    def _resolve_session_id(self, session_id: str) -> str | None:
         """Resolve an exact or unique prefix session ID to a full UUID."""
         if session_id in self._sessions:
             return session_id
@@ -107,7 +112,7 @@ class NeKoSessionManager:
                 self._default_session_id = sid
             return sid
 
-    def get_session(self, session_id: Optional[str] = None) -> Optional[NeKoSession]:
+    def get_session(self, session_id: str | None = None) -> NeKoSession | None:
         with self._lock:
             if session_id is None:
                 session_id = self._default_session_id
@@ -121,7 +126,7 @@ class NeKoSessionManager:
                 sess.touch()
             return sess
 
-    def list_sessions(self) -> Dict[str, dict]:
+    def list_sessions(self) -> dict[str, dict]:
         with self._lock:
             return {sid: {"has_network": s.network is not None,
                           "nodes": len(cast(Any, s.network).nodes) if s.network else 0,
@@ -147,12 +152,12 @@ class NeKoSessionManager:
                 return True
             return False
 
-    def get_default_session_id(self) -> Optional[str]:
+    def get_default_session_id(self) -> str | None:
         return self._default_session_id
 
 session_manager = NeKoSessionManager()
 
-def ensure_session(session_id: Optional[str]) -> NeKoSession:
+def ensure_session(session_id: str | None) -> NeKoSession:
     sess = session_manager.get_session(session_id)
     if sess is None:
         # Auto-create a default if none exists yet
@@ -164,7 +169,7 @@ def ensure_session(session_id: Optional[str]) -> NeKoSession:
 
 # Helper for verbosity validation
 
-def normalize_verbosity(v: Optional[str]) -> Verbosity:
+def normalize_verbosity(v: str | None) -> Verbosity:
     if not v:
         return DEFAULT_VERBOSITY
     v_lower = v.lower()
