@@ -64,6 +64,53 @@ mcp = MCPServer(
     version=__version__,
 )
 
+
+def _require_session(session_id: Optional[str] = None) -> SessionState:
+    """Return an existing session or raise an actionable tool error."""
+    session = get_current_session(session_id)
+    if session is not None:
+        return session
+    if session_id is not None:
+        raise ValueError(f"Session not found: {session_id}")
+    raise RuntimeError("No active session. Use `create_session()` first.")
+
+
+def _get_or_create_session(session_id: Optional[str] = None) -> SessionState:
+    """Resolve an explicit session, or create one when no session was requested."""
+    if session_id is not None:
+        return _require_session(session_id)
+    return ensure_session()
+
+
+def _require_configuration(session_id: Optional[str] = None) -> SessionState:
+    """Return a session with a simulation configuration."""
+    session = _require_session(session_id)
+    if session.config is None:
+        raise RuntimeError(
+            "No simulation configured. Use `create_simulation_domain()` first."
+        )
+    return session
+
+
+def _require_loaded_configuration(session_id: Optional[str] = None) -> SessionState:
+    """Return a session containing a configuration loaded from XML."""
+    session = _require_session(session_id)
+    if session.config is None or not session.loaded_from_xml:
+        raise RuntimeError(
+            "No XML configuration loaded. Use `load_xml_configuration()` first."
+        )
+    return session
+
+
+def _require_physiboss() -> None:
+    """Raise when the installed PhysiCell package lacks PhysiBoSS support."""
+    if not PHYSIBOSS_AVAILABLE:
+        raise RuntimeError(
+            "PhysiBoSS support is not available in the installed "
+            "`physicell-settings` package."
+        )
+
+
 # ============================================================================
 # SESSION MANAGEMENT TOOLS
 # ============================================================================
@@ -178,17 +225,18 @@ def set_default_session(
         if len(matching_sessions) == 1:
             session_id = matching_sessions[0].session_id
         elif len(matching_sessions) > 1:
-            return "Error: Ambiguous session ID. Multiple sessions match."
+            raise ValueError(
+                f"Ambiguous session ID: {session_id}. Multiple sessions match."
+            )
         else:
-            return "Error: Session not found."
+            raise ValueError(f"Session not found: {session_id}")
     
     success = session_manager.set_default_session(session_id)
     if success:
         session = session_manager.get_session(session_id)
         progress = session.get_progress_percentage()
         return f"**Switched to session:** {session_id[:8]}... (Progress: {progress:.0f}%)"
-    else:
-        return "Error: Session not found."
+    raise ValueError(f"Session not found: {session_id}")
 
 @mcp.tool()
 def get_workflow_status() -> str:
@@ -214,8 +262,7 @@ def delete_session(
     success = session_manager.delete_session(session_id)
     if success:
         return f"**Session deleted:** {session_id[:8]}..."
-    else:
-        return "Error: Session not found"
+    raise ValueError(f"Session not found: {session_id}")
 
 @mcp.tool()
 def set_maboss_context(
@@ -237,9 +284,7 @@ def set_maboss_context(
     Returns:
         str: Confirmation of context storage.
     """
-    session = get_current_session(session_id)
-    if not session:
-        return "Error: No active session. Use `create_session()` first."
+    session = _require_session(session_id)
     
     maboss_context = MaBoSSContext(
         model_name=model_name,
@@ -277,9 +322,7 @@ def get_maboss_context(
     Returns:
         str: MaBoSS context information, or a message if none is stored.
     """
-    session = get_current_session(session_id)
-    if not session:
-        return "Error: No active session."
+    session = _require_session(session_id)
     
     if not session.maboss_context:
         return "No MaBoSS context available in current session."
@@ -330,50 +373,55 @@ def load_xml_configuration(
     Returns:
         str: Summary of loaded components and next steps.
     """
+    xml_path = Path(filepath)
+    if not xml_path.exists():
+        raise FileNotFoundError(f"PhysiCell XML file not found: {filepath}")
+    if not xml_path.is_file():
+        raise IsADirectoryError(f"PhysiCell XML path is not a file: {filepath}")
+
+    config = PhysiCellConfig()
     try:
-        session = ensure_session(session_id)
-        xml_path = Path(filepath)
-        
-        if not xml_path.exists():
-            return f"File not found: {filepath}"
-        
-        if not xml_path.is_file():
-            return f"Path is not a file: {filepath}"
-        
-        # Create new config and load XML
-        config = PhysiCellConfig()
-        
-        # First validate the XML
         is_valid, error_msg = config.validate_xml_file(str(xml_path))
-        if not is_valid:
-            return f"Invalid XML: {error_msg}"
-        
-        # Load the XML configuration
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not validate PhysiCell XML file '{filepath}': {exc}"
+        ) from exc
+
+    if not is_valid:
+        raise ValueError(f"Invalid PhysiCell XML: {error_msg}")
+
+    try:
         config.load_xml(str(xml_path))
-        session.config = config
-        
-        # Update session state
-        session.loaded_from_xml = True
-        session.original_xml_path = str(xml_path.absolute())
-        session.mark_step_complete(WorkflowStep.XML_LOADED)
-        
-        # Analyze loaded content and update session counters
-        analyze_and_update_session_from_config(session, config)
-        
-        # Concise summary
-        parts = [f"{len(session.loaded_substrates)} substrates"]
-        parts.append(f"{len(session.loaded_cell_types)} cell types")
-        if session.loaded_physiboss_models:
-            parts.append(f"{len(session.loaded_physiboss_models)} PhysiBoSS")
-        if session.has_existing_rules:
-            parts.append("rules")
-        
-        result = f"Loaded {xml_path.name}: {', '.join(parts)}"
-        result += f"\nNext: analyze_loaded_configuration() or start modifying with existing tools"
-        return result
-        
-    except Exception as e:
-        return f"Load error: {str(e)}"
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not load PhysiCell XML file '{filepath}': {exc}"
+        ) from exc
+
+    session = _get_or_create_session(session_id)
+    session.config = config
+
+    # Update session state
+    session.loaded_from_xml = True
+    session.original_xml_path = str(xml_path.absolute())
+    session.mark_step_complete(WorkflowStep.XML_LOADED)
+
+    # Analyze loaded content and update session counters
+    analyze_and_update_session_from_config(session, config)
+
+    # Concise summary
+    parts = [f"{len(session.loaded_substrates)} substrates"]
+    parts.append(f"{len(session.loaded_cell_types)} cell types")
+    if session.loaded_physiboss_models:
+        parts.append(f"{len(session.loaded_physiboss_models)} PhysiBoSS")
+    if session.has_existing_rules:
+        parts.append("rules")
+
+    result = f"Loaded {xml_path.name}: {', '.join(parts)}"
+    result += (
+        "\nNext: analyze_loaded_configuration() or start modifying "
+        "with existing tools"
+    )
+    return result
 
 @mcp.tool()
 def validate_xml_file(
@@ -384,18 +432,23 @@ def validate_xml_file(
     Returns:
         str: Validation result — valid confirmation or error description.
     """
+    xml_path = Path(filepath)
+    if not xml_path.exists():
+        raise FileNotFoundError(f"PhysiCell XML file not found: {filepath}")
+    if not xml_path.is_file():
+        raise IsADirectoryError(f"PhysiCell XML path is not a file: {filepath}")
+
+    config = PhysiCellConfig()
     try:
-        xml_path = Path(filepath)
-        if not xml_path.exists():
-            return f"File not found: {filepath}"
-        
-        config = PhysiCellConfig()
         is_valid, error_msg = config.validate_xml_file(str(xml_path))
-        
-        return f"Valid PhysiCell XML: {xml_path.name}" if is_valid else f"Invalid: {error_msg}"
-            
-    except Exception as e:
-        return f"Validation error: {str(e)}"
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not validate PhysiCell XML file '{filepath}': {exc}"
+        ) from exc
+
+    if is_valid:
+        return f"Valid PhysiCell XML: {xml_path.name}"
+    return f"Invalid: {error_msg}"
 
 @mcp.tool()
 def analyze_loaded_configuration(
@@ -406,9 +459,7 @@ def analyze_loaded_configuration(
     Returns:
         str: Configuration summary (domain, substrates, cell types) with tool hints.
     """
-    session = get_current_session(session_id)
-    if not session or not session.config or not session.loaded_from_xml:
-        return "No XML configuration loaded. Use load_xml_configuration() first."
+    session = _require_loaded_configuration(session_id)
     
     config = session.config
     lines = []
@@ -455,9 +506,7 @@ def list_loaded_components(
     Returns:
         str: Detailed component information with parameter values and tool hints.
     """
-    session = get_current_session(session_id)
-    if not session or not session.config or not session.loaded_from_xml:
-        return "No XML configuration loaded. Use load_xml_configuration() first."
+    session = _require_loaded_configuration(session_id)
     
     config = session.config
     lines = []
@@ -528,9 +577,9 @@ def analyze_biological_scenario(
         str: Confirmation message.
     """
     if not biological_scenario or not biological_scenario.strip():
-        return "Error: Biological scenario description cannot be empty"
+        raise ValueError("Biological scenario description cannot be empty.")
     
-    session = ensure_session(session_id)
+    session = _get_or_create_session(session_id)
     session.scenario_context = biological_scenario.strip()
     session.mark_step_complete(WorkflowStep.SCENARIO_ANALYSIS)
     
@@ -567,22 +616,25 @@ def create_simulation_domain(
     """
     # Basic validation
     if domain_x <= 0 or domain_y <= 0:
-        return "Error: Domain dimensions must be positive"
+        raise ValueError("Domain dimensions must be positive.")
     if dx <= 0:
-        return "Error: Mesh spacing must be positive"
+        raise ValueError("Mesh spacing must be positive.")
     if max_time <= 0:
-        return "Error: Simulation time must be positive"
+        raise ValueError("Simulation time must be positive.")
 
     # Resolve z dimension
     if use_2d:
         domain_z = dx  # one voxel thick
     else:
         if domain_z is None:
-            return "Error: domain_z is required for 3D simulations. Set use_2d=True for a planar simulation."
+            raise ValueError(
+                "domain_z is required for 3D simulations. Set use_2d=True "
+                "for a planar simulation."
+            )
         if domain_z <= 0:
-            return "Error: domain_z must be positive"
+            raise ValueError("domain_z must be positive.")
 
-    session = ensure_session(session_id)
+    session = _get_or_create_session(session_id)
     
     # Create new PhysiCell configuration
     session.config = PhysiCellConfig()
@@ -632,17 +684,15 @@ def add_single_substrate(
     Returns:
         str: Confirmation with substrate parameters and next step.
     """
-    session = get_current_session(session_id)
-    if not session or not session.config:
-        return "Error: Create simulation domain first using create_simulation_domain()"
+    session = _require_configuration(session_id)
     
     # Basic validation
     if not substrate_name or not substrate_name.strip():
-        return "Error: Substrate name cannot be empty"
+        raise ValueError("Substrate name cannot be empty.")
     if diffusion_coefficient < 0:
-        return "Error: Diffusion coefficient must be non-negative"
+        raise ValueError("Diffusion coefficient must be non-negative.")
     if decay_rate < 0:
-        return "Error: Decay rate must be non-negative"
+        raise ValueError("Decay rate must be non-negative.")
     
     if dirichlet_value is None:
         dirichlet_value = initial_condition
@@ -709,13 +759,11 @@ def add_single_cell_type(
     Returns:
         str: Confirmation with cell type details and next step.
     """
-    session = get_current_session(session_id)
-    if not session or not session.config:
-        return "Error: Create simulation domain first using create_simulation_domain()"
+    session = _require_configuration(session_id)
     
     # Basic validation
     if not cell_type_name or not cell_type_name.strip():
-        return "Error: Cell type name cannot be empty"
+        raise ValueError("Cell type name cannot be empty.")
     
     cell_type_name = cell_type_name.strip()
     
@@ -758,9 +806,7 @@ def configure_cell_parameters(
     Returns:
         str: Confirmation with the configured parameter values.
     """
-    session = get_current_session(session_id)
-    if not session or not session.config:
-        return "Error: Create simulation domain first using create_simulation_domain()"
+    session = _require_configuration(session_id)
     
     try:
         # Set volume parameters
@@ -785,8 +831,10 @@ def configure_cell_parameters(
         result += f"- **Death rates:** apoptosis {apoptosis_rate:g}, necrosis {necrosis_rate:g} min⁻¹"
         
         return result
-    except Exception as e:
-        return f"Error configuring cell type '{cell_type}': {str(e)}"
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not configure cell type '{cell_type}': {exc}"
+        ) from exc
 
 @mcp.tool()
 def set_substrate_interaction(
@@ -804,9 +852,7 @@ def set_substrate_interaction(
     Returns:
         str: Confirmation with the configured rates.
     """
-    session = get_current_session(session_id)
-    if not session or not session.config:
-        return "Error: Create simulation domain first using create_simulation_domain()"
+    session = _require_configuration(session_id)
 
     try:
         session.config.cell_types.add_secretion(cell_type, substrate,
@@ -818,8 +864,10 @@ def set_substrate_interaction(
             session.mark_xml_modification()
         
         return f"**Substrate interaction set:** {cell_type} ↔ {substrate} (secretion: {secretion_rate:g}, uptake: {uptake_rate:g} min⁻¹)"
-    except Exception as e:
-        return f"Error setting substrate interaction: {str(e)}"
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not set the substrate interaction: {exc}"
+        ) from exc
 
 # ============================================================================
 # PARAMETER DISCOVERY AND DEFAULTS
@@ -994,23 +1042,21 @@ def add_single_cell_rule(
     Returns:
         str: Confirmation with rule summary and export readiness indicator.
     """
-    session = get_current_session(session_id)
-    if not session or not session.config:
-        return "Error: Create simulation domain first using create_simulation_domain()"
+    session = _require_configuration(session_id)
     
     # Basic validation
     if not cell_type or not cell_type.strip():
-        return "Error: Cell type name cannot be empty"
+        raise ValueError("Cell type name cannot be empty.")
     if not signal or not signal.strip():
-        return "Error: Signal name cannot be empty"
+        raise ValueError("Signal name cannot be empty.")
     if direction not in ['increases', 'decreases']:
-        return "Error: Direction must be 'increases' or 'decreases'"
+        raise ValueError("Direction must be 'increases' or 'decreases'.")
     if not behavior or not behavior.strip():
-        return "Error: Behavior name cannot be empty"
+        raise ValueError("Behavior name cannot be empty.")
     if half_max <= 0:
-        return "Error: Half-max value must be positive"
+        raise ValueError("Half-max value must be positive.")
     if hill_power <= 0:
-        return "Error: Hill power must be positive"
+        raise ValueError("Hill power must be positive.")
     
     # Update context from current config before adding rule
     update_signals_behaviors_context_from_config(session.config)
@@ -1074,12 +1120,8 @@ def add_physiboss_model(
     Returns:
         str: Confirmation with model file paths and next step.
     """
-    session = get_current_session(session_id)
-    if not session or not session.config:
-        return "Error: Create simulation domain first using create_simulation_domain()"
-    
-    if not PHYSIBOSS_AVAILABLE:
-        return "Error: PhysiBoSS module not available in this PhysiCell configuration package"
+    session = _require_configuration(session_id)
+    _require_physiboss()
     
     try:
         # Use direct config.physiboss API (simpler and more reliable)
@@ -1115,8 +1157,8 @@ def add_physiboss_model(
         result += f"**Next step:** Use `configure_physiboss_settings()` to set intracellular parameters."
         
         return result
-    except Exception as e:
-        return f"Error adding PhysiBoSS model: {str(e)}"
+    except Exception as exc:
+        raise RuntimeError(f"Could not add the PhysiBoSS model: {exc}") from exc
 
 @mcp.tool()
 def configure_physiboss_settings(
@@ -1134,12 +1176,8 @@ def configure_physiboss_settings(
     Returns:
         str: Confirmation with the configured settings and next step.
     """
-    session = get_current_session(session_id)
-    if not session or not session.config:
-        return "Error: Create simulation domain first using create_simulation_domain()"
-    
-    if not PHYSIBOSS_AVAILABLE:
-        return "Error: PhysiBoSS module not available in this PhysiCell configuration package"
+    session = _require_configuration(session_id)
+    _require_physiboss()
     
     try:
         # Use direct config.physiboss API (simpler and more reliable)
@@ -1166,8 +1204,10 @@ def configure_physiboss_settings(
         result += f"**Next step:** Use `add_physiboss_input_link()` to connect PhysiCell signals to boolean nodes."
         
         return result
-    except Exception as e:
-        return f"Error configuring PhysiBoSS settings: {str(e)}"
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not configure PhysiBoSS settings: {exc}"
+        ) from exc
 
 @mcp.tool()
 def add_physiboss_input_link(
@@ -1185,12 +1225,8 @@ def add_physiboss_input_link(
     Returns:
         str: Confirmation with link details and next step.
     """
-    session = get_current_session(session_id)
-    if not session or not session.config:
-        return "Error: Create simulation domain first using create_simulation_domain()"
-    
-    if not PHYSIBOSS_AVAILABLE:
-        return "Error: PhysiBoSS module not available in this PhysiCell configuration package"
+    session = _require_configuration(session_id)
+    _require_physiboss()
     
     try:
         # Use direct config.physiboss API (simpler and more reliable)
@@ -1215,8 +1251,10 @@ def add_physiboss_input_link(
         result += f"**Next step:** Use `add_physiboss_output_link()` to connect boolean nodes to cell behaviors."
         
         return result
-    except Exception as e:
-        return f"Error adding PhysiBoSS input link: {str(e)}"
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not add the PhysiBoSS input link: {exc}"
+        ) from exc
 
 @mcp.tool()
 def add_physiboss_output_link(
@@ -1235,12 +1273,8 @@ def add_physiboss_output_link(
     Returns:
         str: Confirmation with link details and next step.
     """
-    session = get_current_session(session_id)
-    if not session or not session.config:
-        return "Error: Create simulation domain first using create_simulation_domain()"
-    
-    if not PHYSIBOSS_AVAILABLE:
-        return "Error: PhysiBoSS module not available in this PhysiCell configuration package"
+    session = _require_configuration(session_id)
+    _require_physiboss()
     
     try:
         # Use direct config.physiboss API (simpler and more reliable)
@@ -1267,8 +1301,10 @@ def add_physiboss_output_link(
         result += f"**Next step:** Use `apply_physiboss_mutation()` for genetic perturbations"
         
         return result
-    except Exception as e:
-        return f"Error adding PhysiBoSS output link: {str(e)}"
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not add the PhysiBoSS output link: {exc}"
+        ) from exc
 
 @mcp.tool()
 def apply_physiboss_mutation(
@@ -1285,12 +1321,8 @@ def apply_physiboss_mutation(
     Returns:
         str: Confirmation of the applied mutation.
     """
-    session = get_current_session(session_id)
-    if not session or not session.config:
-        return "Error: Create simulation domain first using create_simulation_domain()"
-    
-    if not PHYSIBOSS_AVAILABLE:
-        return "Error: PhysiBoSS module not available in this PhysiCell configuration package"
+    session = _require_configuration(session_id)
+    _require_physiboss()
     
     try:
         # Use direct config.physiboss API (simpler and more reliable)
@@ -1309,8 +1341,10 @@ def apply_physiboss_mutation(
         result += f"**Next step:** Apply additional mutations or use `export_xml_configuration()` to finish."
         
         return result
-    except Exception as e:
-        return f"Error applying PhysiBoSS mutation: {str(e)}"
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not apply the PhysiBoSS mutation: {exc}"
+        ) from exc
 
 # ============================================================================
 # UTILITY AND EXPORT TOOLS
@@ -1413,9 +1447,7 @@ def export_xml_configuration(
     Returns:
         str: Export status, file path, and execution instructions.
     """
-    session = get_current_session(session_id)
-    if not session or not session.config:
-        return "**Error:** No simulation configured. Create domain and add components first."
+    session = _require_configuration(session_id)
     
     try:
         # Get simulation info for summary using correct API
@@ -1465,8 +1497,10 @@ def export_xml_configuration(
         
         return result
         
-    except Exception as e:
-        return f"Error exporting XML configuration: {str(e)}"
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not export the PhysiCell XML configuration: {exc}"
+        ) from exc
 
 @mcp.tool()
 def export_cell_rules_csv(
@@ -1481,17 +1515,22 @@ def export_cell_rules_csv(
     Returns:
         str: Export status and file path.
     """
-    session = get_current_session(session_id)
-    if not session or not session.config:
-        return "**Error:** No simulation configured. Create domain and add components first."
-    
+    session = _require_configuration(session_id)
+
     try:
-        # Check rules via CellRulesModule API
         rule_count = len(session.config.cell_rules.get_rules())
-        
-        if rule_count == 0:
-            return "**No cell rules to export**\n\nUse add_single_cell_rule() to create signal-behavior relationships first."
-        
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not inspect the configured cell rules: {exc}"
+        ) from exc
+
+    if rule_count == 0:
+        raise RuntimeError(
+            "No cell rules are available to export. Use "
+            "`add_single_cell_rule()` first."
+        )
+
+    try:
         # Export using the CellRulesModule API to the session artifact directory
         art_dir = get_artifact_dir(_SERVER_ROOT, session.session_id)
         out_path = str(art_dir / filename)
@@ -1515,8 +1554,10 @@ def export_cell_rules_csv(
         
         return result
         
-    except Exception as e:
-        return f"Error exporting cell rules CSV: {str(e)}"
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not export the cell rules CSV: {exc}"
+        ) from exc
 
 # ============================================================================
 # HELPER FUNCTIONS (inspired by NeKo)
@@ -1542,9 +1583,7 @@ def list_generated_files(
     if session_id == "all":
         files = list_artifacts(_SERVER_ROOT, session_id=None)
     else:
-        session = get_current_session(session_id)
-        if session is None:
-            return "**No active session.** Use `create_session()` first."
+        session = _require_session(session_id)
         files = list_artifacts(_SERVER_ROOT, session_id=session.session_id)
 
     xml_files = [f for f in files if str(f).endswith(".xml")]
@@ -1579,15 +1618,15 @@ def clean_generated_files(
     Returns:
         str: Count of files removed.
     """
-    session = get_current_session(session_id)
-    if session is None:
-        return "**No active session.** Use `create_session()` first."
+    session = _require_session(session_id)
 
     try:
         count = clean_artifacts(_SERVER_ROOT, session.session_id)
         return f"**Cleaned {count} artifact file(s)** for session {session.session_id[:8]}..."
-    except Exception as e:
-        return f"Error during cleanup: {str(e)}"
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not clean generated PhysiCell files: {exc}"
+        ) from exc
 
 @mcp.tool()
 def get_help() -> str:
