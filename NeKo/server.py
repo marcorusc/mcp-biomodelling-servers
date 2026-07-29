@@ -129,7 +129,9 @@ async def create_network(
     )
     # Validate database choice
     if database not in ["omnipath", "signor"]:
-        return "_Unsupported database. Use `omnipath` or `signor`._"
+        raise ValueError("Unsupported database. Use `omnipath` or `signor`.")
+    if sif_file is not None and not os.path.isfile(sif_file):
+        raise FileNotFoundError(f"SIF file not found: {sif_file}")
 
     # If using SIGNOR, download and build the SIGNOR resource
     if database == "signor":
@@ -148,14 +150,22 @@ async def create_network(
         try:
             sess.set_network(Network(sif_file=sif_file, resources=resources))
         except Exception as e:
-            return f"**Error**: Unable to create network from SIF file. {str(e)}"
+            raise RuntimeError(
+                f"Unable to create network from SIF file: {e}"
+            ) from e
         # If genes are also provided, add them
         if list_of_initial_genes:
+            failed_genes = []
             for gene in list_of_initial_genes:
                 try:
                     sess.network.add_node(gene)
-                except Exception:
-                    pass
+                except Exception as e:
+                    failed_genes.append(f"{gene}: {e}")
+            if failed_genes:
+                raise RuntimeError(
+                    "Network loaded from the SIF file, but these genes could "
+                    f"not be added: {'; '.join(failed_genes)}"
+                )
     # Case 2: Only genes provided
     elif list_of_initial_genes:
         sess.set_network(Network(list_of_initial_genes, resources=resources))
@@ -173,13 +183,25 @@ async def create_network(
         )
     # Case 3: Neither provided - enhanced guidance
     else:
-        return format_no_input_guidance()
+        raise ValueError(format_no_input_guidance())
 
     # If there are no edges, return enhanced guidance instead of dead-end error
     try:
         df_edges = sess.get_edges_df()
     except Exception as e:
-        return format_network_creation_error("build_failed", list_of_initial_genes, str(e))
+        raise RuntimeError(
+            format_network_creation_error(
+                "build_failed", list_of_initial_genes, str(e)
+            )
+        ) from e
+    if df_edges is None:
+        raise RuntimeError(
+            format_network_creation_error(
+                "build_failed",
+                list_of_initial_genes,
+                "NeKo could not convert the network edge table.",
+            )
+        )
 
     if df_edges.empty:
         logger.warning(
@@ -234,12 +256,20 @@ def add_gene(
                 # Attempt to complete connections again using session defaults
                 params = sess.get_completion_params()
                 network.complete_connection(**params)
-            except Exception:
-                pass
+            except Exception as e:
+                _invalidate(sess)
+                raise RuntimeError(
+                    f"Gene {gene} was added, but autoconnect failed: {e}"
+                ) from e
         _invalidate(sess)
         return f"Gene added: {gene}.{' Autoconnect attempted.' if autoconnect else ''} {SUMMARY_HINT}"
+    except RuntimeError:
+        raise
     except Exception as e:
-        return f"**Error adding gene {gene}:** {str(e)}\n**Tip:** Ensure gene symbol is valid (e.g., 'TP53', not 'tp53')"
+        raise RuntimeError(
+            f"Error adding gene {gene}: {e}\n"
+            "**Tip:** Ensure gene symbol is valid (e.g., 'TP53', not 'tp53')."
+        ) from e
 
 @mcp.tool()
 @requires_network
@@ -254,7 +284,7 @@ def remove_gene(
     try:
         df_nodes = network.nodes if hasattr(network, 'nodes') else None
         if df_nodes is None:
-            return "**Error:** Network node table unavailable."
+            raise RuntimeError("Network node table unavailable.")
 
         # Collect possible identifiers (Genesymbol + Uniprot) for lookup (case-insensitive)
         symbols = set()
@@ -282,15 +312,17 @@ def remove_gene(
             if suggestions:
                 msg += f"\n**Closest / sample nodes:** {', '.join(suggestions)}"
             msg += "\n**Tip:** Use list_genes_and_interactions(verbosity='preview') to inspect current nodes/interactions."
-            return msg
+            raise ValueError(msg)
 
         # Use original casing for removal if stored
         original_name = symbol_map.get(query, gene)
         network.remove_node(original_name)
         _invalidate(sess)
         return f"Gene removed: {original_name}."
+    except ValueError:
+        raise
     except Exception as e:
-        return f"**Error removing gene {gene}:** {str(e)}"
+        raise RuntimeError(f"Error removing gene {gene}: {e}") from e
 
 @mcp.tool()
 @requires_network
@@ -306,9 +338,12 @@ def remove_interaction(
     try:
         df_edges = network.convert_edgelist_into_genesymbol()
     except Exception as e:
-        return f"**Error**: Unable to retrieve network edges. {str(e)}" 
+        raise RuntimeError(f"Unable to retrieve network edges: {e}") from e
     if df_edges.empty:
-        return "_No interactions found in the network._"
+        raise ValueError(
+            "No interactions exist in the network. "
+            "Use list_genes_and_interactions() to inspect it first."
+        )
     # Check if the interaction exists in the specified direction
     mask = (df_edges['source'] == node_A) & (df_edges['target'] == node_B)
     if not df_edges[mask].empty:
@@ -317,9 +352,16 @@ def remove_interaction(
             _invalidate(sess)
             return f"Interaction removed: {node_A}->{node_B}."
         except Exception as e:
-            return f"**Error removing interaction {node_A} -> {node_B}:** {str(e)}"
+            raise RuntimeError(
+                f"Error removing interaction {node_A} -> {node_B}: {e}"
+            ) from e
     else:
-        return f"**Interaction not found:** No interaction from {node_A} to {node_B} in the current network.\n**Tip:** Use `get_network()` to see all available interactions"
+        raise ValueError(
+            f"Interaction not found: no interaction from {node_A} to {node_B} "
+            "in the current network.\n"
+            "**Tip:** Use list_genes_and_interactions() to inspect available "
+            "interactions."
+        )
 
 # TO DO: Implement export of images with graphviz
 
@@ -336,19 +378,23 @@ def export_network(
     BNET export fails if the network is not fully connected — run check_disconnected_nodes() first.
     """
     verbosity = normalize_verbosity(verbosity)
+    export_format = format.lower()
+    if export_format not in {"sif", "bnet"}:
+        raise ValueError(format_unsupported_format_guidance(format))
+
     sess, network = _session_network(session_id)
     if network is None:
-        return format_no_network_guidance()
+        raise RuntimeError(format_no_network_guidance())
     exporter = Exports(network)
     out_dir = _export_dir(sess.session_id)
 
     # ── SIF export ────────────────────────────────────────────────────────────
-    if format.lower() == "sif":
+    if export_format == "sif":
         out_path = str(out_dir / "Network.sif")
         try:
             exporter.export_sif(out_path)
         except Exception as e:
-            return f"**Error exporting SIF:** {e}"
+            raise RuntimeError(f"Error exporting SIF: {e}") from e
         if verbosity == "summary":
             return f"SIF exported: {out_path}. {SUMMARY_HINT}"
         try:
@@ -361,23 +407,23 @@ def export_network(
         return f"SIF exported: `{out_path}`\n\nPreview (first 100 rows):\n{preview_md}"
 
     # ── BNET export ───────────────────────────────────────────────────────────
-    elif format.lower() == "bnet":
+    else:
         if not is_connected(network):
-            return format_connectivity_guidance()
+            raise RuntimeError(format_connectivity_guidance())
         try:
             exporter.export_bnet(str(out_dir / "Network"))
         except Exception as e:
-            return f"**Error exporting BNET:** {e}"
+            raise RuntimeError(f"Error exporting BNET: {e}") from e
 
         bnet_files = sorted(out_dir.glob("*.bnet"))
         if not bnet_files:
-            return "**Error:** No .bnet files were generated."
+            raise FileNotFoundError("No .bnet files were generated.")
         out_path = str(bnet_files[0])
 
         try:
             result = sanitize_bnet_file(out_path)
         except Exception as e:
-            return f"**Error sanitizing BNET:** {e}"
+            raise RuntimeError(f"Error sanitizing BNET: {e}") from e
 
         if verbosity == "summary":
             return f"BNET exported: {out_path}. {SUMMARY_HINT}"
@@ -405,10 +451,6 @@ def export_network(
                             f"{', '.join(sorted(set(result['duplicates_removed'])))}")
         return "\n".join(md_lines)
 
-    # ── Unsupported format ────────────────────────────────────────────────────
-    else:
-        return format_unsupported_format_guidance(format)
-
 @mcp.tool()
 def list_genes_and_interactions(
         session_id: Optional[str] = Field(None, description="Session ID; omit to use the active/default session."),
@@ -421,9 +463,7 @@ def list_genes_and_interactions(
     verbosity = normalize_verbosity(verbosity)
     sess, network = _session_network(session_id)
     if network is None:
-        cols = ["source", "target", "Type", "Effect", "References"]
-        empty_df = pd.DataFrame(columns=cols)
-        return "_No network loaded._\n\n" + clean_for_markdown(empty_df).to_markdown(index=False, tablefmt="plain")
+        raise RuntimeError(E_NO_NET)
 
     try:
         df = sess.get_edges_df()
@@ -438,15 +478,7 @@ def list_genes_and_interactions(
         note = " (truncated)" if truncated else ""
         return table + note
     except Exception as e:
-        # Try to get column headers from a failed conversion (fallback)
-        try:
-            cols = network.convert_edgelist_into_genesymbol().columns
-            if "resources" in cols:
-                cols = [c for c in cols if c != "resources"]
-        except:
-            cols = ["source", "target", "Type", "Effect", "References"]
-        empty_df = pd.DataFrame(columns=cols)
-        return f"**Error**: {str(e)}\n\n_Unable to retrieve data._\n\n" + clean_for_markdown(empty_df).to_markdown(index=False, tablefmt="plain")
+        raise RuntimeError(f"Unable to retrieve network data: {e}") from e
 
 @mcp.tool()
 def find_paths(
@@ -463,17 +495,15 @@ def find_paths(
     verbosity = normalize_verbosity(verbosity)
     sess, network = _session_network(session_id)
     if network is None:
-        return E_NO_NET
+        raise RuntimeError(E_NO_NET)
     buffer = io.StringIO()
     old_stdout = sys.stdout
     try:
         # Redirect stdout to our buffer
         sys.stdout = buffer
         network.print_my_paths(source, target, maxlen=maxlen)
-        sys.stdout = old_stdout  # restore immediately after printing
 
         raw_output = buffer.getvalue().strip()
-        buffer.close()
 
         if not raw_output:
             return "No paths found."
@@ -485,9 +515,10 @@ def find_paths(
         return f"{label}:\n```\n{raw_output}\n```"
 
     except Exception as e:
-        # Ensure stdout is restored even on error
+        raise RuntimeError(f"Unable to find paths: {e}") from e
+    finally:
         sys.stdout = old_stdout
-        return f"**Error:** {str(e)}"
+        buffer.close()
 
 @mcp.tool()
 def reset_network(
@@ -509,7 +540,7 @@ def clean_generated_files(
         count = clean_artifacts(_SERVER_ROOT, sess.session_id)
         return f"Cleaned {count} artifact file(s) from session {sess.session_id}."
     except Exception as e:
-        return f"Error during cleanup: {str(e)}"
+        raise RuntimeError(f"Error during cleanup: {e}") from e
 
 @mcp.tool()
 def remove_bimodal_interactions(
@@ -521,9 +552,9 @@ def remove_bimodal_interactions(
     """
     sess, network = _session_network(session_id)
     if network is None:
-        return E_NO_NET
+        raise RuntimeError(E_NO_NET)
     if "Effect" not in network.edges.columns:
-        return "No 'Effect' column found in network.edges."
+        raise RuntimeError("No 'Effect' column found in network.edges.")
     before = len(network.edges)
     network.remove_bimodal_interactions()
     _invalidate(sess)
@@ -541,9 +572,9 @@ def remove_undefined_interactions(
     """
     sess, network = _session_network(session_id)
     if network is None:
-        return E_NO_NET
+        raise RuntimeError(E_NO_NET)
     if "Effect" not in network.edges.columns:
-        return "No 'Effect' column found in network.edges."
+        raise RuntimeError("No 'Effect' column found in network.edges.")
     before = len(network.edges)
     network.remove_undefined_interactions()
     _invalidate(sess)
@@ -569,7 +600,7 @@ def check_disconnected_nodes(
     """List any nodes in the network that have no edges (isolated nodes)."""
     sess, network = _session_network(session_id)
     if network is None:
-        return E_NO_NET
+        raise RuntimeError(E_NO_NET)
     
     u2s, s2u = _get_translators(network)
     
@@ -606,11 +637,11 @@ def get_references(
     verbosity = normalize_verbosity(verbosity)
     sess, network = _session_network(session_id)
     if network is None:
-        return E_NO_NET
+        raise RuntimeError(E_NO_NET)
     try:
         df = network.convert_edgelist_into_genesymbol()
     except Exception as e:
-        return f"**Error**: Unable to retrieve network edges. {str(e)}"
+        raise RuntimeError(f"Unable to retrieve network edges: {e}") from e
     if df.empty:
         return "_No interactions found in the network._"
     # Filter by node(s)
@@ -653,20 +684,30 @@ def extend_network(
     verbosity = normalize_verbosity(verbosity)
     sess, network = _session_network(session_id)
     if network is None:
-        return E_NO_NET
+        raise RuntimeError(E_NO_NET)
     added = 0
+    failed_genes = []
     for g in genes:
         try:
             network.add_node(g)
             added += 1
-        except Exception:
-            pass
+        except Exception as e:
+            failed_genes.append(f"{g}: {e}")
+    if failed_genes:
+        _invalidate(sess)
+        raise RuntimeError(
+            f"Added {added}/{len(genes)} genes, but these additions failed: "
+            f"{'; '.join(failed_genes)}"
+        )
     if autoconnect:
         try:
             params = sess.get_completion_params()
             network.complete_connection(**params)
-        except Exception:
-            pass
+        except Exception as e:
+            _invalidate(sess)
+            raise RuntimeError(
+                f"Added {added}/{len(genes)} genes, but autoconnect failed: {e}"
+            ) from e
     _invalidate(sess)
     if verbosity == 'summary':
         return f"Added {added}/{len(genes)} genes. {SUMMARY_HINT}"
@@ -702,7 +743,7 @@ def filter_interactions(
     verbosity = normalize_verbosity(verbosity)
     sess, network = _session_network(session_id)
     if network is None:
-        return E_NO_NET
+        raise RuntimeError(E_NO_NET)
     df = sess.get_edges_df()
     if df is None or df.empty:
         return "No interactions." if format != 'json' else "{}"
@@ -783,14 +824,18 @@ def set_default_session(
         session_id: Annotated[str, Field(description="Session ID to make the active default; used when session_id is omitted in subsequent tool calls.")]) -> str:
     """Set the default session used when session_id is omitted in other tool calls."""
     ok = session_manager.set_default(session_id)
-    return "Default set." if ok else "Session not found."
+    if not ok:
+        raise ValueError(f"Session not found: {session_id}")
+    return "Default set."
 
 @mcp.tool()
 def delete_session(
         session_id: Annotated[str, Field(description="Session ID to permanently delete (irreversible).")]) -> str:
     """Permanently delete a session and its in-memory network."""
     ok = session_manager.delete_session(session_id)
-    return "Deleted." if ok else "Session not found."
+    if not ok:
+        raise ValueError(f"Session not found: {session_id}")
+    return "Deleted."
 
 @mcp.tool()
 def status(
@@ -817,7 +862,7 @@ def list_components(
     verbosity = normalize_verbosity(verbosity)
     sess, network = _session_network(session_id)
     if network is None:
-        return E_NO_NET
+        raise RuntimeError(E_NO_NET)
     
     comps = _compute_components(network)
     if not comps:
@@ -869,7 +914,7 @@ def candidate_connectors(
     verbosity = normalize_verbosity(verbosity)
     sess, network = _session_network(session_id)
     if network is None:
-        return E_NO_NET
+        raise RuntimeError(E_NO_NET)
         
     method = method.lower()
     
@@ -933,9 +978,12 @@ def candidate_connectors(
             }]
             
         except Exception as e:
-            return f"Simulation failed: {e}"
+            raise RuntimeError(f"Connector simulation failed: {e}") from e
     else:
-        return "Unsupported method. Please use 'hubs', 'relax_max_len', or 'unsigned'."
+        raise ValueError(
+            "Unsupported connector method. "
+            "Use 'hubs', 'relax_max_len', or 'unsigned'."
+        )
 
     # --- FORMAT OUTPUT ---
     if format == 'json':
@@ -968,7 +1016,8 @@ def bridge_components(
         session_id: Optional[str] = Field(None, description="Session ID.")) -> str:
     """Connect two specific disconnected components or subgroups of genes together."""
     sess, network = _session_network(session_id)
-    if network is None: return E_NO_NET
+    if network is None:
+        raise RuntimeError(E_NO_NET)
     
     params = sess.get_completion_params()
     only_signed = only_signed if only_signed is not None else params.get('only_signed', True)
@@ -989,7 +1038,7 @@ def bridge_components(
         df = sess.get_edges_df()
         return f"Successfully bridged components. Network now has {len(df) if df is not None else 0} edges."
     except Exception as e:
-        return f"Bridging failed: {e}"
+        raise RuntimeError(f"Bridging failed: {e}") from e
 
 @mcp.tool()
 def connect_targeted_nodes(
@@ -1003,7 +1052,8 @@ def connect_targeted_nodes(
         session_id: Optional[str] = None) -> str:
     """Apply strategies targeting specific genes (upstream regulators, dense subgroups, or topological mapping)."""
     sess, network = _session_network(session_id)
-    if network is None: return E_NO_NET
+    if network is None:
+        raise RuntimeError(E_NO_NET)
     
     params = sess.get_completion_params()
     osgn = only_signed if only_signed is not None else params.get('only_signed', True)
@@ -1022,11 +1072,19 @@ def connect_targeted_nodes(
             connect_subgroup(network, group=uniprot_nodes, maxlen=max_len, only_signed=osgn, consensus=cons)
         elif strategy == "connect_as_atopo":
             connect_as_atopo(network, strategy=strategy_mode, max_len=max_len, outputs=uniprot_outputs, only_signed=osgn, consensus=cons)
-            
+        else:
+            raise ValueError(
+                "Unsupported targeted strategy. Use "
+                "'connect_to_upstream_nodes', 'connect_subgroup', or "
+                "'connect_as_atopo'."
+            )
+
         _invalidate(sess)
         return f"Applied {strategy} to targeted nodes."
+    except ValueError:
+        raise
     except Exception as e:
-        return f"Strategy failed: {e}"
+        raise RuntimeError(f"Targeted strategy failed: {e}") from e
 
 @mcp.tool()
 def apply_global_connection(
@@ -1040,7 +1098,8 @@ def apply_global_connection(
         session_id: Optional[str] = None) -> str:
     """Apply a global connection strategy across the entire network to resolve missing edges."""
     sess, network = _session_network(session_id)
-    if network is None: return E_NO_NET
+    if network is None:
+        raise RuntimeError(E_NO_NET)
     
     params = sess.get_completion_params()
     osgn = only_signed if only_signed is not None else params.get('only_signed', True)
@@ -1052,12 +1111,19 @@ def apply_global_connection(
             strategy_complete_connection(network, maxlen=max_len, algorithm=algorithm, minimal=minimal, only_signed=osgn, consensus=cons)
         elif strategy == "connect_network_radially":
             connect_network_radially(network, max_len=max_len, direction=direction, only_signed=osgn, consensus=cons)
-            
+        else:
+            raise ValueError(
+                "Unsupported global strategy. "
+                "Use 'complete_connection' or 'connect_network_radially'."
+            )
+
         _invalidate(sess)
         df = sess.get_edges_df()
         return f"Successfully applied global {strategy}. Edges now = {len(df) if df is not None else 0}."
+    except ValueError:
+        raise
     except Exception as e:
-        return f"Global strategy failed: {e}"
+        raise RuntimeError(f"Global strategy failed: {e}") from e
 
 if __name__ == "__main__":
     mcp.run()

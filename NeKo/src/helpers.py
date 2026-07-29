@@ -35,7 +35,7 @@ from artifact_manager import get_artifact_dir  # noqa: E402
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
-#: Canonical error token returned by any tool that requires a network but finds none.
+#: Canonical error message for tools that require a network but find none.
 E_NO_NET = "E_NO_NET: No network in session. Call create_session() then create_network()."
 
 #: One-line hint appended to summary-verbosity responses.
@@ -93,15 +93,15 @@ def requires_network(fn):
     """Decorator that guards tools requiring an active network.
 
     Injects ``sess`` and ``network`` keyword arguments into the decorated
-    function.  Returns :data:`E_NO_NET` immediately if no network exists in
-    the current session.
+    function. Raises a recoverable tool error if no network exists in the
+    current session.
     """
     @wraps(fn)
     def inner(*args, **kwargs):
         session_id = kwargs.get("session_id")
         sess, network = _session_network(session_id)
         if network is None:
-            return E_NO_NET
+            raise RuntimeError(E_NO_NET)
         kwargs["sess"] = sess
         kwargs["network"] = network
         return fn(*args, **kwargs)
