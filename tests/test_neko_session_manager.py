@@ -1,7 +1,9 @@
 """Unit tests for NeKo/session_manager.py."""
 import importlib.util
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier, Event
 
 import pytest
 
@@ -79,6 +81,31 @@ class TestNeKoSession:
         s._edges_cache_dirty = False
         s.invalidate_edges_cache()
         assert s._edges_cache_dirty is True
+
+    def test_cache_invalidation_waits_for_conversion(self):
+        conversion_started = Event()
+        release_conversion = Event()
+
+        class BlockingNetwork:
+            def convert_edgelist_into_genesymbol(self):
+                conversion_started.set()
+                assert release_conversion.wait(timeout=2)
+                return "converted"
+
+        session = NeKoSession(session_id="s1")
+        session.set_network(BlockingNetwork())
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            conversion = executor.submit(session.get_edges_df)
+            assert conversion_started.wait(timeout=2)
+            invalidation = executor.submit(session.invalidate_edges_cache)
+            assert invalidation.done() is False
+
+            release_conversion.set()
+            assert conversion.result(timeout=2) == "converted"
+            invalidation.result(timeout=2)
+
+        assert session._edges_cache_dirty is True
 
 
 # ---------------------------------------------------------------------------
@@ -164,6 +191,148 @@ class TestNeKoSessionManager:
         assert len(remaining) == 3
         assert sids[2] in remaining
 
+    def test_first_use_creation_is_atomic(self):
+        mgr = self._fresh()
+        start = Barrier(8)
+
+        def resolve_default() -> str:
+            start.wait(timeout=2)
+            return mgr.ensure_session().session_id
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            session_ids = list(
+                executor.map(lambda _: resolve_default(), range(8))
+            )
+
+        assert len(set(session_ids)) == 1
+        assert list(mgr.list_sessions()) == [session_ids[0]]
+
+    def test_create_scope_leases_new_session_atomically(self):
+        mgr = NeKoSessionManager(max_sessions=1)
+
+        with mgr.create_session_scope() as session:
+            assert mgr.get_default_session_id() == session.session_id
+            with pytest.raises(RuntimeError, match="every session is active"):
+                mgr.create_session()
+
+        assert list(mgr.list_sessions()) == [session.session_id]
+
+    def test_same_session_operations_are_serialized(self):
+        mgr = self._fresh()
+        session_id = mgr.create_session()
+        session = mgr.get_session(session_id)
+        assert session is not None
+
+        first_entered = Event()
+        release_first = Event()
+        second_started = Event()
+        second_entered = Event()
+
+        def first_operation() -> None:
+            with mgr.session_scope(session_id):
+                first_entered.set()
+                assert release_first.wait(timeout=2)
+
+        def second_operation() -> None:
+            second_started.set()
+            with mgr.session_scope(session_id):
+                second_entered.set()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first_future = executor.submit(first_operation)
+            assert first_entered.wait(timeout=2)
+            second_future = executor.submit(second_operation)
+            assert second_started.wait(timeout=2)
+
+            with mgr._condition:
+                assert mgr._condition.wait_for(
+                    lambda: session._lease_count == 2,
+                    timeout=2,
+                )
+            assert second_entered.is_set() is False
+
+            release_first.set()
+            first_future.result(timeout=2)
+            second_future.result(timeout=2)
+
+        assert second_entered.is_set()
+
+    def test_different_sessions_operate_concurrently(self):
+        mgr = self._fresh()
+        first_id = mgr.create_session()
+        second_id = mgr.create_session()
+        both_entered = Barrier(2)
+
+        def enter_session(session_id: str) -> None:
+            with mgr.session_scope(session_id):
+                both_entered.wait(timeout=2)
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first_future = executor.submit(enter_session, first_id)
+            second_future = executor.submit(enter_session, second_id)
+            first_future.result(timeout=2)
+            second_future.result(timeout=2)
+
+    def test_delete_waits_for_admitted_operation(self):
+        mgr = self._fresh()
+        session_id = mgr.create_session()
+        session = mgr.get_session(session_id)
+        assert session is not None
+
+        operation_entered = Event()
+        release_operation = Event()
+        retained_session: list[bool] = []
+
+        def active_operation() -> None:
+            with mgr.session_scope(session_id):
+                operation_entered.set()
+                assert release_operation.wait(timeout=2)
+                retained_session.append(
+                    _sm.ensure_session(session_id) is session
+                )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            operation_future = executor.submit(active_operation)
+            assert operation_entered.wait(timeout=2)
+            delete_future = executor.submit(mgr.delete_session, session_id)
+
+            with mgr._condition:
+                assert mgr._condition.wait_for(
+                    lambda: session._retired,
+                    timeout=2,
+                )
+            assert delete_future.done() is False
+
+            release_operation.set()
+            operation_future.result(timeout=2)
+            assert delete_future.result(timeout=2) is True
+
+        assert mgr.get_session(session_id) is None
+        assert retained_session == [True]
+
+    def test_lru_evicts_idle_session_instead_of_active_session(self):
+        mgr = NeKoSessionManager(max_sessions=2)
+        active_id = mgr.create_session()
+        idle_id = mgr.create_session()
+
+        with mgr.session_scope(active_id):
+            replacement_id = mgr.create_session()
+
+        remaining = set(mgr.list_sessions())
+        assert active_id in remaining
+        assert replacement_id in remaining
+        assert idle_id not in remaining
+
+    def test_creation_fails_when_every_session_is_active(self):
+        mgr = NeKoSessionManager(max_sessions=1)
+        session_id = mgr.create_session()
+
+        with mgr.session_scope(session_id):
+            with pytest.raises(RuntimeError, match="every session is active"):
+                mgr.create_session()
+
+        assert list(mgr.list_sessions()) == [session_id]
+
 
 # ---------------------------------------------------------------------------
 # ensure_session
@@ -200,4 +369,3 @@ class TestNormalizeVerbosity:
     @pytest.mark.parametrize("v", [None, "", "invalid", "verbose"])
     def test_invalid_falls_back_to_default(self, v):
         assert normalize_verbosity(v) == DEFAULT_VERBOSITY
-
