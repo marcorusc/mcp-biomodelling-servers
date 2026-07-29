@@ -1,5 +1,6 @@
 import os
 import sys
+import logging
 from pathlib import Path
 from typing import Annotated, Optional, List, Union
 
@@ -13,10 +14,21 @@ import pandas as pd
 from pydantic import Field
 
 from mcp.server.mcpserver import Context, MCPServer, Image
+from mcp.server.mcpserver.exceptions import ResourceNotFoundError
+from mcp_biomodelling_servers import __version__
 from session_manager import session_manager, ensure_session, MaBoSSSession
 from artifact_manager import get_artifact_dir, safe_artifact_path, list_artifacts, clean_artifacts, write_session_meta, list_artifact_sessions as _list_artifact_sessions_on_disk
 
-mcp = MCPServer("MaBoSS")
+logger = logging.getLogger(__name__)
+
+mcp = MCPServer(
+    "MaBoSS",
+    title="MaBoSS Boolean Model Simulator",
+    description=(
+        "Configure, simulate, analyze, and visualize Boolean models with MaBoSS."
+    ),
+    version=__version__,
+)
 
 _SERVER_ROOT = Path(__file__).parent
 
@@ -102,7 +114,9 @@ def resource_network_nodes(session_id: str) -> str:
     """Return the node names for the given session."""
     sess = ensure_session(session_id)
     if sess.sim is None:
-        return "No simulation loaded. Call bnet_to_bnd_and_cfg then build_simulation first."
+        raise ResourceNotFoundError(
+            "No simulation loaded. Call bnet_to_bnd_and_cfg then build_simulation first."
+        )
     nodes_list = list(sess.sim.network.keys())
     if not nodes_list:
         return "No nodes found in the MaBoSS network."
@@ -119,7 +133,9 @@ def resource_parameters(session_id: str) -> str:
     """Return current parameter table for the given session."""
     sess = ensure_session(session_id)
     if sess.sim is None:
-        return "No simulation loaded. Call bnet_to_bnd_and_cfg then build_simulation first."
+        raise ResourceNotFoundError(
+            "No simulation loaded. Call bnet_to_bnd_and_cfg then build_simulation first."
+        )
     df = pd.DataFrame(
         [[k, v] for k, v in sess.sim.param.items()],
         columns=["parameter", "value"],
@@ -137,11 +153,10 @@ def resource_initial_state(session_id: str) -> str:
     """Return the initial state for the given session."""
     sess = ensure_session(session_id)
     if sess.sim is None:
-        return "No simulation loaded. Call bnet_to_bnd_and_cfg then build_simulation first."
-    try:
-        return str(sess.sim.network.get_istate())
-    except Exception as e:
-        return f"Error retrieving initial state: {e}"
+        raise ResourceNotFoundError(
+            "No simulation loaded. Call bnet_to_bnd_and_cfg then build_simulation first."
+        )
+    return str(sess.sim.network.get_istate())
 
 
 @mcp.resource(
@@ -154,11 +169,10 @@ def resource_logical_rules(session_id: str) -> str:
     """Return the logical rules for the given session."""
     sess = ensure_session(session_id)
     if sess.sim is None:
-        return "No simulation loaded. Call bnet_to_bnd_and_cfg then build_simulation first."
-    try:
-        return str(sess.sim.get_logical_rules())
-    except Exception as e:
-        return f"Error retrieving logical rules: {e}"
+        raise ResourceNotFoundError(
+            "No simulation loaded. Call bnet_to_bnd_and_cfg then build_simulation first."
+        )
+    return str(sess.sim.get_logical_rules())
 
 
 @mcp.resource(
@@ -171,11 +185,10 @@ def resource_mutations(session_id: str) -> str:
     """Return mutation settings for the given session."""
     sess = ensure_session(session_id)
     if sess.sim is None:
-        return "No simulation loaded. Call bnet_to_bnd_and_cfg then build_simulation first."
-    try:
-        return str(sess.sim.get_mutations())
-    except Exception as e:
-        return f"Error retrieving mutations: {e}"
+        raise ResourceNotFoundError(
+            "No simulation loaded. Call bnet_to_bnd_and_cfg then build_simulation first."
+        )
+    return str(sess.sim.get_mutations())
 
 
 @mcp.resource(
@@ -193,20 +206,19 @@ def resource_simulation_result(session_id: str) -> str:
     """Return the last simulation result for the given session."""
     sess = ensure_session(session_id)
     if sess.result is None:
-        return "_No simulation has been run yet. Call run_simulation first._"
-    try:
-        df_prob = sess.result.get_last_states_probtraj()
-        if df_prob.empty:
-            return "_Simulation completed but returned no trajectory data._"
-        df_prob = clean_for_markdown(df_prob)
-        md_table = df_prob.to_markdown(index=False, tablefmt="plain")
-        return "\n".join([
-            "**MaBoSS Simulation: State Probability Trajectory**",
-            "",
-            md_table,
-        ])
-    except Exception as e:
-        return f"**Error retrieving simulation result:** {e}"
+        raise ResourceNotFoundError(
+            "No simulation has been run yet. Call run_simulation first."
+        )
+    df_prob = sess.result.get_last_states_probtraj()
+    if df_prob.empty:
+        return "_Simulation completed but returned no trajectory data._"
+    df_prob = clean_for_markdown(df_prob)
+    md_table = df_prob.to_markdown(index=False, tablefmt="plain")
+    return "\n".join([
+        "**MaBoSS Simulation: State Probability Trajectory**",
+        "",
+        md_table,
+    ])
 
 
 @mcp.resource(
@@ -304,7 +316,7 @@ def set_default_session(
     """Set the default (active) MaBoSS session used when session_id is omitted in other tools."""
     if session_manager.set_default(session_id):
         return f"Default session set to: {session_id}"
-    return f"Session not found: {session_id}"
+    raise ValueError(f"Session not found: {session_id}")
 
 
 @mcp.tool()
@@ -323,7 +335,7 @@ def delete_session(
         return f"Session {session_id} deleted." + (
             f" Removed {removed_files} artifact file(s)." if clean_files else ""
         )
-    return f"Session not found: {session_id}"
+    raise ValueError(f"Session not found: {session_id}")
 
 
 # ---------------------------------------------------------------------------
@@ -350,18 +362,20 @@ async def bnet_to_bnd_and_cfg(
     bnd_out = str(safe_artifact_path(art_dir, "output.bnd"))
     cfg_out = str(safe_artifact_path(art_dir, "output.cfg"))
 
-    await ctx.info(f"Converting {bnet_path} -> {bnd_out}, {cfg_out}")
+    logger.info("Converting %s -> %s, %s", bnet_path, bnd_out, cfg_out)
     try:
         maboss.bnet_to_bnd_and_cfg(bnet_path, bnd_out, cfg_out)
     except Exception as e:
-        await ctx.error(f"bnet_to_bnd_and_cfg failed: {e}")
-        return f"Error converting .bnet file: {e}"
+        logger.exception("bnet_to_bnd_and_cfg failed")
+        raise RuntimeError(f"Error converting .bnet file: {e}") from e
 
     for path, label in [(bnd_out, "BND"), (cfg_out, "CFG")]:
         if not os.path.exists(path):
-            return f"Error: expected {label} file was not created at {path}."
+            raise FileNotFoundError(
+                f"Expected {label} file was not created at {path}."
+            )
 
-    await ctx.info(f"BND and CFG files created: {bnd_out}, {cfg_out}")
+    logger.info("BND and CFG files created: %s, %s", bnd_out, cfg_out)
     return (
         f"MaBoSS .bnd and .cfg files created successfully.\n"
         f"  BND: {bnd_out}\n"
@@ -401,17 +415,17 @@ async def build_simulation(
     if cfg_path is None:
         cfg_path = str(art_dir / "output.cfg")
 
-    await ctx.info(f"Loading MaBoSS simulation: BND={bnd_path}  CFG={cfg_path}")
+    logger.info("Loading MaBoSS simulation: BND=%s CFG=%s", bnd_path, cfg_path)
 
     try:
         loaded_sim = maboss.load(bnd_path, cfg_path)
     except Exception as e:
-        await ctx.error(f"Failed to load simulation: {e}")
-        return f"Error loading MaBoSS simulation: {e}"
+        logger.exception("Failed to load simulation")
+        raise RuntimeError(f"Error loading MaBoSS simulation: {e}") from e
 
     if loaded_sim:
         sess.set_simulation(loaded_sim, bnd_path, cfg_path)
-        await ctx.info("MaBoSS simulation loaded successfully.")
+        logger.info("MaBoSS simulation loaded successfully")
         parameters_str = "\n".join(f"{k}: {v}" for k, v in loaded_sim.param.items())
         return (
             f"MaBoSS simulation loaded successfully.\n{parameters_str}\n\n"
@@ -419,8 +433,10 @@ async def build_simulation(
             f"names before calling set_maboss_output_nodes() or set_maboss_initial_state()."
         )
     else:
-        await ctx.error("maboss.load returned None.")
-        return "Error: maboss.load returned None. Check the BND and CFG files."
+        logger.error("maboss.load returned None")
+        raise RuntimeError(
+            "maboss.load returned None. Check the BND and CFG files."
+        )
 
 
 @mcp.tool()
@@ -442,10 +458,13 @@ async def run_simulation(
     """
     sess = ensure_session(session_id)
     if sess.sim is None:
-        return "No MaBoSS simulation has been built yet. Call bnet_to_bnd_and_cfg then build_simulation first."
+        raise RuntimeError(
+            "No MaBoSS simulation has been built yet. "
+            "Call bnet_to_bnd_and_cfg then build_simulation first."
+        )
     try:
         await ctx.report_progress(0, 2)
-        await ctx.info("Running MaBoSS simulation...")
+        logger.info("Running MaBoSS simulation")
         run_result = sess.sim.run()
         sess.set_result(run_result)
 
@@ -456,20 +475,20 @@ async def run_simulation(
             df_result = run_result.get_last_states_probtraj()
             if not df_result.empty:
                 df_result.to_csv(csv_path, index=False)
-                await ctx.info(f"Result saved to {csv_path}")
+                logger.info("Result saved to %s", csv_path)
         except Exception as csv_err:
-            await ctx.warning(f"Could not save result CSV: {csv_err}")
+            logger.warning("Could not save result CSV: %s", csv_err, exc_info=True)
 
         await ctx.report_progress(2, 2)
-        await ctx.info("MaBoSS simulation completed successfully.")
+        logger.info("MaBoSS simulation completed successfully")
         return (
             f"MaBoSS simulation completed successfully.\n"
             f"Call `get_simulation_result()` to read the state probability table.\n"
             f"The result is also saved to the session artifact directory as result.csv."
         )
     except Exception as e:
-        await ctx.error(f"Error during MaBoSS simulation run: {str(e)}")
-        return f"Error during MaBoSS simulation run: {str(e)}"
+        logger.exception("Error during MaBoSS simulation run")
+        raise RuntimeError(f"Error during MaBoSS simulation run: {e}") from e
 
 @mcp.tool()
 async def export_maboss_bnd_cfg(
@@ -496,12 +515,14 @@ async def export_maboss_bnd_cfg(
     """
     sess = ensure_session(session_id)
     if sess.sim is None:
-        return "No MaBoSS simulation has been built yet. Call build_simulation first."
+        raise RuntimeError(
+            "No MaBoSS simulation has been built yet. Call build_simulation first."
+        )
 
     try:
         prefix = (prefix or "").strip()
         if not prefix:
-            return "Invalid prefix. Must be a non-empty string."
+            raise ValueError("Invalid prefix. Must be a non-empty string.")
 
         # Optionally normalize prefix a bit (avoid spaces)
         prefix = prefix.replace(" ", "_")
@@ -516,12 +537,12 @@ async def export_maboss_bnd_cfg(
         if not overwrite:
             for p in (bnd_out, cfg_out):
                 if os.path.exists(p):
-                    return (
+                    raise FileExistsError(
                         f"Refusing to overwrite existing file: {p}\n"
                         f"Choose a different prefix or set overwrite=True."
                     )
 
-        await ctx.info(f"Exporting MaBoSS model -> {bnd_out}, {cfg_out}")
+        logger.info("Exporting MaBoSS model -> %s, %s", bnd_out, cfg_out)
 
         # Write .bnd
         with open(bnd_out, "w") as fbnd:
@@ -534,18 +555,22 @@ async def export_maboss_bnd_cfg(
         # Sanity check
         for path, label in [(bnd_out, "BND"), (cfg_out, "CFG")]:
             if not os.path.exists(path):
-                return f"Error: expected {label} file was not created at {path}."
+                raise FileNotFoundError(
+                    f"Expected {label} file was not created at {path}."
+                )
 
-        await ctx.info(f"Export complete: {bnd_out}, {cfg_out}")
+        logger.info("Export complete: %s, %s", bnd_out, cfg_out)
         return (
             f"Exported current MaBoSS model successfully.\n"
             f"  BND: {bnd_out}\n"
             f"  CFG: {cfg_out}"
         )
 
+    except (ValueError, FileExistsError, FileNotFoundError):
+        raise
     except Exception as e:
-        await ctx.error(f"Error exporting MaBoSS model: {str(e)}")
-        return f"Error exporting MaBoSS model: {str(e)}"
+        logger.exception("Error exporting MaBoSS model")
+        raise RuntimeError(f"Error exporting MaBoSS model: {e}") from e
 
 
 # ---------------------------------------------------------------------------
@@ -566,7 +591,9 @@ def get_maboss_nodes(
     """
     sess = ensure_session(session_id)
     if sess.sim is None:
-        return "No simulation loaded. Call bnet_to_bnd_and_cfg then build_simulation first."
+        raise RuntimeError(
+            "No simulation loaded. Call bnet_to_bnd_and_cfg then build_simulation first."
+        )
     nodes_list = list(sess.sim.network.keys())
     if not nodes_list:
         return "No nodes found in the MaBoSS network."
@@ -586,11 +613,13 @@ def get_maboss_initial_state(
     """
     sess = ensure_session(session_id)
     if sess.sim is None:
-        return "No simulation loaded. Call bnet_to_bnd_and_cfg then build_simulation first."
+        raise RuntimeError(
+            "No simulation loaded. Call bnet_to_bnd_and_cfg then build_simulation first."
+        )
     try:
         return f"Initial state:\n{sess.sim.network.get_istate()}"
     except Exception as e:
-        return f"Error retrieving initial state: {e}"
+        raise RuntimeError(f"Error retrieving initial state: {e}") from e
 
 @mcp.tool()
 def get_maboss_logical_rules(
@@ -602,11 +631,13 @@ def get_maboss_logical_rules(
     """Return the Boolean logical rules of the loaded MaBoSS network."""
     sess = ensure_session(session_id)
     if sess.sim is None:
-        return "No simulation loaded. Call bnet_to_bnd_and_cfg then build_simulation first."
+        raise RuntimeError(
+            "No simulation loaded. Call bnet_to_bnd_and_cfg then build_simulation first."
+        )
     try:
         return str(sess.sim.get_logical_rules())
     except Exception as e:
-        return f"Error retrieving logical rules: {e}"
+        raise RuntimeError(f"Error retrieving logical rules: {e}") from e
 
 
 @mcp.tool()
@@ -626,17 +657,17 @@ async def change_maboss_rule(
     """
     sess = ensure_session(session_id)
     if sess.sim is None:
-        return (
+        raise RuntimeError(
             "No MaBoSS simulation has been built yet. "
             "Call bnet_to_bnd_and_cfg then build_simulation first."
         )
 
     try:
         if not isinstance(node, str) or not node.strip():
-            return "Invalid node name. Must be a non-empty string."
+            raise ValueError("Invalid node name. Must be a non-empty string.")
 
         if not isinstance(new_rule, str) or not new_rule.strip():
-            return "Invalid new_rule. Must be a non-empty string."
+            raise ValueError("Invalid new_rule. Must be a non-empty string.")
 
         node = node.strip()
         new_rule = new_rule.strip()
@@ -647,16 +678,16 @@ async def change_maboss_rule(
         except Exception:
             try:
                 available_nodes = list(sess.sim.network.keys())
-                return (
-                    f"Unknown node '{node}'. "
-                    f"Available nodes: {', '.join(available_nodes)}"
-                )
             except Exception:
-                return f"Unknown node '{node}'."
+                raise ValueError(f"Unknown node '{node}'.")
+            raise ValueError(
+                f"Unknown node '{node}'. "
+                f"Available nodes: {', '.join(available_nodes)}"
+            )
 
         # Save previous rule
         old_rule = target_node.logExp
-        await ctx.info(f"Previous rule for {node}: {old_rule}")
+        logger.info("Previous rule for %s: %s", node, old_rule)
 
         # Apply new rule
         target_node.logExp = new_rule
@@ -666,37 +697,41 @@ async def change_maboss_rule(
             check_result = sess.sim.check()
         except Exception as check_exc:
             target_node.logExp = old_rule
-            await ctx.error(
-                f"Validation failed unexpectedly after updating {node}: {check_exc}"
+            logger.exception(
+                "Validation failed unexpectedly after updating %s", node
             )
-            return (
+            raise RuntimeError(
                 f"Rule change aborted for '{node}'. "
                 f"Validation could not be completed: {check_exc}"
-            )
+            ) from check_exc
 
         if check_result:
             # pyMaBoSS may return parser/check errors as a non-empty result
             target_node.logExp = old_rule
-            await ctx.error(
-                f"Invalid rule for {node}. Change reverted. Errors: {check_result}"
+            logger.error(
+                "Invalid rule for %s. Change reverted. Errors: %s",
+                node,
+                check_result,
             )
-            return (
+            raise ValueError(
                 f"Rule change rejected for '{node}'. The previous rule has been restored.\n"
                 f"Previous rule: {old_rule}\n"
                 f"Proposed rule: {new_rule}\n"
                 f"Validation errors: {check_result}"
             )
 
-        await ctx.info(f"Updated rule for {node}: {target_node.logExp}")
+        logger.info("Updated rule for %s: %s", node, target_node.logExp)
         return (
             f"Rule changed successfully for '{node}'.\n"
             f"Previous rule: {old_rule}\n"
             f"New rule: {target_node.logExp}"
         )
 
+    except (ValueError, RuntimeError):
+        raise
     except Exception as e:
-        await ctx.error(f"Error changing MaBoSS rule: {str(e)}")
-        return f"Error changing MaBoSS rule: {str(e)}"
+        logger.exception("Error changing MaBoSS rule")
+        raise RuntimeError(f"Error changing MaBoSS rule: {e}") from e
 
 
 @mcp.tool()
@@ -709,11 +744,13 @@ def get_maboss_mutations(
     """Return the mutation settings currently applied to the MaBoSS network."""
     sess = ensure_session(session_id)
     if sess.sim is None:
-        return "No simulation loaded. Call bnet_to_bnd_and_cfg then build_simulation first."
+        raise RuntimeError(
+            "No simulation loaded. Call bnet_to_bnd_and_cfg then build_simulation first."
+        )
     try:
         return str(sess.sim.get_mutations())
     except Exception as e:
-        return f"Error retrieving mutations: {e}"
+        raise RuntimeError(f"Error retrieving mutations: {e}") from e
 
 
 # ---------------------------------------------------------------------------
@@ -744,7 +781,10 @@ async def update_maboss_parameters(
     """
     sess = ensure_session(session_id)
     if sess.sim is None:
-        return "No MaBoSS simulation has been built yet. Call bnet_to_bnd_and_cfg then build_simulation first."
+        raise RuntimeError(
+            "No MaBoSS simulation has been built yet. "
+            "Call bnet_to_bnd_and_cfg then build_simulation first."
+        )
     try:
         if not parameters:
             df = pd.DataFrame(
@@ -759,18 +799,20 @@ async def update_maboss_parameters(
         allowed = set(sess.sim.param.keys())
         unknown = [k for k in parameters.keys() if k not in allowed]
         if unknown:
-            return (
+            raise ValueError(
                 "Unsupported parameter(s): " + ", ".join(unknown) +
                 "\nCall update_maboss_parameters with no arguments to list valid keys."
             )
         for key, value in parameters.items():
             sess.sim.param[key] = value
-        await ctx.info(f"MaBoSS parameters updated: {parameters}")
+        logger.info("MaBoSS parameters updated: %s", parameters)
         summary = ", ".join(f"{k}={v}" for k, v in parameters.items())
         return f"Parameters updated: {summary}"
+    except ValueError:
+        raise
     except Exception as e:
-        await ctx.error(f"Error updating MaBoSS parameters: {str(e)}")
-        return f"Error updating MaBoSS parameters: {str(e)}"
+        logger.exception("Error updating MaBoSS parameters")
+        raise RuntimeError(f"Error updating MaBoSS parameters: {e}") from e
 
 
 @mcp.tool()
@@ -789,15 +831,18 @@ async def set_maboss_output_nodes(
     """
     sess = ensure_session(session_id)
     if sess.sim is None:
-        return "No MaBoSS simulation has been built yet. Call bnet_to_bnd_and_cfg then build_simulation first."
+        raise RuntimeError(
+            "No MaBoSS simulation has been built yet. "
+            "Call bnet_to_bnd_and_cfg then build_simulation first."
+        )
     try:
-        await ctx.info(f"Previous output nodes: {sess.sim.network.get_output()}")
+        logger.info("Previous output nodes: %s", sess.sim.network.get_output())
         sess.sim.network.set_output(output_nodes)
-        await ctx.info(f"Updated output nodes: {sess.sim.network.get_output()}")
+        logger.info("Updated output nodes: %s", sess.sim.network.get_output())
         return f"Output nodes set successfully: {sess.sim.network.get_output()}"
     except Exception as e:
-        await ctx.error(f"Error setting MaBoSS output nodes: {str(e)}")
-        return f"Error setting MaBoSS output nodes: {str(e)}"
+        logger.exception("Error setting MaBoSS output nodes")
+        raise RuntimeError(f"Error setting MaBoSS output nodes: {e}") from e
 
 
 @mcp.tool()
@@ -833,29 +878,39 @@ async def set_maboss_initial_state(
     """
     sess = ensure_session(session_id)
     if sess.sim is None:
-        return "No MaBoSS simulation has been built yet. Call bnet_to_bnd_and_cfg then build_simulation first."
+        raise RuntimeError(
+            "No MaBoSS simulation has been built yet. "
+            "Call bnet_to_bnd_and_cfg then build_simulation first."
+        )
     try:
         if isinstance(nodes, str):
             node_arg = nodes
         elif isinstance(nodes, (list, tuple)):
             node_arg = list(nodes)
         else:
-            return "Invalid type for 'nodes'. Must be str or list of str."
+            raise ValueError("Invalid type for 'nodes'. Must be str or list of str.")
 
         if isinstance(node_arg, str):
             if not isinstance(probDict, (list, dict)):
-                return "For a single node, probDict must be a list or dict."
+                raise ValueError(
+                    "For a single node, probDict must be a list or dict."
+                )
         elif isinstance(node_arg, list):
             if not isinstance(probDict, dict):
-                return "For multiple nodes, probDict must be a dict mapping tuples to probabilities."
+                raise ValueError(
+                    "For multiple nodes, probDict must be a dict mapping "
+                    "tuples to probabilities."
+                )
 
-        await ctx.info(f"Previous initial state: {sess.sim.network.get_istate()}")
+        logger.info("Previous initial state: %s", sess.sim.network.get_istate())
         sess.sim.network.set_istate(node_arg, probDict)
-        await ctx.info(f"Updated initial state: {sess.sim.network.get_istate()}")
+        logger.info("Updated initial state: %s", sess.sim.network.get_istate())
         return f"Initial state set: {sess.sim.network.get_istate()}"
+    except ValueError:
+        raise
     except Exception as e:
-        await ctx.error(f"Error setting MaBoSS initial state: {str(e)}")
-        return f"Error setting MaBoSS initial state: {str(e)}"
+        logger.exception("Error setting MaBoSS initial state")
+        raise RuntimeError(f"Error setting MaBoSS initial state: {e}") from e
 
 
 # ---------------------------------------------------------------------------
@@ -893,10 +948,13 @@ async def simulate_mutation(
     """
     sess = ensure_session(session_id)
     if sess.sim is None:
-        return "No MaBoSS simulation has been built yet. Call bnet_to_bnd_and_cfg then build_simulation first."
+        raise RuntimeError(
+            "No MaBoSS simulation has been built yet. "
+            "Call bnet_to_bnd_and_cfg then build_simulation first."
+        )
     try:
         await ctx.report_progress(0, 3)
-        await ctx.info("Running mutant simulation...")
+        logger.info("Running mutant simulation")
         mutated_simulation = sess.sim.copy()
 
         node_list = [nodes] if isinstance(nodes, str) else list(nodes)
@@ -906,17 +964,19 @@ async def simulate_mutation(
         else:
             state_list = list(state)
             if len(state_list) != len(node_list):
-                return "Length of 'state' must match length of 'nodes'."
+                raise ValueError("Length of 'state' must match length of 'nodes'.")
 
         valid_states = {"ON", "OFF", "WT"}
         for s in state_list:
             if s not in valid_states:
-                return f"Invalid mutation state '{s}'. Must be one of {valid_states}."
+                raise ValueError(
+                    f"Invalid mutation state '{s}'. Must be one of {valid_states}."
+                )
 
         await ctx.report_progress(1, 3)
         for node, s in zip(node_list, state_list):
             mutated_simulation.mutate(node, s)
-            await ctx.info(f"Applied mutation: {node} -> {s}")
+            logger.info("Applied mutation: %s -> %s", node, s)
 
         mut_result = mutated_simulation.run()
         await ctx.report_progress(2, 3)
@@ -935,9 +995,11 @@ async def simulate_mutation(
             "",
             md_table,
         ])
+    except ValueError:
+        raise
     except Exception as e:
-        await ctx.error(f"Error running mutant simulation: {str(e)}")
-        return f"Error running mutant simulation: {str(e)}"
+        logger.exception("Error running mutant simulation")
+        raise RuntimeError(f"Error running mutant simulation: {e}") from e
 
 
 @mcp.tool()
@@ -946,11 +1008,13 @@ async def visualize_network_trajectories(
     session_id: Optional[str] = None,
 ) -> list: # Changed return type to list to support multiple content types
     """Plot network state trajectories and return the image for visualization."""
-    await ctx.info("Visualizing network trajectories...")
+    logger.info("Visualizing network trajectories")
     sess = ensure_session(session_id)
     
     if sess.result is None:
-        return ["No simulation has been run yet. Call run_simulation first."]
+        raise RuntimeError(
+            "No simulation has been run yet. Call run_simulation first."
+        )
     
     try:
         fig = sess.result.plot_trajectory()
@@ -967,7 +1031,7 @@ async def visualize_network_trajectories(
         fig.savefig(buf, format="png")
         plt.close(fig)
         
-        await ctx.info(f"Trajectory plot saved to {output_path}")
+        logger.info("Trajectory plot saved to %s", output_path)
 
         # 3. Return BOTH the text description and the Image object
         return [
@@ -976,8 +1040,8 @@ async def visualize_network_trajectories(
         ]
         
     except Exception as e:
-        await ctx.error(f"Error saving trajectory plot: {str(e)}")
-        return [f"Error saving trajectory plot: {str(e)}"]
+        logger.exception("Error saving trajectory plot")
+        raise RuntimeError(f"Error saving trajectory plot: {e}") from e
 
 
 @mcp.tool()
@@ -995,7 +1059,9 @@ def get_simulation_result(
     """
     sess = ensure_session(session_id)
     if sess.result is None:
-        return "No simulation has been run yet. Call run_simulation() first."
+        raise RuntimeError(
+            "No simulation has been run yet. Call run_simulation() first."
+        )
     try:
         df_prob = sess.result.get_last_states_probtraj()
         if df_prob.empty:
@@ -1008,7 +1074,7 @@ def get_simulation_result(
             md_table,
         ])
     except Exception as e:
-        return f"**Error retrieving simulation result:** {e}"
+        raise RuntimeError(f"Error retrieving simulation result: {e}") from e
 
 
 # ---------------------------------------------------------------------------
@@ -1049,11 +1115,15 @@ async def clean_generated_files(
     sess = ensure_session(session_id)
     try:
         count = clean_artifacts(_SERVER_ROOT, sess.session_id)
-        await ctx.info(f"Cleaned {count} artifact file(s) for session {sess.session_id}.")
+        logger.info(
+            "Cleaned %s artifact file(s) for session %s",
+            count,
+            sess.session_id,
+        )
         return f"Removed {count} artifact file(s) for session {sess.session_id}."
     except Exception as e:
-        await ctx.error(f"Error during cleanup: {str(e)}")
-        return f"Error during cleanup: {str(e)}"
+        logger.exception("Error during cleanup")
+        raise RuntimeError(f"Error during cleanup: {e}") from e
 
 
 # ---------------------------------------------------------------------------

@@ -25,6 +25,7 @@ sys.path.insert(0, str(current_dir))
 # Make repo root importable for shared artifact_manager
 sys.path.insert(0, str(current_dir.parent))
 from artifact_manager import get_artifact_dir, list_artifacts, clean_artifacts, write_session_meta, list_artifact_sessions as _list_artifact_sessions_on_disk
+from mcp_biomodelling_servers import __version__
 
 _SERVER_ROOT = current_dir
 
@@ -54,7 +55,14 @@ from session_manager import (
 
 from mcp.server.mcpserver import Context, MCPServer
 
-mcp = MCPServer("PhysiCell")
+mcp = MCPServer(
+    "PhysiCell",
+    title="PhysiCell Configuration Builder",
+    description=(
+        "Create, inspect, and export PhysiCell simulation configuration files."
+    ),
+    version=__version__,
+)
 
 # ============================================================================
 # SESSION MANAGEMENT TOOLS

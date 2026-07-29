@@ -22,6 +22,7 @@ from session_manager import session_manager, ensure_session, normalize_verbosity
 # Make the repo root importable so we can use the shared artifact_manager
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from artifact_manager import get_artifact_dir, safe_artifact_path, list_artifacts, clean_artifacts, write_session_meta, list_artifact_sessions as _list_artifact_sessions_on_disk
+from mcp_biomodelling_servers import __version__
 
 from src.helpers import (
     E_NO_NET, SUMMARY_HINT, _SERVER_ROOT,
@@ -43,7 +44,16 @@ import pandas as pd
 
 from mcp.server.mcpserver import Context, MCPServer
 
-mcp = MCPServer("NeKo")
+logger = logging.getLogger(__name__)
+
+mcp = MCPServer(
+    "NeKo",
+    title="NeKo Signalling Network Builder",
+    description=(
+        "Build and analyze signalling networks from biological interaction databases."
+    ),
+    version=__version__,
+)
 
 # NOTE: Previous implementation used a single global `network` object.
 # Now session-based management (see `session_manager.py`).
@@ -111,17 +121,22 @@ async def create_network(
     verbosity = normalize_verbosity(verbosity)
     sess = ensure_session(session_id)
     await ctx.report_progress(0, 4)
-    await ctx.info(f"Creating NeKo network (session={sess.session_id}) with genes={list_of_initial_genes} sif={sif_file}")
+    logger.info(
+        "Creating NeKo network (session=%s) with genes=%s sif=%s",
+        sess.session_id,
+        list_of_initial_genes,
+        sif_file,
+    )
     # Validate database choice
     if database not in ["omnipath", "signor"]:
         return "_Unsupported database. Use `omnipath` or `signor`._"
 
     # If using SIGNOR, download and build the SIGNOR resource
     if database == "signor":
-        await ctx.info("Downloading SIGNOR database...")
+        logger.info("Downloading SIGNOR database")
         signor_res = signor()
         signor_res.build()
-        await ctx.info("SIGNOR database downloaded successfully.")
+        logger.info("SIGNOR database downloaded successfully")
         resources = signor_res.interactions
     else:
         resources = "omnipath"
@@ -144,7 +159,11 @@ async def create_network(
     # Case 2: Only genes provided
     elif list_of_initial_genes:
         sess.set_network(Network(list_of_initial_genes, resources=resources))
-        await ctx.info(f"Running complete_connection (max_len={max_len}, only_signed={only_signed})...")
+        logger.info(
+            "Running complete_connection (max_len=%s, only_signed=%s)",
+            max_len,
+            only_signed,
+        )
         sess.network.complete_connection(
             maxlen=max_len,
             algorithm=algorithm,
@@ -163,7 +182,9 @@ async def create_network(
         return format_network_creation_error("build_failed", list_of_initial_genes, str(e))
 
     if df_edges.empty:
-        await ctx.warning("No interactions found in the network. Please check the input parameters.")
+        logger.warning(
+            "No interactions found in the network; check the input parameters"
+        )
         return format_empty_network_response(list_of_initial_genes, database, max_len, only_signed)
 
     # Compute basic statistics
@@ -172,7 +193,11 @@ async def create_network(
     num_nodes = len(unique_nodes)
 
     await ctx.report_progress(4, 4)
-    await ctx.info(f"Network created successfully: {num_nodes} nodes, {num_edges} edges.")
+    logger.info(
+        "Network created successfully: %s nodes, %s edges",
+        num_nodes,
+        num_edges,
+    )
 
     # Prepare a preview of the first 100 interactions
     if verbosity == "summary":
