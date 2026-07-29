@@ -20,7 +20,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install dev tooling
-        run: pip install pytest ruff mypy
+        run: pip install build pytest ruff==0.16.0 mypy "mcp>=2,<3" maboss matplotlib pandas
 
       # ------------------------------------------------------------------ #
       # Lint (ruff)                                                          #
@@ -29,10 +29,20 @@ jobs:
         run: |
           python -m ruff check \
             artifact_manager.py \
+            mcp_biomodelling_servers/artifact_manager.py \
             MaBoSS/session_manager.py \
             NeKo/session_manager.py \
             PhysiCell/session_manager.py \
             tests/
+
+      - name: Check server syntax
+        run: |
+          python -m ruff check \
+            --isolated \
+            --select E9,F63,F7,F82 \
+            MaBoSS/server.py \
+            NeKo/server.py \
+            PhysiCell/server.py
 
       # ------------------------------------------------------------------ #
       # Type-check (mypy) – only our pure-Python modules, not server.py     #
@@ -54,3 +64,51 @@ jobs:
       - name: Run pytest
         run: python -m pytest tests/ -v
 
+      # ------------------------------------------------------------------ #
+      # Distribution safety                                                  #
+      # ------------------------------------------------------------------ #
+      - name: Build and inspect distributions
+        run: |
+          python -m build
+          python - <<'PY'
+          from pathlib import Path, PurePosixPath
+          import tarfile
+          import zipfile
+
+          def is_forbidden_environment_file(member: str) -> bool:
+              name = PurePosixPath(member).name
+              return name == ".env" or (
+                  name.startswith(".env.") and name != ".env.example"
+              )
+
+          archives = sorted(
+              [*Path("dist").glob("*.whl"), *Path("dist").glob("*.tar.gz")]
+          )
+          if not archives:
+              raise SystemExit("No distribution archives were built.")
+
+          failures: list[str] = []
+          for archive in archives:
+              if archive.suffix == ".whl":
+                  with zipfile.ZipFile(archive) as wheel:
+                      members = wheel.namelist()
+              elif archive.name.endswith(".tar.gz"):
+                  with tarfile.open(archive, "r:gz") as sdist:
+                      members = sdist.getnames()
+              else:
+                  continue
+
+              failures.extend(
+                  f"{archive.name}: {member}"
+                  for member in members
+                  if is_forbidden_environment_file(member)
+              )
+
+          if failures:
+              details = "\n".join(failures)
+              raise SystemExit(
+                  f"Environment files found in distributions:\n{details}"
+              )
+
+          print(f"Checked {len(archives)} distribution archives: no environment files found.")
+          PY

@@ -18,7 +18,7 @@ classifiers = [
     "License :: OSI Approved :: MIT License",
 ]
 dependencies = [
-    "mcp>=2.0.0b2,<3",
+    "mcp>=2,<3",
     "pandas",
     "matplotlib",
     "pydantic",
@@ -36,6 +36,21 @@ Repository = "https://github.com/marcorusc/mcp-biomodelling-servers"
 mcp-neko-server = "mcp_biomodelling_servers.neko:main"
 mcp-maboss-server = "mcp_biomodelling_servers.maboss:main"
 mcp-physicell-server = "mcp_biomodelling_servers.physicell:main"
+
+[tool.ruff]
+# Keep emitted syntax compatible with the project's minimum supported Python.
+# This does not impose an upper bound; Python 3.14 remains supported.
+target-version = "py310"
+
+[tool.ruff.lint]
+# Pin the lint contract so upgrades to Ruff cannot silently change CI policy.
+select = ["E4", "E7", "E9", "F", "I", "UP", "B", "BLE", "C4"]
+
+[tool.pytest.ini_options]
+# Any use of an SDK API deprecated by MCP should fail the compatibility suite.
+filterwarnings = [
+    "error::mcp.shared.exceptions.MCPDeprecationWarning",
+]
 
 # ---------------------------------------------------------------------------
 # Build configuration
@@ -58,6 +73,8 @@ exclude = [
     "**/*.bnet",
     "**/*.sif",
     "**/server.json",
+    "**/.env",
+    "**/.env.*",
 ]
 
 [tool.hatch.build.targets.wheel.sources]
@@ -82,4 +99,6 @@ exclude = [
     "**/exports/**",
     "**/pypath_log/**",
     "tests/**",
+    "**/.env",
+    "**/.env.*",
 ]

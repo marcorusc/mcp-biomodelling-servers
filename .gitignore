@@ -10,6 +10,8 @@ __pycache__/
 venv/
 env/
 .env
+.env.*
+!.env.example
 
 # Distribution / packaging
 dist/
@@ -44,4 +46,3 @@ PhysiCell/artifacts/
 # OS
 .DS_Store
 Thumbs.db
-
