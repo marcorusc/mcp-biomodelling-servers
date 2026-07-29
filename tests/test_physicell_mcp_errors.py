@@ -1,9 +1,12 @@
 """Protocol-level tests for PhysiCell tool failure semantics."""
 
 import asyncio
+import inspect
 import sys
 from collections.abc import Coroutine
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event, local
 from types import ModuleType, SimpleNamespace
 from typing import Any
 
@@ -77,6 +80,11 @@ def _run(coroutine: Coroutine[Any, Any, Any]) -> Any:
 async def _call_tool(name: str, arguments: dict[str, Any] | None = None) -> Any:
     async with Client(mcp) as client:
         return await client.call_tool(name, arguments or {})
+
+
+async def _list_tools() -> Any:
+    async with Client(mcp) as client:
+        return await client.list_tools()
 
 
 def _clear_sessions() -> None:
@@ -464,3 +472,286 @@ def test_empty_status_results_remain_successful() -> None:
     assert "No PhysiCell artifact files found" in files.content[0].text
     assert context.is_error is False
     assert "No MaBoSS context available" in context.content[0].text
+
+
+@pytest.mark.parametrize(
+    "handler_name",
+    [
+        "load_xml_configuration",
+        "analyze_biological_scenario",
+        "create_simulation_domain",
+        "add_single_substrate",
+        "add_single_cell_type",
+        "configure_cell_parameters",
+        "set_substrate_interaction",
+        "list_all_available_signals",
+        "list_all_available_behaviors",
+        "add_single_cell_rule",
+        "add_physiboss_model",
+        "configure_physiboss_settings",
+        "add_physiboss_input_link",
+        "add_physiboss_output_link",
+        "apply_physiboss_mutation",
+        "get_simulation_summary",
+        "export_xml_configuration",
+        "export_cell_rules_csv",
+        "list_generated_files",
+        "clean_generated_files",
+    ],
+)
+def test_blocking_handlers_remain_synchronous(handler_name: str) -> None:
+    handler = getattr(physicell_server, handler_name)
+
+    assert inspect.iscoroutinefunction(handler) is False
+
+
+def test_session_locking_preserves_public_tool_schemas() -> None:
+    listed_tools = _run(_list_tools())
+    tools = {tool.name: tool for tool in listed_tools.tools}
+    session_backed_tools = {
+        "set_default_session",
+        "get_workflow_status",
+        "set_maboss_context",
+        "get_maboss_context",
+        "load_xml_configuration",
+        "analyze_loaded_configuration",
+        "list_loaded_components",
+        "analyze_biological_scenario",
+        "create_simulation_domain",
+        "add_single_substrate",
+        "add_single_cell_type",
+        "configure_cell_parameters",
+        "set_substrate_interaction",
+        "list_all_available_signals",
+        "list_all_available_behaviors",
+        "add_single_cell_rule",
+        "add_physiboss_model",
+        "configure_physiboss_settings",
+        "add_physiboss_input_link",
+        "add_physiboss_output_link",
+        "apply_physiboss_mutation",
+        "get_simulation_summary",
+        "export_xml_configuration",
+        "export_cell_rules_csv",
+        "list_generated_files",
+        "clean_generated_files",
+    }
+
+    for tool_name in session_backed_tools:
+        properties = tools[tool_name].input_schema["properties"]
+        assert "session" not in properties
+        assert "ctx" not in properties
+        assert "session_id" in properties
+
+
+def test_workflow_status_accepts_session_and_matches_summary() -> None:
+    config = SimpleNamespace(
+        substrates=SimpleNamespace(get_substrates=lambda: {}),
+        cell_types=SimpleNamespace(get_cell_types=lambda: {}),
+        cell_rules=SimpleNamespace(get_rules=lambda: []),
+    )
+    session_id = _create_session(config)
+
+    summary = _run(
+        _call_tool("get_simulation_summary", {"session_id": session_id})
+    )
+    status = _run(
+        _call_tool("get_workflow_status", {"session_id": session_id})
+    )
+
+    assert summary.is_error is False
+    assert status.is_error is False
+    assert summary.content[0].text == status.content[0].text
+
+
+def test_failed_domain_rebuild_preserves_existing_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    existing_config = object()
+    session_id = _create_session(existing_config)
+
+    class FailingDomain:
+        def set_bounds(self, *args: Any) -> None:
+            del args
+            raise RuntimeError("domain backend failed")
+
+    candidate = SimpleNamespace(domain=FailingDomain())
+    monkeypatch.setattr(
+        physicell_server,
+        "PhysiCellConfig",
+        lambda: candidate,
+    )
+
+    result = _run(
+        _call_tool(
+            "create_simulation_domain",
+            {
+                "domain_x": 100,
+                "domain_y": 100,
+                "session_id": session_id,
+            },
+        )
+    )
+
+    session = session_manager.get_session(session_id)
+    assert result.is_error is True
+    assert "domain backend failed" in result.content[0].text
+    assert session is not None
+    assert session.config is existing_config
+
+
+def test_same_session_summary_waits_for_signal_expansion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session_id = _create_session(SimpleNamespace())
+    session = session_manager.get_session(session_id)
+    assert session is not None
+    expansion_entered = Event()
+    release_expansion = Event()
+
+    def blocking_update(config: object) -> None:
+        del config
+        expansion_entered.set()
+        assert release_expansion.wait(timeout=2)
+
+    monkeypatch.setattr(
+        physicell_server,
+        "update_signals_behaviors_context_from_config",
+        blocking_update,
+    )
+    monkeypatch.setattr(
+        physicell_server,
+        "get_expanded_signals",
+        lambda: [],
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        signals_future = executor.submit(
+            physicell_server.list_all_available_signals,
+            session_id=session_id,
+        )
+        assert expansion_entered.wait(timeout=2)
+        summary_future = executor.submit(
+            physicell_server.get_simulation_summary,
+            session_id=session_id,
+        )
+
+        with session_manager._condition:
+            assert session_manager._condition.wait_for(
+                lambda: session._lease_count == 2,
+                timeout=2,
+            )
+        assert not summary_future.done()
+
+        release_expansion.set()
+        signals_future.result(timeout=2)
+        summary_future.result(timeout=2)
+
+
+def test_artifact_cleanup_waits_for_same_session_export(
+    tmp_path: Path,
+) -> None:
+    export_entered = Event()
+    release_export = Event()
+
+    def generate_xml() -> str:
+        export_entered.set()
+        assert release_export.wait(timeout=2)
+        return "<PhysiCell_settings/>"
+
+    session_id = _create_session(
+        SimpleNamespace(generate_xml=generate_xml)
+    )
+    session = session_manager.get_session(session_id)
+    assert session is not None
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        export_future = executor.submit(
+            physicell_server.export_xml_configuration,
+            filename="concurrent.xml",
+            session_id=session_id,
+        )
+        assert export_entered.wait(timeout=2)
+        cleanup_future = executor.submit(
+            physicell_server.clean_generated_files,
+            session_id=session_id,
+        )
+
+        with session_manager._condition:
+            assert session_manager._condition.wait_for(
+                lambda: session._lease_count == 2,
+                timeout=2,
+            )
+        assert not cleanup_future.done()
+
+        release_export.set()
+        export_result = export_future.result(timeout=2)
+        cleanup_result = cleanup_future.result(timeout=2)
+
+    assert "concurrent.xml" in export_result
+    assert "Cleaned 1 artifact file" in cleanup_result
+    assert not (
+        tmp_path / "artifacts" / session_id / "concurrent.xml"
+    ).exists()
+
+
+def test_signal_context_is_isolated_between_sessions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_id = _create_session(SimpleNamespace(marker="first"))
+    second_id = _create_session(SimpleNamespace(marker="second"))
+    thread_context = local()
+    shared_context = {"marker": ""}
+    first_updated = Event()
+    second_updated = Event()
+
+    def update_context(config: Any) -> None:
+        thread_context.expected = config.marker
+        shared_context["marker"] = config.marker
+        if config.marker == "first":
+            first_updated.set()
+        else:
+            second_updated.set()
+
+    def expand_signals() -> list[dict[str, Any]]:
+        expected = thread_context.expected
+        if expected == "first":
+            second_updated.wait(timeout=0.2)
+        marker = shared_context["marker"]
+        assert marker == expected
+        return [
+            {
+                "name": marker,
+                "type": "test",
+                "requires": [],
+                "description": marker,
+            }
+        ]
+
+    monkeypatch.setattr(
+        physicell_server,
+        "update_signals_behaviors_context_from_config",
+        update_context,
+    )
+    monkeypatch.setattr(
+        physicell_server,
+        "get_expanded_signals",
+        expand_signals,
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first_future = executor.submit(
+            physicell_server.list_all_available_signals,
+            session_id=first_id,
+        )
+        assert first_updated.wait(timeout=2)
+        second_future = executor.submit(
+            physicell_server.list_all_available_signals,
+            session_id=second_id,
+        )
+        first_result = first_future.result(timeout=2)
+        second_result = second_future.result(timeout=2)
+
+    assert second_updated.is_set()
+    assert "**first**" in first_result
+    assert "**second**" in second_result

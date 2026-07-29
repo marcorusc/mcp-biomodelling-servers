@@ -10,12 +10,14 @@ This server provides tools for configuring PhysiCell biological simulations:
 Features lightweight session management and progress tracking.
 """
 
+import inspect
 import sys
-import os
-import glob
 import time
+from functools import wraps
 from pathlib import Path
+from threading import RLock
 from typing import Annotated, Optional
+
 from pydantic import Field
 
 # Add the physicell_config package to Python path
@@ -57,10 +59,10 @@ except ImportError:
 # Import session management
 from session_manager import (
     session_manager, SessionState, WorkflowStep, MaBoSSContext,
-    get_current_session, ensure_session, analyze_and_update_session_from_config
+    get_current_session, analyze_and_update_session_from_config
 )
 
-from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver import MCPServer
 
 mcp = MCPServer(
     "PhysiCell",
@@ -71,6 +73,36 @@ mcp = MCPServer(
     version=__version__,
 )
 
+_signals_behaviors_lock = RLock()
+
+
+def _session_locked(handler):
+    """Run a synchronous handler under its session's exclusive lease."""
+    signature = inspect.signature(handler)
+
+    @wraps(handler)
+    def locked_handler(*args, **kwargs):
+        arguments = signature.bind_partial(*args, **kwargs).arguments
+        with session_manager.session_scope(arguments.get("session_id")):
+            return handler(*args, **kwargs)
+
+    return locked_handler
+
+
+def _optional_session_locked(handler):
+    """Lease an optional session without creating an absent default."""
+    signature = inspect.signature(handler)
+
+    @wraps(handler)
+    def locked_handler(*args, **kwargs):
+        arguments = signature.bind_partial(*args, **kwargs).arguments
+        with session_manager.optional_session_scope(
+            arguments.get("session_id")
+        ):
+            return handler(*args, **kwargs)
+
+    return locked_handler
+
 
 def _require_session(session_id: Optional[str] = None) -> SessionState:
     """Return an existing session or raise an actionable tool error."""
@@ -80,13 +112,6 @@ def _require_session(session_id: Optional[str] = None) -> SessionState:
     if session_id is not None:
         raise ValueError(f"Session not found: {session_id}")
     raise RuntimeError("No active session. Use `create_session()` first.")
-
-
-def _get_or_create_session(session_id: Optional[str] = None) -> SessionState:
-    """Resolve an explicit session, or create one when no session was requested."""
-    if session_id is not None:
-        return _require_session(session_id)
-    return ensure_session()
 
 
 def _require_configuration(session_id: Optional[str] = None) -> SessionState:
@@ -158,8 +183,17 @@ def create_session(
     Returns:
         str: Session ID and instructions.
     """
-    session_id = session_manager.create_session(set_as_default, session_name)
-    write_session_meta(_SERVER_ROOT, session_id, server_name="PhysiCell", label=session_name)
+    with session_manager.create_session_scope(
+        set_as_default=set_as_default,
+        session_name=session_name,
+    ) as session:
+        session_id = session.session_id
+        write_session_meta(
+            _SERVER_ROOT,
+            session_id,
+            server_name="PhysiCell",
+            label=session_name,
+        )
 
     result = f"**Session created:** {session_id[:8]}..."
     if session_name:
@@ -179,29 +213,28 @@ def list_sessions() -> str:
     Returns:
         str: Formatted list of sessions with progress information.
     """
-    sessions = session_manager.list_sessions()
+    sessions = session_manager.list_session_snapshots()
     
     if not sessions:
         return "No active sessions. Use `create_session()` to start."
     
     result = f"## Active Sessions ({len(sessions)})\n\n"
     
-    default_id = session_manager.get_default_session_id()
-    
     for session in sessions:
-        age_hours = (time.time() - session.created_at) / 3600
-        progress = session.get_progress_percentage()
+        age_hours = (time.time() - session["created_at"]) / 3600
+        progress = session["progress"]
         
         # Mark default session
-        default_marker = " (default)" if session.session_id == default_id else ""
+        default_marker = " (default)" if session["is_default"] else ""
         
-        result += f"**{session.session_id[:8]}...{default_marker}**\n"
+        result += f"**{session['session_id'][:8]}...{default_marker}**\n"
         result += f"- Age: {age_hours:.1f} hours\n"
         result += f"- Progress: {progress:.0f}%\n"
-        result += f"- Components: {session.substrates_count} substrates, {session.cell_types_count} cell types, {session.rules_count} rules\n"
+        result += f"- Components: {session['substrates_count']} substrates, {session['cell_types_count']} cell types, {session['rules_count']} rules\n"
         
-        if session.scenario_context:
-            result += f"- Scenario: {session.scenario_context[:50]}{'...' if len(session.scenario_context) > 50 else ''}\n"
+        scenario_context = session["scenario_context"]
+        if scenario_context:
+            result += f"- Scenario: {scenario_context[:50]}{'...' if len(scenario_context) > 50 else ''}\n"
         
         result += "\n"
     
@@ -240,6 +273,7 @@ def list_artifact_sessions() -> str:
     return "\n".join(lines)
 
 @mcp.tool()
+@_session_locked
 def set_default_session(
     session_id: Annotated[str, Field(description="ID of the session to activate. May be shortened to the first 8 characters.")],
 ) -> str:
@@ -248,28 +282,21 @@ def set_default_session(
     Returns:
         str: Confirmation of the session switch.
     """
-    # Allow partial session IDs
-    if len(session_id) == 8:
-        sessions = session_manager.list_sessions()
-        matching_sessions = [s for s in sessions if s.session_id.startswith(session_id)]
-        if len(matching_sessions) == 1:
-            session_id = matching_sessions[0].session_id
-        elif len(matching_sessions) > 1:
-            raise ValueError(
-                f"Ambiguous session ID: {session_id}. Multiple sessions match."
-            )
-        else:
-            raise ValueError(f"Session not found: {session_id}")
-    
     success = session_manager.set_default_session(session_id)
     if success:
-        session = session_manager.get_session(session_id)
+        session = _require_session(session_id)
         progress = session.get_progress_percentage()
-        return f"**Switched to session:** {session_id[:8]}... (Progress: {progress:.0f}%)"
+        return f"**Switched to session:** {session.session_id[:8]}... (Progress: {progress:.0f}%)"
     raise ValueError(f"Session not found: {session_id}")
 
 @mcp.tool()
-def get_workflow_status() -> str:
+@_optional_session_locked
+def get_workflow_status(
+    session_id: Optional[str] = Field(
+        default=None,
+        description="Session to query. Omit to use the active session.",
+    ),
+) -> str:
     """Return the current workflow status and recommended next steps.
 
     Alias for `get_simulation_summary()` — provides identical information.
@@ -278,7 +305,7 @@ def get_workflow_status() -> str:
     Returns:
         str: Progress summary with completed steps and next recommendations.
     """
-    return get_simulation_summary()
+    return _format_simulation_summary(get_current_session(session_id))
 
 @mcp.tool()
 def delete_session(
@@ -295,6 +322,7 @@ def delete_session(
     raise ValueError(f"Session not found: {session_id}")
 
 @mcp.tool()
+@_session_locked
 def set_maboss_context(
     model_name: Annotated[str, Field(description="Name of the MaBoSS model.")],
     bnd_file_path: Annotated[str, Field(description="Absolute path to the .bnd boolean network file.")],
@@ -341,6 +369,7 @@ def set_maboss_context(
     return result
 
 @mcp.tool()
+@_session_locked
 def get_maboss_context(
     session_id: Optional[str] = Field(default=None, description="Session to query. Omit to use the active session."),
 ) -> str:
@@ -427,24 +456,24 @@ def load_xml_configuration(
             f"Could not load PhysiCell XML file '{filepath}': {exc}"
         ) from exc
 
-    session = _get_or_create_session(session_id)
-    session.config = config
+    with session_manager.ensure_session_scope(
+        session_id,
+        session_name=session_name,
+    ) as session:
+        session.replace_config(
+            config,
+            loaded_from_xml=True,
+            original_xml_path=str(xml_path.absolute()),
+        )
+        analyze_and_update_session_from_config(session, config)
 
-    # Update session state
-    session.loaded_from_xml = True
-    session.original_xml_path = str(xml_path.absolute())
-    session.mark_step_complete(WorkflowStep.XML_LOADED)
-
-    # Analyze loaded content and update session counters
-    analyze_and_update_session_from_config(session, config)
-
-    # Concise summary
-    parts = [f"{len(session.loaded_substrates)} substrates"]
-    parts.append(f"{len(session.loaded_cell_types)} cell types")
-    if session.loaded_physiboss_models:
-        parts.append(f"{len(session.loaded_physiboss_models)} PhysiBoSS")
-    if session.has_existing_rules:
-        parts.append("rules")
+        # Concise summary
+        parts = [f"{len(session.loaded_substrates)} substrates"]
+        parts.append(f"{len(session.loaded_cell_types)} cell types")
+        if session.loaded_physiboss_models:
+            parts.append(f"{len(session.loaded_physiboss_models)} PhysiBoSS")
+        if session.has_existing_rules:
+            parts.append("rules")
 
     result = f"Loaded {xml_path.name}: {', '.join(parts)}"
     result += (
@@ -481,6 +510,7 @@ def validate_xml_file(
     return f"Invalid: {error_msg}"
 
 @mcp.tool()
+@_session_locked
 def analyze_loaded_configuration(
     session_id: Optional[str] = Field(default=None, description="Session to query. Omit to use the active session."),
 ) -> str:
@@ -527,6 +557,7 @@ def analyze_loaded_configuration(
     return "\n".join(lines)
 
 @mcp.tool()
+@_session_locked
 def list_loaded_components(
     component_type: str = Field(default="all", description="Filter results: 'substrates', 'cell_types', 'physiboss', or 'all'."),
     session_id: Optional[str] = Field(default=None, description="Session to query. Omit to use the active session."),
@@ -609,9 +640,9 @@ def analyze_biological_scenario(
     if not biological_scenario or not biological_scenario.strip():
         raise ValueError("Biological scenario description cannot be empty.")
     
-    session = _get_or_create_session(session_id)
-    session.scenario_context = biological_scenario.strip()
-    session.mark_step_complete(WorkflowStep.SCENARIO_ANALYSIS)
+    with session_manager.ensure_session_scope(session_id) as session:
+        session.scenario_context = biological_scenario.strip()
+        session.mark_step_complete(WorkflowStep.SCENARIO_ANALYSIS)
     
     result = f"**Biological scenario stored:** {biological_scenario}\n"
     result += f"**Next step:** Use `create_simulation_domain()` to set up the spatial framework."
@@ -664,25 +695,29 @@ def create_simulation_domain(
         if domain_z <= 0:
             raise ValueError("domain_z must be positive.")
 
-    session = _get_or_create_session(session_id)
-    
-    # Create new PhysiCell configuration
-    session.config = PhysiCellConfig()
-    session.config.domain.set_bounds(
+    # Build locally so a failed rebuild cannot overwrite a valid session.
+    config = PhysiCellConfig()
+    config.domain.set_bounds(
         -domain_x/2, domain_x/2,
         -domain_y/2, domain_y/2,
         -domain_z/2, domain_z/2
     )
-    session.config.domain.set_mesh(dx, dx, dx)
+    config.domain.set_mesh(dx, dx, dx)
 
     if use_2d:
-        session.config.domain.set_2D(True)
+        config.domain.set_2D(True)
 
-    session.config.options.set_max_time(max_time)
-    session.config.options.set_time_steps(dt_diffusion=0.01, dt_mechanics=0.1, dt_phenotype=6.0)
-    
-    # Mark workflow step as complete
-    session.mark_step_complete(WorkflowStep.DOMAIN_SETUP)
+    config.options.set_max_time(max_time)
+    config.options.set_time_steps(
+        dt_diffusion=0.01,
+        dt_mechanics=0.1,
+        dt_phenotype=6.0,
+    )
+
+    with session_manager.ensure_session_scope(session_id) as session:
+        session.replace_config(config)
+        session.mark_step_complete(WorkflowStep.DOMAIN_SETUP)
+        progress = session.get_progress_percentage()
     
     # Format result
     mode = "2D" if use_2d else "3D"
@@ -690,12 +725,13 @@ def create_simulation_domain(
     result += f"- Domain: {domain_x}×{domain_y}" + (f" μm (z = {domain_z} μm, one voxel)\n" if use_2d else f"×{domain_z} μm\n")
     result += f"- Mesh: {dx} μm\n"
     result += f"- Duration: {max_time/60:.1f} hours\n"
-    result += f"- Progress: {session.get_progress_percentage():.0f}%\n"
+    result += f"- Progress: {progress:.0f}%\n"
     result += f"**Next step:** Use `add_single_substrate()` to add oxygen, nutrients, or drugs."
     
     return result
 
 @mcp.tool()
+@_session_locked
 def add_single_substrate(
     substrate_name: Annotated[str, Field(description="Name of the substrate (e.g., 'oxygen', 'glucose', 'drug').")],
     diffusion_coefficient: Annotated[float, Field(description="Diffusion rate in μm²/min. Typical: 100000 for oxygen, 30000 for glucose.")],
@@ -774,6 +810,7 @@ def add_single_substrate(
     return result
 
 @mcp.tool()
+@_session_locked
 def add_single_cell_type(
     cell_type_name: Annotated[str, Field(description="Name for this cell type (e.g., 'cancer_cell', 'immune_cell', 'fibroblast').")],
     cycle_model: str = Field(default="Ki67_basic", description="Cell cycle model. Use `get_available_cycle_models()` to list options. Common: 'Ki67_basic', 'Ki67_advanced', 'live'."),
@@ -817,6 +854,7 @@ def add_single_cell_type(
 
 
 @mcp.tool()
+@_session_locked
 def configure_cell_parameters(
     cell_type: Annotated[str, Field(description="Name of an existing cell type to configure.")],
     volume_total: float = Field(default=2500.0, description="Total cell volume in μm³."),
@@ -867,6 +905,7 @@ def configure_cell_parameters(
         ) from exc
 
 @mcp.tool()
+@_session_locked
 def set_substrate_interaction(
     cell_type: Annotated[str, Field(description="Name of an existing cell type.")],
     substrate: Annotated[str, Field(description="Name of an existing substrate (must match a name passed to add_single_substrate()).")],
@@ -929,6 +968,7 @@ def get_available_cycle_models() -> str:
 # ============================================================================
 
 @mcp.tool()
+@_optional_session_locked
 def list_all_available_signals(
     session_id: Optional[str] = Field(default=None, description="Session to query. Omit to use the active session."),
 ) -> str:
@@ -945,13 +985,17 @@ def list_all_available_signals(
     
     # Update context from current config if available
     if session and session.config:
-        update_signals_behaviors_context_from_config(session.config)
-        # Use expanded signals which include context-specific signals
-        try:
-            signals_data = {signal['name']: signal for signal in get_expanded_signals()}
-        except:
-            # Fall back to basic signals if expanded version fails
-            signals_data = get_signals_behaviors()["signals"]
+        with _signals_behaviors_lock:
+            update_signals_behaviors_context_from_config(session.config)
+            # Use expanded signals which include context-specific signals
+            try:
+                signals_data = {
+                    signal["name"]: signal
+                    for signal in get_expanded_signals()
+                }
+            except Exception:  # noqa: BLE001
+                # Fall back to basic signals if expanded version fails
+                signals_data = get_signals_behaviors()["signals"]
     else:
         signals_data = get_signals_behaviors()["signals"]
     
@@ -988,6 +1032,7 @@ def list_all_available_signals(
     return result
 
 @mcp.tool()
+@_optional_session_locked
 def list_all_available_behaviors(
     session_id: Optional[str] = Field(default=None, description="Session to query. Omit to use the active session."),
 ) -> str:
@@ -1004,13 +1049,17 @@ def list_all_available_behaviors(
     
     # Update context from current config if available
     if session and session.config:
-        update_signals_behaviors_context_from_config(session.config)
-        # Use expanded behaviors which include context-specific behaviors
-        try:
-            behaviors_data = {behavior['name']: behavior for behavior in get_expanded_behaviors()}
-        except:
-            # Fall back to basic behaviors if expanded version fails
-            behaviors_data = get_signals_behaviors()["behaviors"]
+        with _signals_behaviors_lock:
+            update_signals_behaviors_context_from_config(session.config)
+            # Use expanded behaviors which include context-specific behaviors
+            try:
+                behaviors_data = {
+                    behavior["name"]: behavior
+                    for behavior in get_expanded_behaviors()
+                }
+            except Exception:  # noqa: BLE001
+                # Fall back to basic behaviors if expanded version fails
+                behaviors_data = get_signals_behaviors()["behaviors"]
     else:
         behaviors_data = get_signals_behaviors()["behaviors"]
     
@@ -1052,6 +1101,7 @@ def list_all_available_behaviors(
 # ============================================================================
 
 @mcp.tool()
+@_session_locked
 def add_single_cell_rule(
     cell_type: Annotated[str, Field(description="Name of existing cell type.")],
     signal: Annotated[str, Field(description="Signal name. Use list_all_available_signals() to see options.")],
@@ -1088,20 +1138,21 @@ def add_single_cell_rule(
     if hill_power <= 0:
         raise ValueError("Hill power must be positive.")
     
-    # Update context from current config before adding rule
-    update_signals_behaviors_context_from_config(session.config)
-    
-    # Add rule using the CellRulesModule API (session.config.cell_rules)
-    session.config.cell_rules.add_rule(
-        cell_type=cell_type.strip(),
-        signal=signal.strip(),
-        direction=direction,
-        behavior=behavior.strip(),
-        saturation_value=saturation_value,
-        half_max=half_max,
-        hill_power=hill_power,
-        apply_to_dead=0
-    )
+    with _signals_behaviors_lock:
+        # The upstream package validates rules against process-global context.
+        update_signals_behaviors_context_from_config(session.config)
+
+        # Add rule using the CellRulesModule API (session.config.cell_rules)
+        session.config.cell_rules.add_rule(
+            cell_type=cell_type.strip(),
+            signal=signal.strip(),
+            direction=direction,
+            behavior=behavior.strip(),
+            saturation_value=saturation_value,
+            half_max=half_max,
+            hill_power=hill_power,
+            apply_to_dead=0
+        )
     
     # Update session counters
     session.rules_count += 1
@@ -1134,6 +1185,7 @@ def add_single_cell_rule(
     return result
 
 @mcp.tool()
+@_session_locked
 def add_physiboss_model(
     cell_type: Annotated[str, Field(description="Name of an existing cell type to attach the boolean network to.")],
     bnd_file: Annotated[str, Field(description="Absolute path to the MaBoSS .bnd boolean network file.")],
@@ -1191,6 +1243,7 @@ def add_physiboss_model(
         raise RuntimeError(f"Could not add the PhysiBoSS model: {exc}") from exc
 
 @mcp.tool()
+@_session_locked
 def configure_physiboss_settings(
     cell_type: Annotated[str, Field(description="Name of an existing cell type with a PhysiBoSS model attached.")],
     intracellular_dt: float = Field(default=6.0, description="PhysiBoSS update interval in minutes. Should be a multiple of the phenotype time step."),
@@ -1240,6 +1293,7 @@ def configure_physiboss_settings(
         ) from exc
 
 @mcp.tool()
+@_session_locked
 def add_physiboss_input_link(
     cell_type: Annotated[str, Field(description="Name of an existing cell type with a PhysiBoSS model.")],
     physicell_signal: Annotated[str, Field(description="PhysiCell signal name. Use list_all_available_signals() to see options.")],
@@ -1287,6 +1341,7 @@ def add_physiboss_input_link(
         ) from exc
 
 @mcp.tool()
+@_session_locked
 def add_physiboss_output_link(
     cell_type: Annotated[str, Field(description="Name of an existing cell type with a PhysiBoSS model.")],
     boolean_node: Annotated[str, Field(description="MaBoSS boolean node name whose state drives the behavior.")],
@@ -1337,6 +1392,7 @@ def add_physiboss_output_link(
         ) from exc
 
 @mcp.tool()
+@_session_locked
 def apply_physiboss_mutation(
     cell_type: Annotated[str, Field(description="Name of an existing cell type with a PhysiBoSS model.")],
     node_name: Annotated[str, Field(description="MaBoSS boolean node name to fix (from the .bnd file).")],
@@ -1381,6 +1437,7 @@ def apply_physiboss_mutation(
 # ============================================================================
 
 @mcp.tool()
+@_optional_session_locked
 def get_simulation_summary(
     session_id: Optional[str] = Field(default=None, description="Session to query. Omit to use the active session."),
 ) -> str:
@@ -1392,7 +1449,11 @@ def get_simulation_summary(
     Returns:
         str: Markdown summary of current simulation state.
     """
-    session = get_current_session(session_id)
+    return _format_simulation_summary(get_current_session(session_id))
+
+
+def _format_simulation_summary(session: Optional[SessionState]) -> str:
+    """Format one already leased session without calling another MCP handler."""
     if not session:
         return "No active session. Use `create_session()` to start."
     
@@ -1465,6 +1526,7 @@ def get_simulation_summary(
     return result
 
 @mcp.tool()
+@_session_locked
 def export_xml_configuration(
     filename: str = Field(default="PhysiCell_settings.xml", description="Output filename for the XML configuration file."),
     session_id: Optional[str] = Field(default=None, description="Session to use. Omit to use the active session."),
@@ -1534,6 +1596,7 @@ def export_xml_configuration(
         ) from exc
 
 @mcp.tool()
+@_session_locked
 def export_cell_rules_csv(
     filename: str = Field(default="cell_rules.csv", description="Output filename for the cell rules CSV file."),
     session_id: Optional[str] = Field(default=None, description="Session to use. Omit to use the active session."),
@@ -1615,8 +1678,11 @@ def list_generated_files(
     if session_id == "all":
         files = list_artifacts(_SERVER_ROOT, session_id=None)
     else:
-        session = _require_session(session_id)
-        files = list_artifacts(_SERVER_ROOT, session_id=session.session_id)
+        with session_manager.session_scope(session_id) as session:
+            files = list_artifacts(
+                _SERVER_ROOT,
+                session_id=session.session_id,
+            )
 
     xml_files = [f for f in files if str(f).endswith(".xml")]
     csv_files = [f for f in files if str(f).endswith(".csv")]
@@ -1642,6 +1708,7 @@ def list_generated_files(
 
 
 @mcp.tool()
+@_session_locked
 def clean_generated_files(
     session_id: Optional[str] = Field(default=None, description="Session to clean. Omit to use the active session."),
 ) -> str:

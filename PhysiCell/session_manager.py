@@ -1,16 +1,25 @@
+"""Thread-safe session management for the PhysiCell MCP server.
+
+The MCP SDK v2 may run synchronous handlers concurrently in worker threads.
+Registry operations and accesses to each mutable PhysiCell configuration
+therefore use separate locks: the manager condition protects session lifecycle
+metadata, while a per-session lock serializes configuration, workflow, and
+artifact operations.
 """
-Session Management for PhysiCell MCP Server
-Thread-safe, session-based state management for multi-hypothesis workflows.
-"""
+
+from __future__ import annotations
 
 import json
 import logging
 import time
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from threading import RLock
+from threading import Condition, RLock
 from typing import Any
 
 # Configure logging
@@ -74,23 +83,86 @@ class SessionState:
     loaded_cell_types: list[str] = field(default_factory=list)
     loaded_physiboss_models: list[str] = field(default_factory=list)
     has_existing_rules: bool = False
+    _operation_lock: RLock = field(
+        default_factory=RLock,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    # These lifecycle fields are protected by SessionManager._condition.
+    _lease_count: int = field(default=0, init=False, repr=False, compare=False)
+    _retired: bool = field(default=False, init=False, repr=False, compare=False)
+
+    def touch(self) -> None:
+        """Update the last-access timestamp under the session lock."""
+        with self._operation_lock:
+            self._touch_unlocked()
+
+    def _touch_unlocked(self) -> None:
+        self.last_accessed = time.time()
     
-    def mark_step_complete(self, step: WorkflowStep):
+    def mark_step_complete(self, step: WorkflowStep) -> None:
         """Mark a workflow step as completed."""
-        self.completed_steps.add(step)
-        self.last_accessed = time.time()
+        with self._operation_lock:
+            self.completed_steps.add(step)
+            self._touch_unlocked()
     
-    def mark_xml_modification(self):
+    def mark_xml_modification(self) -> None:
         """Track modifications to XML-loaded configuration."""
-        self.xml_modification_count += 1
-        self.last_accessed = time.time()
+        with self._operation_lock:
+            self.xml_modification_count += 1
+            self._touch_unlocked()
     
     def is_step_complete(self, step: WorkflowStep) -> bool:
         """Check if a workflow step is completed."""
-        return step in self.completed_steps
+        with self._operation_lock:
+            return step in self.completed_steps
+
+    def replace_config(
+        self,
+        config: object,
+        *,
+        loaded_from_xml: bool = False,
+        original_xml_path: str | None = None,
+    ) -> None:
+        """Atomically replace configuration-derived state.
+
+        Session identity and modelling context are intentionally preserved, but
+        counters and workflow steps describing the previous configuration are
+        cleared before the new configuration is published.
+        """
+        with self._operation_lock:
+            self.config = config
+            self.completed_steps = (
+                {WorkflowStep.SCENARIO_ANALYSIS}
+                if self.scenario_context
+                else set()
+            )
+            self.substrates_count = 0
+            self.cell_types_count = 0
+            self.rules_count = 0
+            self.physiboss_models_count = 0
+            self.physiboss_settings_count = 0
+            self.physiboss_input_links_count = 0
+            self.physiboss_output_links_count = 0
+            self.physiboss_mutations_count = 0
+            self.loaded_from_xml = loaded_from_xml
+            self.original_xml_path = original_xml_path
+            self.xml_modification_count = 0
+            self.loaded_substrates = []
+            self.loaded_cell_types = []
+            self.loaded_physiboss_models = []
+            self.has_existing_rules = False
+            if loaded_from_xml:
+                self.completed_steps.add(WorkflowStep.XML_LOADED)
+            self._touch_unlocked()
     
     def get_next_recommended_steps(self) -> list[str]:
         """Get recommended next steps based on current progress."""
+        with self._operation_lock:
+            return self._get_next_recommended_steps_unlocked()
+
+    def _get_next_recommended_steps_unlocked(self) -> list[str]:
         recommendations = []
         
         # If loaded from XML, different workflow
@@ -148,6 +220,10 @@ class SessionState:
     
     def get_progress_percentage(self) -> float:
         """Calculate progress as percentage of completed workflow steps."""
+        with self._operation_lock:
+            return self._get_progress_percentage_unlocked()
+
+    def _get_progress_percentage_unlocked(self) -> float:
         # Core steps always required (removed READY_FOR_EXPORT to fix circular dependency)
         core_steps = {
             WorkflowStep.DOMAIN_SETUP,
@@ -185,6 +261,10 @@ class SessionState:
     
     def to_dict(self) -> dict:
         """Convert session state to dictionary for serialization."""
+        with self._operation_lock:
+            return self._to_dict_unlocked()
+
+    def _to_dict_unlocked(self) -> dict:
         result: dict[str, Any] = {
             'session_id': self.session_id,
             'session_name': self.session_name,
@@ -216,12 +296,34 @@ class SessionState:
         
         return result
 
+    def snapshot(self, *, is_default: bool) -> dict[str, Any]:
+        """Return a consistent, serialization-safe view of this session."""
+        with self._operation_lock:
+            result = self._to_dict_unlocked()
+            result.update(
+                {
+                    "has_config": self.config is not None,
+                    "progress": self._get_progress_percentage_unlocked(),
+                    "is_default": is_default,
+                    "loaded_from_xml": self.loaded_from_xml,
+                    "xml_modification_count": self.xml_modification_count,
+                }
+            )
+            return result
+
+
+_active_session = ContextVar[SessionState | None](
+    "physicell_active_session",
+    default=None,
+)
+
 class SessionManager:
-    """Thread-safe session manager for PhysiCell configurations."""
+    """Manage PhysiCell sessions and lease mutable state to handlers."""
     
     def __init__(self, max_sessions: int = 10, auto_cleanup_hours: float = 24.0):
         self._sessions: dict[str, SessionState] = {}
-        self._lock = RLock()  # RLock allows re-entry (e.g. set_maboss_context -> get_session)
+        self._lock = RLock()
+        self._condition = Condition(self._lock)
         self._max_sessions = max_sessions
         self._auto_cleanup_hours = auto_cleanup_hours
         self._default_session_id: str | None = None
@@ -235,35 +337,149 @@ class SessionManager:
         if len(matches) == 1:
             return matches[0]
         return None
-        
-    def create_session(self, set_as_default: bool = True, session_name: str | None = None) -> str:
-        """Create a new simulation session."""
-        with self._lock:
-            # Cleanup old sessions if needed
-            self._cleanup_old_sessions()
-            
-            # Check session limit
-            if len(self._sessions) >= self._max_sessions:
-                oldest_session = min(self._sessions.values(), key=lambda s: s.last_accessed)
-                del self._sessions[oldest_session.session_id]
-                logger.info(f"Removed oldest session {oldest_session.session_id[:8]}... due to limit")
-            
-            session_id = str(uuid.uuid4())
-            self._sessions[session_id] = SessionState(
-                session_id=session_id,
-                session_name=session_name
+
+    def _retire_session_unlocked(self, session: SessionState) -> None:
+        """Remove a session from the registry and reject future leases."""
+        self._sessions.pop(session.session_id, None)
+        session._retired = True
+        if self._default_session_id == session.session_id:
+            self._default_session_id = next(iter(self._sessions), None)
+
+    def _cleanup_old_sessions_unlocked(
+        self,
+        max_age_seconds: float | None = None,
+    ) -> int:
+        """Retire expired idle sessions while the manager condition is held."""
+        if max_age_seconds is None:
+            max_age_seconds = self._auto_cleanup_hours * 3600
+
+        current_time = time.time()
+        expired_sessions = [
+            session
+            for session in self._sessions.values()
+            if session._lease_count == 0
+            and (current_time - session.last_accessed) > max_age_seconds
+        ]
+        for session in expired_sessions:
+            self._retire_session_unlocked(session)
+
+        if expired_sessions:
+            logger.info("Cleaned up %d old sessions", len(expired_sessions))
+        return len(expired_sessions)
+
+    def _create_session_unlocked(
+        self,
+        *,
+        set_as_default: bool,
+        session_name: str | None,
+    ) -> str:
+        self._cleanup_old_sessions_unlocked()
+
+        if len(self._sessions) >= self._max_sessions:
+            idle_sessions = [
+                session
+                for session in self._sessions.values()
+                if session._lease_count == 0
+            ]
+            if not idle_sessions:
+                raise RuntimeError(
+                    "PhysiCell session limit reached while every session is active. "
+                    "Retry after an in-flight operation completes."
+                )
+            oldest_session = min(
+                idle_sessions,
+                key=lambda session: session.last_accessed,
             )
-            
-            if set_as_default or self._default_session_id is None:
-                self._default_session_id = session_id
-                
-            logger.info(f"Created session {session_id[:8]}..." + 
-                       (f" ({session_name})" if session_name else ""))
-            return session_id
+            self._retire_session_unlocked(oldest_session)
+            logger.info(
+                "Removed oldest session %s... due to limit",
+                oldest_session.session_id[:8],
+            )
+
+        session_id = str(uuid.uuid4())
+        self._sessions[session_id] = SessionState(
+            session_id=session_id,
+            session_name=session_name,
+        )
+        if set_as_default or self._default_session_id is None:
+            self._default_session_id = session_id
+
+        logger.info(
+            "Created session %s...%s",
+            session_id[:8],
+            f" ({session_name})" if session_name else "",
+        )
+        return session_id
+
+    def create_session(
+        self,
+        set_as_default: bool = True,
+        session_name: str | None = None,
+    ) -> str:
+        """Create a new simulation session."""
+        with self._condition:
+            return self._create_session_unlocked(
+                set_as_default=set_as_default,
+                session_name=session_name,
+            )
+
+    @contextmanager
+    def create_session_scope(
+        self,
+        *,
+        set_as_default: bool = True,
+        session_name: str | None = None,
+    ) -> Iterator[SessionState]:
+        """Create and lease a session before another handler can use it."""
+        with self._condition:
+            session_id = self._create_session_unlocked(
+                set_as_default=set_as_default,
+                session_name=session_name,
+            )
+            session = self._sessions[session_id]
+            session._lease_count += 1
+            self._condition.notify_all()
+
+        try:
+            with session._operation_lock:
+                token = _active_session.set(session)
+                try:
+                    yield session
+                finally:
+                    _active_session.reset(token)
+        finally:
+            with self._condition:
+                session._lease_count -= 1
+                self._condition.notify_all()
+
+    def ensure_session(self, session_id: str | None = None) -> SessionState:
+        """Resolve a session or atomically create the initial/default session.
+
+        Explicit unknown IDs are never replaced by an unrelated new session.
+        """
+        with self._condition:
+            if session_id is not None:
+                resolved_id = self._resolve_session_id(session_id)
+                if resolved_id is None:
+                    raise ValueError(f"Session not found: {session_id}")
+                session = self._sessions[resolved_id]
+                session.last_accessed = time.time()
+                return session
+
+            if self._default_session_id is not None:
+                session = self._sessions[self._default_session_id]
+                session.last_accessed = time.time()
+                return session
+
+            new_id = self._create_session_unlocked(
+                set_as_default=True,
+                session_name=None,
+            )
+            return self._sessions[new_id]
     
     def get_session(self, session_id: str | None = None) -> SessionState | None:
-        """Get session by ID, or default session if ID is None."""
-        with self._lock:
+        """Return a session for identity checks; use a scope for model access."""
+        with self._condition:
             if session_id is None:
                 session_id = self._default_session_id
                 
@@ -281,11 +497,12 @@ class SessionManager:
     
     def get_default_session_id(self) -> str | None:
         """Get the default session ID."""
-        return self._default_session_id
+        with self._condition:
+            return self._default_session_id
     
     def set_default_session(self, session_id: str) -> bool:
         """Set the default session."""
-        with self._lock:
+        with self._condition:
             resolved_id = self._resolve_session_id(session_id)
             if resolved_id is not None:
                 self._default_session_id = resolved_id
@@ -293,74 +510,184 @@ class SessionManager:
             return False
     
     def list_sessions(self) -> list[SessionState]:
-        """List all active sessions."""
-        with self._lock:
+        """Return live sessions for compatibility and identity-only callers."""
+        with self._condition:
             return list(self._sessions.values())
+
+    def list_session_snapshots(self) -> list[dict[str, Any]]:
+        """Return consistent snapshots without exposing mutable session state."""
+        with self._condition:
+            sessions = list(self._sessions.values())
+            default_session_id = self._default_session_id
+            for session in sessions:
+                session._lease_count += 1
+
+        try:
+            return [
+                session.snapshot(
+                    is_default=session.session_id == default_session_id,
+                )
+                for session in sessions
+            ]
+        finally:
+            with self._condition:
+                for session in sessions:
+                    session._lease_count -= 1
+                self._condition.notify_all()
     
     def delete_session(self, session_id: str) -> bool:
-        """Delete a specific session."""
-        with self._lock:
+        """Retire a session and wait for admitted operations to finish."""
+        with self._condition:
             resolved_id = self._resolve_session_id(session_id)
-            if resolved_id in self._sessions:
-                del self._sessions[resolved_id]
-                if self._default_session_id == resolved_id:
-                    # Set new default if available
-                    self._default_session_id = next(iter(self._sessions.keys()), None)
-                logger.info(f"Deleted session {resolved_id[:8]}...")
-                return True
-            return False
+            if resolved_id is None:
+                return False
+
+            session = self._sessions[resolved_id]
+            self._retire_session_unlocked(session)
+            self._condition.notify_all()
+            while session._lease_count:
+                self._condition.wait()
+
+            logger.info("Deleted session %s...", resolved_id[:8])
+            return True
     
     def cleanup_old_sessions(self, max_age_hours: float | None = None) -> int:
         """Clean up sessions older than specified hours."""
         if max_age_hours is None:
             max_age_hours = self._auto_cleanup_hours
 
-        with self._lock:
-            return self._cleanup_old_sessions(max_age_hours * 3600)
+        with self._condition:
+            return self._cleanup_old_sessions_unlocked(max_age_hours * 3600)
 
-    def _cleanup_old_sessions(self, max_age_seconds: float | None = None) -> int:
-        """Internal cleanup method (assumes lock is held)."""
-        if max_age_seconds is None:
-            max_age_seconds = self._auto_cleanup_hours * 3600
-            
-        current_time = time.time()
-        old_sessions = [
-            session_id for session_id, session in self._sessions.items()
-            if (current_time - session.last_accessed) > max_age_seconds
-        ]
-        
-        for session_id in old_sessions:
-            del self._sessions[session_id]
-            if self._default_session_id == session_id:
-                self._default_session_id = next(iter(self._sessions.keys()), None)
-        
-        if old_sessions:
-            logger.info(f"Cleaned up {len(old_sessions)} old sessions")
-            
-        return len(old_sessions)
+    @contextmanager
+    def session_scope(
+        self,
+        session_id: str | None = None,
+    ) -> Iterator[SessionState]:
+        """Lease and exclusively access an existing session."""
+        with self._condition:
+            requested_id = (
+                session_id
+                if session_id is not None
+                else self._default_session_id
+            )
+            if requested_id is None:
+                raise RuntimeError(
+                    "No active session. Use `create_session()` first."
+                )
+            resolved_id = self._resolve_session_id(requested_id)
+            if resolved_id is None:
+                raise ValueError(f"Session not found: {session_id}")
+            session = self._sessions[resolved_id]
+            session._lease_count += 1
+            self._condition.notify_all()
+
+        try:
+            with session._operation_lock:
+                session._touch_unlocked()
+                token = _active_session.set(session)
+                try:
+                    yield session
+                finally:
+                    _active_session.reset(token)
+        finally:
+            with self._condition:
+                session._lease_count -= 1
+                self._condition.notify_all()
+
+    @contextmanager
+    def ensure_session_scope(
+        self,
+        session_id: str | None = None,
+        *,
+        session_name: str | None = None,
+    ) -> Iterator[SessionState]:
+        """Lease an explicit/default session, creating only an absent default."""
+        with self._condition:
+            if session_id is not None:
+                resolved_id = self._resolve_session_id(session_id)
+                if resolved_id is None:
+                    raise ValueError(f"Session not found: {session_id}")
+                session = self._sessions[resolved_id]
+            elif self._default_session_id is not None:
+                session = self._sessions[self._default_session_id]
+            else:
+                new_id = self._create_session_unlocked(
+                    set_as_default=True,
+                    session_name=session_name,
+                )
+                session = self._sessions[new_id]
+            session._lease_count += 1
+            self._condition.notify_all()
+
+        try:
+            with session._operation_lock:
+                session._touch_unlocked()
+                token = _active_session.set(session)
+                try:
+                    yield session
+                finally:
+                    _active_session.reset(token)
+        finally:
+            with self._condition:
+                session._lease_count -= 1
+                self._condition.notify_all()
+
+    @contextmanager
+    def optional_session_scope(
+        self,
+        session_id: str | None = None,
+    ) -> Iterator[SessionState | None]:
+        """Lease a session when available, or yield None for no default."""
+        with self._condition:
+            requested_id = (
+                session_id
+                if session_id is not None
+                else self._default_session_id
+            )
+            if requested_id is None:
+                session = None
+            else:
+                resolved_id = self._resolve_session_id(requested_id)
+                if resolved_id is None:
+                    raise ValueError(f"Session not found: {session_id}")
+                session = self._sessions[resolved_id]
+                session._lease_count += 1
+                self._condition.notify_all()
+
+        if session is None:
+            yield None
+            return
+
+        try:
+            with session._operation_lock:
+                session._touch_unlocked()
+                token = _active_session.set(session)
+                try:
+                    yield session
+                finally:
+                    _active_session.reset(token)
+        finally:
+            with self._condition:
+                session._lease_count -= 1
+                self._condition.notify_all()
     
     def save_session(self, session_id: str, filepath: Path) -> bool:
         """Save session state to file."""
-        session = self.get_session(session_id)
-        if not session:
-            return False
-
-        resolved_id = session.session_id
-            
         try:
-            session_data = session.to_dict()
-            # Don't save the actual config object, just metadata
-            session_data['has_config'] = session.config is not None
-            
-            with open(filepath, 'w') as f:
-                json.dump(session_data, f, indent=2)
-            
-            logger.info(f"Saved session {resolved_id[:8]}... to {filepath}")
+            with self.session_scope(session_id) as session:
+                resolved_id = session.session_id
+                session_data = session.to_dict()
+                session_data["has_config"] = session.config is not None
+                with open(filepath, "w") as file:
+                    json.dump(session_data, file, indent=2)
+
+            logger.info("Saved session %s... to %s", resolved_id[:8], filepath)
             return True
-        except (OSError, TypeError, ValueError) as error:
+        except (OSError, RuntimeError, TypeError, ValueError) as error:
             logger.error(
                 "Failed to save session %s...: %s",
-                resolved_id[:8],
+                session_id[:8],
                 error,
                 exc_info=True,
             )
@@ -368,42 +695,51 @@ class SessionManager:
     
     def get_session_stats(self) -> dict:
         """Get statistics about all sessions."""
-        with self._lock:
-            total_sessions = len(self._sessions)
-            total_configs = sum(1 for s in self._sessions.values() if s.config is not None)
-            
-            if total_sessions == 0:
-                return {
-                    'total_sessions': 0,
-                    'active_configs': 0,
-                    'avg_progress': 0.0,
-                    'oldest_session_age_hours': 0.0
-                }
-            
-            avg_progress = sum(s.get_progress_percentage() for s in self._sessions.values()) / total_sessions
-            current_time = time.time()
-            oldest_age = max((current_time - s.created_at) for s in self._sessions.values()) / 3600
-            
+        snapshots = self.list_session_snapshots()
+        total_sessions = len(snapshots)
+        total_configs = sum(1 for snapshot in snapshots if snapshot["has_config"])
+
+        if total_sessions == 0:
             return {
-                'total_sessions': total_sessions,
-                'active_configs': total_configs,
-                'avg_progress': avg_progress,
-                'oldest_session_age_hours': oldest_age
+                "total_sessions": 0,
+                "active_configs": 0,
+                "avg_progress": 0.0,
+                "oldest_session_age_hours": 0.0,
             }
+
+        avg_progress = (
+            sum(float(snapshot["progress"]) for snapshot in snapshots)
+            / total_sessions
+        )
+        current_time = time.time()
+        oldest_age = (
+            max(
+                current_time - float(snapshot["created_at"])
+                for snapshot in snapshots
+            )
+            / 3600
+        )
+
+        return {
+            "total_sessions": total_sessions,
+            "active_configs": total_configs,
+            "avg_progress": avg_progress,
+            "oldest_session_age_hours": oldest_age,
+        }
     
     def set_maboss_context(self, session_id: str | None, maboss_context: MaBoSSContext) -> bool:
         """Set MaBoSS context for a session."""
-        with self._lock:
-            session = self.get_session(session_id)
-            if session:
+        try:
+            with self.session_scope(session_id) as session:
                 session.maboss_context = maboss_context
                 logger.info(f"Set MaBoSS context for session {session.session_id[:8]}...")
                 return True
+        except (RuntimeError, ValueError):
             return False
     
     def find_session_by_name(self, session_name: str) -> SessionState | None:
         """Find session by human-readable name."""
-        with self._lock:
+        with self._condition:
             for session in self._sessions.values():
                 if session.session_name == session_name:
                     return session
@@ -411,27 +747,48 @@ class SessionManager:
     
     def get_maboss_context(self, session_id: str | None = None) -> MaBoSSContext | None:
         """Get MaBoSS context from session."""
-        session = self.get_session(session_id)
-        return session.maboss_context if session else None
+        try:
+            with self.session_scope(session_id) as session:
+                return session.maboss_context
+        except (RuntimeError, ValueError):
+            return None
 
 # Global session manager instance
 session_manager = SessionManager()
 
 def get_current_session(session_id: str | None = None) -> SessionState | None:
     """Convenience function to get a session by ID, or the current default session."""
+    active_session = _active_session.get()
+    if active_session is not None and (
+        session_id is None
+        or active_session.session_id == session_id
+        or active_session.session_id.startswith(session_id)
+    ):
+        return active_session
     return session_manager.get_session(session_id)
 
 def ensure_session(session_id: str | None = None) -> SessionState:
     """Return the requested session, the default session, or create one if none exists."""
-    session = session_manager.get_session(session_id)
-    if session is None:
-        new_id = session_manager.create_session()
-        session = session_manager.get_session(new_id)
-        assert session is not None
-    return session
+    active_session = _active_session.get()
+    if active_session is not None and (
+        session_id is None
+        or active_session.session_id == session_id
+        or active_session.session_id.startswith(session_id)
+    ):
+        return active_session
+    return session_manager.ensure_session(session_id)
 
 def analyze_and_update_session_from_config(session: SessionState, config):
     """Update session state from loaded PhysiCell configuration."""
+    with session._operation_lock:
+        _analyze_and_update_session_from_config_unlocked(session, config)
+
+
+def _analyze_and_update_session_from_config_unlocked(
+    session: SessionState,
+    config: Any,
+) -> None:
+    """Populate XML-derived metadata while the session lock is held."""
     # Extract substrates
     session.loaded_substrates = []
     try:
@@ -478,9 +835,16 @@ def analyze_and_update_session_from_config(session: SessionState, config):
 
     # Check for existing rules
     session.has_existing_rules = False
+    session.rules_count = 0
     try:
-        if hasattr(config, 'cell_rules') and hasattr(config.cell_rules, 'rulesets'):
-            session.has_existing_rules = len(config.cell_rules.rulesets) > 0
+        if hasattr(config, "cell_rules"):
+            if hasattr(config.cell_rules, "get_rules"):
+                session.rules_count = len(config.cell_rules.get_rules())
+            if hasattr(config.cell_rules, "rulesets"):
+                session.has_existing_rules = len(config.cell_rules.rulesets) > 0
+            session.has_existing_rules = (
+                session.has_existing_rules or session.rules_count > 0
+            )
     # PhysiCell-settings objects do not expose a stable exception contract.
     except Exception:  # noqa: BLE001
         logger.debug("Could not inspect PhysiCell rules", exc_info=True)
