@@ -15,6 +15,7 @@ from pydantic import Field
 
 from mcp.server.mcpserver import Context, MCPServer, Image
 from mcp.server.mcpserver.exceptions import ResourceNotFoundError
+from mcp.types import CallToolResult, TextContent
 from mcp_biomodelling_servers import __version__
 from session_manager import session_manager, ensure_session, MaBoSSSession
 from artifact_manager import get_artifact_dir, safe_artifact_path, list_artifacts, clean_artifacts, write_session_meta, list_artifact_sessions as _list_artifact_sessions_on_disk
@@ -1005,43 +1006,78 @@ async def simulate_mutation(
 @mcp.tool()
 async def visualize_network_trajectories(
     ctx: Context,
-    session_id: Optional[str] = None,
-) -> list: # Changed return type to list to support multiple content types
-    """Plot network state trajectories and return the image for visualization."""
+    session_id: str | None = None,
+    until: float | None = Field(
+        default=None,
+        gt=0,
+        allow_inf_nan=False,
+        description=(
+            "Maximum MaBoSS simulation time to display. "
+            "Omit to plot the full available trajectory."
+        ),
+    ),
+) -> CallToolResult:
+    """Plot network state trajectories and return an uncropped PNG image."""
     logger.info("Visualizing network trajectories")
     sess = ensure_session(session_id)
-    
+
     if sess.result is None:
         raise RuntimeError(
             "No simulation has been run yet. Call run_simulation first."
         )
-    
-    try:
-        fig = sess.result.plot_trajectory()
-        if fig is None:
-            fig = plt.gcf()
 
-        # 1. Save to disk as usual (for your artifacts)
+    fig = None
+    try:
+        # pyMaBoSS draws the legend outside the axes and returns None. Own the
+        # figure explicitly so rendering and cleanup do not depend on plt.gcf().
+        fig, axes = plt.subplots(figsize=(10, 6))
+        sess.result.plot_trajectory(until=until, axes=axes)
+        if not axes.has_data():
+            raise RuntimeError("MaBoSS returned no trajectory data to plot.")
+        fig.tight_layout()
+
+        # Render once with a tight bounding box so the external legend is not
+        # cropped. The exact same PNG bytes are saved and returned to the client.
+        with io.BytesIO() as buffer:
+            fig.savefig(
+                buffer,
+                format="png",
+                dpi=150,
+                bbox_inches="tight",
+                pad_inches=0.2,
+            )
+            png_data = buffer.getvalue()
+
         art_dir = get_artifact_dir(_SERVER_ROOT, sess.session_id)
-        output_path = str(safe_artifact_path(art_dir, "network_trajectory.png"))
-        fig.savefig(output_path)
-        
-        # 2. Capture the figure in a buffer for the MCP client
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png")
-        plt.close(fig)
-        
+        output_path = safe_artifact_path(art_dir, "network_trajectory.png")
+        output_path.write_bytes(png_data)
+
         logger.info("Trajectory plot saved to %s", output_path)
 
-        # 3. Return BOTH the text description and the Image object
-        return [
-            f"Network trajectory plot saved to: {output_path}",
-            Image(data=buf.getvalue(), format="png")
-        ]
-        
+        time_window = (
+            "the full available simulation time"
+            if until is None
+            else f"simulation time <= {until:g}"
+        )
+        return CallToolResult(
+            content=[
+                TextContent(
+                    type="text",
+                    text=(
+                        f"Network trajectory plot ({time_window}) saved to: "
+                        f"{output_path}"
+                    ),
+                ),
+                Image(data=png_data, format="png").to_image_content(),
+            ]
+        )
+
     except Exception as e:
         logger.exception("Error saving trajectory plot")
         raise RuntimeError(f"Error saving trajectory plot: {e}") from e
+    finally:
+        if fig is not None:
+            plt.close(fig)
 
 
 @mcp.tool()
