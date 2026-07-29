@@ -9,7 +9,7 @@ import re
 import tempfile
 from pathlib import Path
 from threading import Lock
-from typing import Annotated, Optional, List
+from typing import Annotated, Literal, Optional, List
 from pydantic import Field
 
 import anyio
@@ -32,11 +32,21 @@ from src.helpers import (
     _compute_components, requires_network, session_locked,
     sanitize_bnet_file, _get_translators
 )
+from src.history import (
+    HistoryNavigationResult,
+    HistoryRetentionResult,
+    NetworkHistorySummary,
+    NetworkStateComparison,
+    compare_history_states,
+    state_ids,
+    summarize_history,
+)
 
 import pandas as pd
 
 
 from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ResourceNotFoundError
 
 logger = logging.getLogger(__name__)
 _stdout_capture_lock = Lock()
@@ -65,13 +75,17 @@ NEKO_AGENT_MANUAL = """
 3. **Curate:** `remove_bimodal_interactions()` -> `remove_undefined_interactions()`
 4. **Audit Connectivity:** `check_disconnected_nodes()`
    - *If disconnected:* `list_components()` -> `candidate_connectors()` -> Apply a connection tool.
-5. **Inspect:** `list_genes_and_interactions(verbosity='preview')`
-6. **Export:** `export_network(format='bnet')` -> Pass to MaBoSS.
+5. **Inspect history:** `list_network_history()` after topology changes. Use
+   `compare_network_states(state_a, state_b)` before deciding whether to
+   `navigate_network_history(action='checkout', state_id=...)`.
+6. **Inspect network:** `list_genes_and_interactions(verbosity='preview')`
+7. **Export:** `export_network(format='bnet')` -> Pass to MaBoSS.
 
 ## 2. Tool Categories
 * **Sessions:** `create_session`, `list_sessions`, `set_default_session`, `delete_session`, `status`, `reset_network`
 * **Connection Solvers:** `bridge_components`, `connect_targeted_nodes`, `apply_global_connection`
 * **Inspection:** `list_genes_and_interactions`, `find_paths`, `get_references`, `filter_interactions`
+* **History:** `list_network_history`, `navigate_network_history`, `compare_network_states`, `set_network_history_limit`
 
 ## 3. Critical Operating Rules
 * **Session First:** Always call `create_session` before `create_network`.
@@ -93,6 +107,36 @@ def neko_workflow_prompt() -> str:
 )
 def neko_agent_manual_resource() -> str:
     return NEKO_AGENT_MANUAL
+
+
+@mcp.resource(
+    uri="neko://session/{session_id}/history",
+    name="Network History",
+    description=(
+        "Branching NeKo network history rendered as inline SVG HTML. "
+        "Use list_network_history to identify the current state."
+    ),
+    mime_type="text/html",
+)
+def network_history_resource(session_id: str) -> str:
+    """Render the history of an existing NeKo session without mutating it."""
+    try:
+        with session_manager.existing_session_scope(session_id) as sess:
+            if sess.network is None:
+                raise ResourceNotFoundError(
+                    "No network in this session. Call create_network first."
+                )
+            try:
+                return sess.network.history_html()
+            except Exception as exc:
+                raise RuntimeError(
+                    "Unable to render NeKo history as HTML. "
+                    f"Check the Graphviz installation: {exc}"
+                ) from exc
+    except KeyError as exc:
+        raise ResourceNotFoundError(
+            f"NeKo session not found: {session_id}"
+        ) from exc
 
 @mcp.tool()
 async def create_network(
@@ -185,6 +229,10 @@ async def create_network(
                     connect_with_bias=connect_with_bias,
                     consensus=consensus,
                 )
+
+            history_max_states = sess.get_history_max_states()
+            if history_max_states is not None:
+                new_network.set_max_history(history_max_states)
 
             try:
                 df_edges = new_network.convert_edgelist_into_genesymbol()
@@ -568,6 +616,187 @@ def reset_network(
     sess = ensure_session(session_id)
     sess.set_network(None)
     return f"Session {sess.session_id} network reset."
+
+
+@mcp.tool()
+@requires_network
+def list_network_history(
+        session_id: str | None = Field(
+            None,
+            description=(
+                "Session ID; omit to inspect the active/default session."
+            ),
+        ),
+        *,
+        sess=None,
+        network=None,
+        ) -> NetworkHistorySummary:
+    """List exact state IDs and branch relationships for the current network."""
+    return summarize_history(
+        network,
+        session_id=sess.session_id,
+        max_states=sess.get_history_max_states(),
+    )
+
+
+@mcp.tool()
+@requires_network
+def navigate_network_history(
+        action: Annotated[
+            Literal["undo", "redo", "checkout"],
+            Field(
+                description=(
+                    "History operation: undo to a parent, redo to a child, "
+                    "or checkout an exact state ID."
+                )
+            ),
+        ],
+        state_id: int | None = Field(
+            None,
+            description=(
+                "Exact target state ID. Required for checkout; optional for "
+                "redo when the current state has one child; invalid for undo."
+            ),
+        ),
+        session_id: str | None = Field(
+            None,
+            description=(
+                "Session ID; omit to use the active/default session."
+            ),
+        ),
+        *,
+        sess=None,
+        network=None,
+        ) -> HistoryNavigationResult:
+    """Move through NeKo's branching history while preserving saved states."""
+    if action == "checkout" and state_id is None:
+        raise ValueError("checkout requires an exact state_id.")
+    if action == "undo" and state_id is not None:
+        raise ValueError("undo does not accept state_id.")
+
+    previous_state_id = network.current_state_id
+    if action == "undo":
+        network.undo()
+    elif action == "redo":
+        network.redo(state_id)
+    else:
+        network.checkout(state_id)
+
+    current_state_id = network.current_state_id
+    moved = previous_state_id != current_state_id
+    if moved:
+        _invalidate(sess)
+
+    if moved:
+        message = (
+            f"Moved from state {previous_state_id} to state "
+            f"{current_state_id}."
+        )
+    elif action == "undo":
+        message = "Already at a root state; no parent state is available."
+    elif action == "redo":
+        message = "No child state is available from the current state."
+    else:
+        message = f"State {current_state_id} is already checked out."
+
+    return HistoryNavigationResult(
+        session_id=sess.session_id,
+        action=action,
+        requested_state_id=state_id,
+        previous_state_id=previous_state_id,
+        current_state_id=current_state_id,
+        moved=moved,
+        node_count=len(network.nodes),
+        edge_count=len(network.edges),
+        message=message,
+    )
+
+
+@mcp.tool()
+@requires_network
+def compare_network_states(
+        state_a: Annotated[
+            int,
+            Field(description="Exact ID of the baseline history state."),
+        ],
+        state_b: Annotated[
+            int,
+            Field(description="Exact ID of the comparison history state."),
+        ],
+        session_id: str | None = Field(
+            None,
+            description=(
+                "Session ID; omit to use the active/default session."
+            ),
+        ),
+        *,
+        sess=None,
+        network=None,
+        ) -> NetworkStateComparison:
+    """Compare two saved topologies without changing the checked-out state."""
+    return compare_history_states(
+        network,
+        session_id=sess.session_id,
+        state_a=state_a,
+        state_b=state_b,
+    )
+
+
+@mcp.tool()
+@session_locked
+def set_network_history_limit(
+        max_states: Annotated[
+            int | None,
+            Field(
+                ge=2,
+                description=(
+                    "Maximum retained states (minimum 2), or null for "
+                    "unbounded history. Lowering this value may immediately "
+                    "and irreversibly prune older snapshots."
+                ),
+            ),
+        ],
+        session_id: str | None = Field(
+            None,
+            description=(
+                "Session ID; omit to configure the active/default session."
+            ),
+        ),
+        ) -> HistoryRetentionResult:
+    """Configure optional NeKo history pruning for this session."""
+    sess = ensure_session(session_id)
+    network = sess.network
+    before_ids = state_ids(network) if network is not None else []
+
+    if network is not None:
+        network.set_max_history(max_states)
+    sess.set_history_max_states(max_states)
+
+    after_ids = state_ids(network) if network is not None else []
+    pruned_ids = sorted(set(before_ids) - set(after_ids))
+    if max_states is None:
+        policy = "History retention is now unbounded."
+    else:
+        policy = f"History retention is limited to {max_states} states."
+    if network is None:
+        policy += " The policy will apply when a network is created."
+    elif pruned_ids:
+        policy += (
+            " Pruned state IDs: "
+            + ", ".join(str(state_id) for state_id in pruned_ids)
+            + "."
+        )
+
+    return HistoryRetentionResult(
+        session_id=sess.session_id,
+        max_states=max_states,
+        applies_to_current_network=network is not None,
+        state_count_before=len(before_ids),
+        state_count_after=len(after_ids),
+        pruned_state_ids=pruned_ids,
+        retained_state_ids=after_ids,
+        message=policy,
+    )
 
 @mcp.tool()
 @session_locked

@@ -12,7 +12,7 @@ from typing import Any
 
 import pandas as pd
 import pytest
-from mcp import Client
+from mcp import Client, MCPError
 
 
 def _install_neko_import_stubs() -> None:
@@ -103,6 +103,20 @@ async def _list_tools() -> Any:
         return await client.list_tools()
 
 
+async def _read_resource(uri: str) -> Any:
+    async with Client(mcp) as client:
+        return await client.read_resource(uri)
+
+
+async def _read_resource_error(uri: str) -> MCPError:
+    async with Client(mcp) as client:
+        try:
+            await client.read_resource(uri)
+        except MCPError as error:
+            return error
+    raise AssertionError("Expected the resource read to raise MCPError.")
+
+
 def _clear_sessions() -> None:
     for session_id in list(session_manager.list_sessions()):
         session_manager.delete_session(session_id)
@@ -134,6 +148,158 @@ def _network_stub(**attributes: Any) -> SimpleNamespace:
     }
     defaults.update(attributes)
     return SimpleNamespace(**defaults)
+
+
+class _HistoryGraph:
+    def __init__(
+        self,
+        parents: dict[int, list[int]],
+        children: dict[int, list[int]],
+    ) -> None:
+        self.parents = parents
+        self.children = children
+
+    def predecessors(self, state_id: int) -> list[int]:
+        return self.parents[state_id]
+
+    def successors(self, state_id: int) -> list[int]:
+        return self.children[state_id]
+
+
+class _HistoryNetwork:
+    def __init__(self) -> None:
+        self._state_order = [0, 2, 4, 6]
+        self._metadata = {
+            0: {"label": "initial"},
+            2: {"method": "add_node", "args": ["AKT1"], "kwargs": {}},
+            4: {"method": "connect_nodes", "args": [], "kwargs": {}},
+            6: {"method": "remove_node", "args": ["AKT1"], "kwargs": {}},
+        }
+        self._parents = {0: [], 2: [0], 4: [2], 6: [2]}
+        self._children = {0: [2], 2: [4, 6], 4: [], 6: []}
+        self._snapshots = {
+            0: (
+                pd.DataFrame(
+                    [["P04637", "TP53"]],
+                    columns=["Uniprot", "Genesymbol"],
+                ),
+                pd.DataFrame(columns=["source", "target", "Effect"]),
+            ),
+            2: (
+                pd.DataFrame(
+                    [["P04637", "TP53"], ["P31749", "AKT1"]],
+                    columns=["Uniprot", "Genesymbol"],
+                ),
+                pd.DataFrame(
+                    [["TP53", "AKT1", "stimulation"]],
+                    columns=["source", "target", "Effect"],
+                ),
+            ),
+            4: (
+                pd.DataFrame(
+                    [
+                        ["P04637", "TP53"],
+                        ["P31749", "AKT1"],
+                        ["Q00987", "MDM2"],
+                    ],
+                    columns=["Uniprot", "Genesymbol"],
+                ),
+                pd.DataFrame(
+                    [
+                        ["TP53", "AKT1", "stimulation"],
+                        ["AKT1", "MDM2", "inhibition"],
+                    ],
+                    columns=["source", "target", "Effect"],
+                ),
+            ),
+            6: (
+                pd.DataFrame(
+                    [["P04637", "TP53"]],
+                    columns=["Uniprot", "Genesymbol"],
+                ),
+                pd.DataFrame(columns=["source", "target", "Effect"]),
+            ),
+        }
+        self.current_state_id = 4
+        self.root_state_id = 0
+        self.max_history_calls: list[int | None] = []
+        self.nodes, self.edges = self._copy_snapshot(4)
+
+    def _copy_snapshot(
+        self,
+        state_id: int,
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+        nodes, edges = self._snapshots[state_id]
+        return nodes.copy(deep=True), edges.copy(deep=True)
+
+    def list_states(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": state_id,
+                "metadata": self._metadata[state_id],
+            }
+            for state_id in self._state_order
+        ]
+
+    def history_graph(self) -> _HistoryGraph:
+        return _HistoryGraph(self._parents, self._children)
+
+    def checkout(self, state_id: int) -> None:
+        if state_id not in self._state_order:
+            raise ValueError(f"Unknown state id: {state_id}")
+        self.current_state_id = state_id
+        self.nodes, self.edges = self._copy_snapshot(state_id)
+
+    def undo(self) -> None:
+        parents = self._parents[self.current_state_id]
+        if parents:
+            self.checkout(parents[-1])
+
+    def redo(self, state_id: int | None = None) -> None:
+        children = self._children[self.current_state_id]
+        if not children:
+            return
+        if state_id is None:
+            if len(children) > 1:
+                raise ValueError(
+                    "Multiple branches available; specify a target state id."
+                )
+            state_id = children[0]
+        elif state_id not in children:
+            raise ValueError(
+                f"State {state_id} is not a child of "
+                f"{self.current_state_id}."
+            )
+        self.checkout(state_id)
+
+    def compare_states(self, state_a: int, state_b: int) -> dict[str, Any]:
+        del state_a, state_b
+        return {
+            "added_nodes": ["MDM2", "AKT1"],
+            "removed_nodes": ["EGFR"],
+            "added_edges": [
+                ("TP53", "AKT1", "stimulation"),
+                ("AKT1", "MDM2", pd.NA),
+            ],
+            "removed_edges": [("EGFR", "TP53", "inhibition")],
+        }
+
+    def set_max_history(self, max_states: int | None) -> None:
+        self.max_history_calls.append(max_states)
+        if max_states is not None and len(self._state_order) > max_states:
+            retained = [self.root_state_id, self.current_state_id]
+            self._state_order = retained
+            self._parents = {
+                self.root_state_id: [],
+                self.current_state_id: [self.root_state_id],
+            }
+            self._children = {
+                self.root_state_id: [self.current_state_id],
+                self.current_state_id: [],
+            }
+
+    def history_html(self) -> str:
+        return '<div class="neko-history-graph"><svg>history</svg></div>'
 
 
 @pytest.fixture(autouse=True)
@@ -314,6 +480,247 @@ def test_find_paths_restores_stdout_after_failure() -> None:
     assert sys.stdout is stdout_before
 
 
+def test_list_network_history_returns_branching_structured_output() -> None:
+    network = _HistoryNetwork()
+    session_id = _create_session(network)
+
+    result = _run(
+        _call_tool(
+            "list_network_history",
+            {"session_id": session_id},
+        )
+    )
+
+    assert result.is_error is False
+    assert result.structured_content is not None
+    assert result.structured_content["session_id"] == session_id
+    assert result.structured_content["current_state_id"] == 4
+    assert result.structured_content["root_state_id"] == 0
+    assert result.structured_content["max_states"] is None
+    assert [
+        state["state_id"]
+        for state in result.structured_content["states"]
+    ] == [0, 2, 4, 6]
+    branch = result.structured_content["states"][1]
+    assert branch["parent_state_ids"] == [0]
+    assert branch["child_state_ids"] == [4, 6]
+
+
+def test_navigate_network_history_moves_and_invalidates_cache() -> None:
+    network = _HistoryNetwork()
+    session_id = _create_session(network)
+    session = session_manager.get_session(session_id)
+    assert session is not None
+    session._edges_cache_dirty = False
+
+    result = _run(
+        _call_tool(
+            "navigate_network_history",
+            {"action": "undo", "session_id": session_id},
+        )
+    )
+
+    assert result.is_error is False
+    assert result.structured_content["previous_state_id"] == 4
+    assert result.structured_content["current_state_id"] == 2
+    assert result.structured_content["moved"] is True
+    assert network.current_state_id == 2
+    assert session._edges_cache_dirty is True
+
+
+def test_navigate_network_history_reports_root_noop_as_success() -> None:
+    network = _HistoryNetwork()
+    network.checkout(0)
+    session_id = _create_session(network)
+    session = session_manager.get_session(session_id)
+    assert session is not None
+    session._edges_cache_dirty = False
+
+    result = _run(
+        _call_tool(
+            "navigate_network_history",
+            {"action": "undo", "session_id": session_id},
+        )
+    )
+
+    assert result.is_error is False
+    assert result.structured_content["moved"] is False
+    assert "root state" in result.structured_content["message"]
+    assert session._edges_cache_dirty is False
+
+
+def test_navigate_network_history_requires_checkout_state_id() -> None:
+    session_id = _create_session(_HistoryNetwork())
+
+    result = _run(
+        _call_tool(
+            "navigate_network_history",
+            {"action": "checkout", "session_id": session_id},
+        )
+    )
+
+    assert result.is_error is True
+    assert "checkout requires an exact state_id" in result.content[0].text
+
+
+def test_navigate_network_history_requires_branch_target_for_redo() -> None:
+    network = _HistoryNetwork()
+    network.checkout(2)
+    session_id = _create_session(network)
+
+    result = _run(
+        _call_tool(
+            "navigate_network_history",
+            {"action": "redo", "session_id": session_id},
+        )
+    )
+
+    assert result.is_error is True
+    assert "Multiple branches available" in result.content[0].text
+    assert network.current_state_id == 2
+
+
+def test_compare_network_states_is_deterministic_and_non_mutating() -> None:
+    network = _HistoryNetwork()
+    session_id = _create_session(network)
+
+    result = _run(
+        _call_tool(
+            "compare_network_states",
+            {
+                "state_a": 0,
+                "state_b": 4,
+                "session_id": session_id,
+            },
+        )
+    )
+
+    assert result.is_error is False
+    assert result.structured_content["added_nodes"] == ["AKT1", "MDM2"]
+    assert result.structured_content["edge_columns"] == [
+        "source",
+        "target",
+        "Effect",
+    ]
+    assert result.structured_content["added_edges"] == [
+        {"source": "AKT1", "target": "MDM2", "Effect": None},
+        {
+            "source": "TP53",
+            "target": "AKT1",
+            "Effect": "stimulation",
+        },
+    ]
+    assert network.current_state_id == 4
+
+
+def test_compare_network_states_rejects_positional_fallback() -> None:
+    network = _HistoryNetwork()
+    session_id = _create_session(network)
+
+    result = _run(
+        _call_tool(
+            "compare_network_states",
+            {
+                "state_a": 1,
+                "state_b": 4,
+                "session_id": session_id,
+            },
+        )
+    )
+
+    assert result.is_error is True
+    assert "Unknown history state ID(s): 1" in result.content[0].text
+    assert "Available state IDs: 0, 2, 4, 6" in result.content[0].text
+
+
+def test_set_network_history_limit_prunes_and_can_restore_unbounded_policy() -> None:
+    network = _HistoryNetwork()
+    session_id = _create_session(network)
+
+    bounded = _run(
+        _call_tool(
+            "set_network_history_limit",
+            {"max_states": 2, "session_id": session_id},
+        )
+    )
+
+    assert bounded.is_error is False
+    assert bounded.structured_content["max_states"] == 2
+    assert bounded.structured_content["pruned_state_ids"] == [2, 6]
+    assert bounded.structured_content["retained_state_ids"] == [0, 4]
+    session = session_manager.get_session(session_id)
+    assert session is not None
+    assert session.get_history_max_states() == 2
+
+    unbounded = _run(
+        _call_tool(
+            "set_network_history_limit",
+            {"max_states": None, "session_id": session_id},
+        )
+    )
+
+    assert unbounded.is_error is False
+    assert unbounded.structured_content["max_states"] is None
+    assert network.max_history_calls == [2, None]
+    assert session.get_history_max_states() is None
+
+
+def test_set_network_history_limit_can_be_configured_before_network() -> None:
+    session_id = _create_session()
+
+    result = _run(
+        _call_tool(
+            "set_network_history_limit",
+            {"max_states": 20, "session_id": session_id},
+        )
+    )
+
+    assert result.is_error is False
+    assert result.structured_content["applies_to_current_network"] is False
+    session = session_manager.get_session(session_id)
+    assert session is not None
+    assert session.get_history_max_states() == 20
+
+
+def test_network_history_resource_returns_inline_svg_html() -> None:
+    session_id = _create_session(_HistoryNetwork())
+
+    result = _run(
+        _read_resource(f"neko://session/{session_id}/history")
+    )
+
+    assert len(result.contents) == 1
+    assert result.contents[0].mime_type == "text/html"
+    assert result.contents[0].text == (
+        '<div class="neko-history-graph"><svg>history</svg></div>'
+    )
+
+
+def test_missing_network_history_resource_does_not_create_session() -> None:
+    assert session_manager.list_sessions() == {}
+
+    error = _run(
+        _read_resource_error(
+            "neko://session/missing-session/history"
+        )
+    )
+
+    assert "NeKo session not found: missing-session" in str(error)
+    assert session_manager.list_sessions() == {}
+
+
+def test_network_history_resource_requires_network() -> None:
+    session_id = _create_session()
+
+    error = _run(
+        _read_resource_error(
+            f"neko://session/{session_id}/history"
+        )
+    )
+
+    assert "No network in this session" in str(error)
+
+
 def test_session_locking_preserves_public_tool_schemas() -> None:
     listed_tools = _run(_list_tools())
     tools = {tool.name: tool for tool in listed_tools.tools}
@@ -326,6 +733,10 @@ def test_session_locking_preserves_public_tool_schemas() -> None:
         "list_genes_and_interactions",
         "find_paths",
         "reset_network",
+        "list_network_history",
+        "navigate_network_history",
+        "compare_network_states",
+        "set_network_history_limit",
         "clean_generated_files",
         "remove_bimodal_interactions",
         "remove_undefined_interactions",
@@ -350,6 +761,33 @@ def test_session_locking_preserves_public_tool_schemas() -> None:
         assert "network" not in properties
         assert "session_id" in properties
 
+    navigation_schema = tools[
+        "navigate_network_history"
+    ].input_schema["properties"]
+    assert navigation_schema["action"]["enum"] == [
+        "undo",
+        "redo",
+        "checkout",
+    ]
+
+    retention_schema = tools[
+        "set_network_history_limit"
+    ].input_schema["properties"]["max_states"]
+    integer_schema = next(
+        option
+        for option in retention_schema["anyOf"]
+        if option.get("type") == "integer"
+    )
+    assert integer_schema["minimum"] == 2
+
+    for tool_name in {
+        "list_network_history",
+        "navigate_network_history",
+        "compare_network_states",
+        "set_network_history_limit",
+    }:
+        assert tools[tool_name].output_schema is not None
+
 
 @pytest.mark.parametrize(
     "handler_name",
@@ -361,6 +799,10 @@ def test_session_locking_preserves_public_tool_schemas() -> None:
         "list_genes_and_interactions",
         "find_paths",
         "reset_network",
+        "list_network_history",
+        "navigate_network_history",
+        "compare_network_states",
+        "set_network_history_limit",
         "clean_generated_files",
         "remove_bimodal_interactions",
         "remove_undefined_interactions",
@@ -487,6 +929,62 @@ def test_create_network_runs_backend_in_worker_thread(
     assert result.is_error is False
     assert constructor_threads
     assert constructor_threads[0] != caller_thread
+
+
+def test_create_network_applies_session_history_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured_limits: list[int | None] = []
+
+    class LimitedNetwork:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            del args, kwargs
+            self.nodes = pd.DataFrame(
+                [{"Uniprot": "P04637", "Genesymbol": "TP53"}]
+            )
+            self.edges = pd.DataFrame(
+                [{"source": "P04637", "target": "Q00987"}]
+            )
+
+        def complete_connection(self, **kwargs: Any) -> None:
+            del kwargs
+
+        def set_max_history(self, max_states: int | None) -> None:
+            configured_limits.append(max_states)
+
+        def convert_edgelist_into_genesymbol(self) -> pd.DataFrame:
+            return pd.DataFrame(
+                [
+                    {
+                        "source": "TP53",
+                        "target": "MDM2",
+                        "Effect": "stimulation",
+                    }
+                ]
+            )
+
+    monkeypatch.setattr(neko_server, "Network", LimitedNetwork)
+    session_id = _create_session()
+    configured = _run(
+        _call_tool(
+            "set_network_history_limit",
+            {"max_states": 20, "session_id": session_id},
+        )
+    )
+    assert configured.is_error is False
+
+    result = _run(
+        _call_tool(
+            "create_network",
+            {
+                "session_id": session_id,
+                "list_of_initial_genes": ["TP53"],
+            },
+        )
+    )
+
+    assert result.is_error is False
+    assert configured_limits == [20]
 
 
 def test_failed_rebuild_preserves_existing_network(

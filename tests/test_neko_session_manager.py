@@ -38,6 +38,7 @@ class TestNeKoSession:
         assert s.session_id == "s1"
         assert s.network is None
         assert s._edges_cache_dirty is True
+        assert s.history_max_states is None
 
     def test_set_network_invalidates_cache(self):
         s = NeKoSession(session_id="s1")
@@ -81,6 +82,14 @@ class TestNeKoSession:
         s._edges_cache_dirty = False
         s.invalidate_edges_cache()
         assert s._edges_cache_dirty is True
+
+    def test_history_limit_round_trip(self):
+        s = NeKoSession(session_id="s1")
+
+        s.set_history_max_states(25)
+
+        assert s.get_history_max_states() == 25
+        assert s.snapshot()["history_max_states"] == 25
 
     def test_cache_invalidation_waits_for_conversion(self):
         conversion_started = Event()
@@ -332,6 +341,53 @@ class TestNeKoSessionManager:
                 mgr.create_session()
 
         assert list(mgr.list_sessions()) == [session_id]
+
+    def test_existing_session_scope_never_creates_fallback(self):
+        mgr = self._fresh()
+
+        with pytest.raises(KeyError, match="Unknown NeKo session"):
+            with mgr.existing_session_scope("missing-session"):
+                pass
+
+        assert mgr.list_sessions() == {}
+
+    def test_existing_session_scope_accepts_unique_prefix(self):
+        mgr = self._fresh()
+        session_id = mgr.create_session()
+
+        with mgr.existing_session_scope(session_id[:8]) as session:
+            assert session.session_id == session_id
+
+    def test_delete_waits_for_existing_session_scope(self):
+        mgr = self._fresh()
+        session_id = mgr.create_session()
+        session = mgr.get_session(session_id)
+        assert session is not None
+        resource_entered = Event()
+        release_resource = Event()
+
+        def read_resource() -> None:
+            with mgr.existing_session_scope(session_id):
+                resource_entered.set()
+                assert release_resource.wait(timeout=2)
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            resource_future = executor.submit(read_resource)
+            assert resource_entered.wait(timeout=2)
+            delete_future = executor.submit(mgr.delete_session, session_id)
+
+            with mgr._condition:
+                assert mgr._condition.wait_for(
+                    lambda: session._retired,
+                    timeout=2,
+                )
+            assert delete_future.done() is False
+
+            release_resource.set()
+            resource_future.result(timeout=2)
+            assert delete_future.result(timeout=2) is True
+
+        assert mgr.get_session(session_id) is None
 
 
 # ---------------------------------------------------------------------------

@@ -38,6 +38,8 @@ class NeKoSession:
     # Cached gene-symbol edge list.
     _edges_cache: object | None = None  # pandas.DataFrame
     _edges_cache_dirty: bool = True
+    # None preserves NeKo's unbounded-history default.
+    history_max_states: int | None = None
     # Default creation parameters (user can override later).
     default_params: dict = field(
         default_factory=lambda: {
@@ -101,6 +103,16 @@ class NeKoSession:
                 "consensus": params.get("consensus", True),
             }
 
+    def set_history_max_states(self, max_states: int | None) -> None:
+        """Persist the history limit used by the current and future network."""
+        with self._operation_lock:
+            self.history_max_states = max_states
+            self._touch_unlocked()
+
+    def get_history_max_states(self) -> int | None:
+        with self._operation_lock:
+            return self.history_max_states
+
     def get_edges_df(self) -> object | None:
         """Return the cached gene-symbol edge table for the current network."""
         with self._operation_lock:
@@ -128,6 +140,7 @@ class NeKoSession:
                 "has_network": network is not None,
                 "nodes": len(network.nodes) if network is not None else 0,
                 "edges": len(network.edges) if network is not None else 0,
+                "history_max_states": self.history_max_states,
                 "last_accessed": self.last_accessed,
                 "created_at": self.created_at,
             }
@@ -316,6 +329,33 @@ class NeKoSessionManager:
         """Lease and exclusively access one session for an atomic operation."""
         with self._condition:
             session = self.ensure_session(session_id)
+            session._lease_count += 1
+            self._condition.notify_all()
+
+        try:
+            with session._operation_lock:
+                session._touch_unlocked()
+                token = _active_session.set(session)
+                try:
+                    yield session
+                finally:
+                    _active_session.reset(token)
+        finally:
+            with self._condition:
+                session._lease_count -= 1
+                self._condition.notify_all()
+
+    @contextmanager
+    def existing_session_scope(
+        self,
+        session_id: str,
+    ) -> Iterator[NeKoSession]:
+        """Lease an existing session without creating a fallback session."""
+        with self._condition:
+            resolved_id = self._resolve_session_id(session_id)
+            if resolved_id is None:
+                raise KeyError(f"Unknown NeKo session: {session_id}")
+            session = self._sessions[resolved_id]
             session._lease_count += 1
             self._condition.notify_all()
 
