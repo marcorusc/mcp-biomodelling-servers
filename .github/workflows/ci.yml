@@ -2,25 +2,57 @@ name: CI
 
 on:
   push:
-    branches: ["main"]
+    branches: ["main", "development_v2"]
   pull_request:
     branches: ["main"]
+
+permissions:
+  contents: read
+
+env:
+  NEKO_COMPAT_REF: d75d30747c33cbbc6721b2c4e0773d885d64fa97
 
 jobs:
   test:
     name: Lint · Type-check · Test
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
 
-      - name: Install dev tooling
-        run: pip install build pytest ruff==0.16.0 mypy "mcp>=2,<3" maboss matplotlib pandas
+      - name: Install project and development dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install ".[dev]" "pandas>=2.2,<4"
+          python -m pip check
+
+      - name: Report runtime versions
+        run: |
+          python - <<'PY'
+          import sys
+          from importlib.metadata import version
+
+          print(f"Python {sys.version}")
+          for package in (
+              "mcp",
+              "anyio",
+              "pydantic",
+              "pandas",
+              "nekomata",
+              "maboss",
+              "cmaboss",
+              "physicell-settings",
+          ):
+              print(f"{package}=={version(package)}")
+          PY
 
       # ------------------------------------------------------------------ #
       # Lint (ruff)                                                          #
@@ -71,9 +103,14 @@ jobs:
         run: |
           python -m build
           python - <<'PY'
+          from email.parser import BytesParser
+          from email.policy import default
           from pathlib import Path, PurePosixPath
           import tarfile
           import zipfile
+
+          from packaging.requirements import Requirement
+          from packaging.utils import canonicalize_name
 
           def is_forbidden_environment_file(member: str) -> bool:
               name = PurePosixPath(member).name
@@ -110,5 +147,143 @@ jobs:
                   f"Environment files found in distributions:\n{details}"
               )
 
-          print(f"Checked {len(archives)} distribution archives: no environment files found.")
+          wheels = [archive for archive in archives if archive.suffix == ".whl"]
+          if len(wheels) != 1:
+              raise SystemExit(
+                  f"Expected exactly one wheel archive, found {len(wheels)}."
+              )
+
+          with zipfile.ZipFile(wheels[0]) as wheel:
+              metadata_members = [
+                  member
+                  for member in wheel.namelist()
+                  if member.endswith(".dist-info/METADATA")
+              ]
+              if len(metadata_members) != 1:
+                  raise SystemExit(
+                      "Expected exactly one wheel METADATA file, found "
+                      f"{len(metadata_members)}."
+                  )
+              metadata = BytesParser(policy=default).parsebytes(
+                  wheel.read(metadata_members[0])
+              )
+
+          if metadata["Requires-Python"] != ">=3.10":
+              raise SystemExit(
+                  "Unexpected Requires-Python metadata: "
+                  f"{metadata['Requires-Python']!r}."
+              )
+
+          declared_dependencies = {
+              canonicalize_name(Requirement(requirement).name)
+              for requirement in metadata.get_all("Requires-Dist", [])
+          }
+          expected_dependencies = {
+              canonicalize_name(package)
+              for package in (
+                  "mcp",
+                  "anyio",
+                  "pydantic",
+                  "pandas",
+                  "matplotlib",
+                  "nekomata",
+                  "maboss",
+                  "physicell-settings",
+                  "requests",
+                  "tabulate",
+              )
+          }
+          missing_dependencies = sorted(
+              expected_dependencies - declared_dependencies
+          )
+          if missing_dependencies:
+              raise SystemExit(
+                  "Wheel metadata is missing direct dependencies: "
+                  + ", ".join(missing_dependencies)
+              )
+
+          print(
+              f"Checked {len(archives)} distribution archives: "
+              "no environment files found and package metadata is complete."
+          )
           PY
+
+  compatibility:
+    name: Compatibility · ${{ matrix.label }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Python 3.10 · pandas 2
+            python_version: "3.10"
+            pandas_spec: "pandas>=2.2,<3"
+          - label: Python 3.14 · pandas 3
+            python_version: "3.14"
+            pandas_spec: "pandas>=3,<4"
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python ${{ matrix.python_version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python_version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install project with coordinated NeKo revision
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            "." \
+            "pytest>=8" \
+            "${{ matrix.pandas_spec }}" \
+            "nekomata @ git+https://github.com/sysbio-curie/Neko.git@${NEKO_COMPAT_REF}"
+          python -m pip check
+
+      - name: Verify NeKo revision and report runtime versions
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import sys
+          from importlib.metadata import distribution, version
+
+          direct_url_text = distribution("nekomata").read_text(
+              "direct_url.json"
+          )
+          if direct_url_text is None:
+              raise SystemExit(
+                  "NeKo was not installed from the pinned Git revision."
+              )
+
+          direct_url = json.loads(direct_url_text)
+          resolved_ref = direct_url.get("vcs_info", {}).get("commit_id")
+          expected_ref = os.environ["NEKO_COMPAT_REF"]
+          if resolved_ref != expected_ref:
+              raise SystemExit(
+                  f"Expected NeKo commit {expected_ref}, got {resolved_ref}."
+              )
+
+          print(f"Python {sys.version}")
+          print(f"NeKo commit {resolved_ref}")
+          for package in (
+              "mcp",
+              "anyio",
+              "pydantic",
+              "pandas",
+              "nekomata",
+              "maboss",
+              "cmaboss",
+              "physicell-settings",
+          ):
+              print(f"{package}=={version(package)}")
+          PY
+
+      - name: Run real modelling-package smoke tests
+        run: python -m pytest tests/test_runtime_compatibility.py -v
+
+      - name: Run complete compatibility suite
+        run: python -m pytest tests/ -q
