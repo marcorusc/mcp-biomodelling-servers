@@ -24,7 +24,9 @@ from mcp_biomodelling_servers.handoff import (
     MaBoSSToPhysiCellHandoffManifest,
     NeKoHandoffExportResult,
     NeKoToMaBoSSHandoffManifest,
+    PhysiCellHandoffImportResult,
     PhysiCellTarget,
+    bnd_node_names,
     bnet_node_names,
     handoff_artifact,
     load_handoff_manifest,
@@ -93,7 +95,10 @@ def _maboss_manifest(
 ) -> MaBoSSToPhysiCellHandoffManifest:
     maboss_session = "maboss-session"
     bnd_file = handoff_artifact(
-        _write(tmp_path / "model.bnd", "Node A { logic = B; }\n"),
+        _write(
+            tmp_path / "model.bnd",
+            "Node A { logic = B; }\nNode B { logic = A; }\n",
+        ),
         server="MaBoSS",
         session_id=maboss_session,
         role="maboss_bnd",
@@ -238,6 +243,41 @@ def test_bnet_node_names_rejects_invalid_models(
         bnet_node_names(bnet_path)
 
 
+def test_bnd_node_names_reads_declarations_and_ignores_comments(
+    tmp_path: Path,
+) -> None:
+    bnd_path = _write(
+        tmp_path / "model.bnd",
+        "/* Node Fake { logic = 1; } */\n"
+        "Node A_1 { logic = B; } // Node Hidden { logic = 1; }\n"
+        "# Node AlsoHidden { logic = 1; }\n"
+        "node B { logic = A_1; }\n",
+    )
+
+    assert bnd_node_names(bnd_path) == ["A_1", "B"]
+
+
+@pytest.mark.parametrize(
+    ("contents", "message"),
+    [
+        ("// comments only\n", "contains no node declarations"),
+        (
+            "Node A { logic = 1; }\nNode A { logic = 0; }\n",
+            "duplicate node declarations",
+        ),
+    ],
+)
+def test_bnd_node_names_rejects_invalid_models(
+    tmp_path: Path,
+    contents: str,
+    message: str,
+) -> None:
+    bnd_path = _write(tmp_path / "invalid.bnd", contents)
+
+    with pytest.raises(ValueError, match=message):
+        bnd_node_names(bnd_path)
+
+
 def test_network_validates_node_rename_and_duplicate_rule_metadata() -> None:
     network = HandoffNetwork(
         nodes=["A_1", "B"],
@@ -359,6 +399,101 @@ def test_maboss_handoff_export_result_aligns_manifest_and_file(
 
     assert result.manifest.target.cell_type == "epithelial"
     assert result.manifest_file.sha256 == sha256_file(manifest_path)
+
+
+def test_physicell_handoff_import_result_aligns_complete_copied_lineage(
+    tmp_path: Path,
+) -> None:
+    manifest = _maboss_manifest(tmp_path, with_neko_parent=True)
+    manifest_path = write_handoff_manifest(
+        tmp_path / "maboss.handoff.json",
+        manifest,
+    )
+    source_manifest_file = handoff_artifact(
+        manifest_path,
+        server="MaBoSS",
+        session_id=manifest.source.session_id,
+        role="parent_manifest",
+    )
+    assert manifest.parent_manifest is not None
+    neko_manifest = load_handoff_manifest(manifest.parent_manifest.path)
+    assert isinstance(neko_manifest, NeKoToMaBoSSHandoffManifest)
+
+    copied_root = tmp_path / "physicell"
+    copied_root.mkdir()
+
+    def copied_artifact(
+        source: HandoffArtifact,
+        name: str,
+        role: Literal[
+            "maboss_bnd",
+            "maboss_cfg",
+            "maboss_result",
+            "parent_manifest",
+            "neko_bnet",
+        ],
+    ) -> HandoffArtifact:
+        destination = copied_root / name
+        destination.write_bytes(Path(source.path).read_bytes())
+        return handoff_artifact(
+            destination,
+            server="PhysiCell",
+            session_id="physicell-session",
+            role=role,
+        )
+
+    result = PhysiCellHandoffImportResult(
+        server="PhysiCell",
+        session_id="physicell-session",
+        source_manifest_file=source_manifest_file,
+        source_manifest=manifest,
+        manifest_snapshot_file=copied_artifact(
+            source_manifest_file,
+            "source.handoff.json",
+            "parent_manifest",
+        ),
+        bnd_file=copied_artifact(
+            manifest.bnd_file,
+            "model.bnd",
+            "maboss_bnd",
+        ),
+        cfg_file=copied_artifact(
+            manifest.cfg_file,
+            "model.cfg",
+            "maboss_cfg",
+        ),
+        result_file=copied_artifact(
+            manifest.simulation.result_file,
+            "result.csv",
+            "maboss_result",
+        ),
+        neko_manifest=neko_manifest,
+        neko_manifest_file=copied_artifact(
+            manifest.parent_manifest,
+            "neko.handoff.json",
+            "parent_manifest",
+        ),
+        bnet_file=copied_artifact(
+            neko_manifest.bnet_file,
+            "network.bnet",
+            "neko_bnet",
+        ),
+        target_cell_type="epithelial",
+        nodes=["A", "B"],
+        output_nodes=["A"],
+        replaced_existing=False,
+        context_count=1,
+    )
+
+    assert result.manifest_snapshot_file.sha256 == source_manifest_file.sha256
+    assert result.bnet_file is not None
+    assert result.bnet_file.sha256 == neko_manifest.bnet_file.sha256
+
+    with pytest.raises(ValidationError, match="context_count"):
+        PhysiCellHandoffImportResult(
+            **result.model_dump(exclude={"context_count"}),
+            context_count=0,
+        )
 
 
 def test_handoff_artifact_requires_existing_regular_file(

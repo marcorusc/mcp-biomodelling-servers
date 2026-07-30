@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import math
 import os
+import re
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -72,6 +73,10 @@ _MODELLING_PACKAGES: dict[ServerName, str] = {
     "MaBoSS": "maboss",
     "PhysiCell": "physicell-settings",
 }
+_BND_NODE_DECLARATION = re.compile(
+    r"(?im)^[ \t]*Node[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*\{"
+)
+_BND_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
 
 
 def _utc_now() -> datetime:
@@ -526,6 +531,164 @@ class MaBoSSHandoffExportResult(StructuredOutputModel):
         return self
 
 
+class PhysiCellHandoffImportResult(StructuredOutputModel):
+    """Structured result returned by PhysiCell ``import_maboss_handoff``."""
+
+    server: Literal["PhysiCell"]
+    session_id: NonEmptyString
+    source_manifest_file: HandoffArtifact
+    source_manifest: MaBoSSToPhysiCellHandoffManifest
+    manifest_snapshot_file: HandoffArtifact
+    bnd_file: HandoffArtifact
+    cfg_file: HandoffArtifact
+    result_file: HandoffArtifact | None = None
+    neko_manifest: NeKoToMaBoSSHandoffManifest | None = None
+    neko_manifest_file: HandoffArtifact | None = None
+    bnet_file: HandoffArtifact | None = None
+    target_cell_type: NonEmptyString
+    nodes: list[NonEmptyString] = Field(min_length=1)
+    output_nodes: list[NonEmptyString] = Field(min_length=1)
+    replaced_existing: bool
+    context_count: int = Field(ge=1)
+
+    @field_validator("nodes", "output_nodes")
+    @classmethod
+    def validate_unique_names(
+        cls,
+        value: list[str],
+        info: ValidationInfo,
+    ) -> list[str]:
+        """Keep imported node collections unambiguous."""
+        return _require_unique(value, info.field_name or "collection")
+
+    @staticmethod
+    def _validate_copy(
+        copied: HandoffArtifact,
+        source: HandoffArtifact,
+        *,
+        session_id: str,
+        role: ArtifactRole,
+    ) -> None:
+        """Require a PhysiCell-owned copy to match its source byte for byte."""
+        if copied.server != "PhysiCell" or copied.role != role:
+            raise ValueError(
+                f"The copied {role} artifact must be owned by PhysiCell."
+            )
+        if copied.session_id != session_id:
+            raise ValueError(
+                f"The copied {role} session does not match the result."
+            )
+        if (
+            copied.size_bytes != source.size_bytes
+            or copied.sha256 != source.sha256
+        ):
+            raise ValueError(
+                f"The copied {role} artifact does not match its source."
+            )
+
+    @model_validator(mode="after")
+    def validate_import_result(self) -> PhysiCellHandoffImportResult:
+        """Align source provenance, local copies, and the applied cell target."""
+        source_session = self.source_manifest.source.session_id
+        if (
+            self.source_manifest_file.server != "MaBoSS"
+            or self.source_manifest_file.role != "parent_manifest"
+        ):
+            raise ValueError(
+                "The source manifest file must be a MaBoSS parent manifest."
+            )
+        if self.source_manifest_file.session_id != source_session:
+            raise ValueError(
+                "The source manifest file session does not match MaBoSS "
+                "provenance."
+            )
+
+        self._validate_copy(
+            self.manifest_snapshot_file,
+            self.source_manifest_file,
+            session_id=self.session_id,
+            role="parent_manifest",
+        )
+        self._validate_copy(
+            self.bnd_file,
+            self.source_manifest.bnd_file,
+            session_id=self.session_id,
+            role="maboss_bnd",
+        )
+        self._validate_copy(
+            self.cfg_file,
+            self.source_manifest.cfg_file,
+            session_id=self.session_id,
+            role="maboss_cfg",
+        )
+
+        source_result = self.source_manifest.simulation.result_file
+        if (self.result_file is None) != (source_result is None):
+            raise ValueError(
+                "The copied MaBoSS result must match source result availability."
+            )
+        if self.result_file is not None and source_result is not None:
+            self._validate_copy(
+                self.result_file,
+                source_result,
+                session_id=self.session_id,
+                role="maboss_result",
+            )
+
+        source_parent = self.source_manifest.parent_manifest
+        lineage_values = (
+            self.neko_manifest,
+            self.neko_manifest_file,
+            self.bnet_file,
+        )
+        if source_parent is None:
+            if any(value is not None for value in lineage_values):
+                raise ValueError(
+                    "Standalone MaBoSS imports cannot include NeKo copies."
+                )
+        else:
+            if any(value is None for value in lineage_values):
+                raise ValueError(
+                    "A NeKo parent requires copied manifest and BNET artifacts."
+                )
+            assert self.neko_manifest is not None
+            assert self.neko_manifest_file is not None
+            assert self.bnet_file is not None
+            self._validate_copy(
+                self.neko_manifest_file,
+                source_parent,
+                session_id=self.session_id,
+                role="parent_manifest",
+            )
+            self._validate_copy(
+                self.bnet_file,
+                self.neko_manifest.bnet_file,
+                session_id=self.session_id,
+                role="neko_bnet",
+            )
+            if (
+                self.neko_manifest.source.session_id
+                != source_parent.session_id
+            ):
+                raise ValueError(
+                    "The copied NeKo manifest does not match parent provenance."
+                )
+
+        if self.target_cell_type != self.source_manifest.target.cell_type:
+            raise ValueError(
+                "The imported target cell type does not match the manifest."
+            )
+        if self.nodes != self.source_manifest.network.nodes:
+            raise ValueError(
+                "Imported PhysiBoSS nodes do not match the MaBoSS manifest."
+            )
+        if self.output_nodes != self.source_manifest.network.output_nodes:
+            raise ValueError(
+                "Imported PhysiBoSS outputs do not match the MaBoSS manifest."
+            )
+        return self
+
+
 ModelHandoffManifest: TypeAlias = Annotated[
     NeKoToMaBoSSHandoffManifest | MaBoSSToPhysiCellHandoffManifest,
     Field(discriminator="handoff_type"),
@@ -597,6 +760,43 @@ def bnet_node_names(path: str | Path) -> list[str]:
 
     if not nodes:
         raise ValueError(f"BNET file contains no Boolean rules: {bnet_path}")
+    return nodes
+
+
+def bnd_node_names(path: str | Path) -> list[str]:
+    """Read unique MaBoSS node declarations from a BND file in stored order."""
+    bnd_path = Path(path)
+    if bnd_path.suffix.lower() != ".bnd":
+        raise ValueError("MaBoSS network files must use the .bnd suffix.")
+    if not bnd_path.exists():
+        raise FileNotFoundError(f"BND file does not exist: {bnd_path}")
+    if not bnd_path.is_file():
+        raise ValueError(f"BND path is not a regular file: {bnd_path}")
+
+    try:
+        text = bnd_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise ValueError(f"Could not read MaBoSS BND file {bnd_path}: {exc}") from exc
+
+    without_blocks = _BND_BLOCK_COMMENT.sub("", text)
+    without_comments = "\n".join(
+        line.split("//", 1)[0].split("#", 1)[0]
+        for line in without_blocks.splitlines()
+    )
+    nodes = [
+        match.group(1)
+        for match in _BND_NODE_DECLARATION.finditer(without_comments)
+    ]
+    if not nodes:
+        raise ValueError(f"BND file contains no node declarations: {bnd_path}")
+    if len(nodes) != len(set(nodes)):
+        duplicates = sorted(
+            node for node in set(nodes) if nodes.count(node) > 1
+        )
+        raise ValueError(
+            "BND file contains duplicate node declarations: "
+            + ", ".join(duplicates)
+        )
     return nodes
 
 
