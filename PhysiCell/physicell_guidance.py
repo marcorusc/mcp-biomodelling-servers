@@ -46,8 +46,12 @@ preserved during an update.
 
 ## 3. PhysiBoSS integration
 
-1. Store upstream Boolean-model context with `set_maboss_context()`.
-2. Attach the BND and CFG files with `add_physiboss_model()`.
+Preferred typed workflow:
+
+1. Export a `maboss-to-physicell` handoff from MaBoSS for the intended cell
+   type.
+2. Import it with `import_maboss_handoff()`. The tool verifies and copies the
+   complete NeKo/MaBoSS lineage, then atomically attaches the model.
 3. Set timing and inheritance with `configure_physiboss_settings()`.
 4. Connect PhysiCell signals to Boolean nodes with
    `add_physiboss_input_link()`.
@@ -55,8 +59,18 @@ preserved during an update.
    `add_physiboss_output_link()`.
 6. Apply optional fixed-node perturbations with `apply_physiboss_mutation()`.
 
+For standalone files without a handoff manifest, use the lower-level
+`set_maboss_context()` and `add_physiboss_model()` tools.
+
+Importing several manifests for different target cell types preserves a
+separate MaBoSS context for each target. Replacing an existing target model
+requires `replace_existing=true` and resets that target's previous PhysiBoSS
+settings, mappings, and mutations.
+
 Use node names returned by the MaBoSS server and signal/behavior names returned
-by the PhysiCell discovery tools.
+by the PhysiCell discovery tools. MaBoSS simulation parameters and output nodes
+are retained as context, but are not automatically translated into PhysiBoSS
+timing or biological mappings.
 
 ## 4. Read-only session resources
 
@@ -78,7 +92,8 @@ other five require a configured simulation.
 
 - `get_workflow_status()` and `get_simulation_summary()` expose the same
   complete workflow state.
-- `get_maboss_context()` checks the stored cross-server context.
+- `get_maboss_context()` lists every stored target-cell context or selects one
+  with `cell_type`.
 - `list_generated_files()` lists session-scoped XML and CSV artifacts.
 - `export_xml_configuration()` writes the PhysiCell settings XML.
 - `export_cell_rules_csv()` writes the CBHG cell-rules file when rules exist.

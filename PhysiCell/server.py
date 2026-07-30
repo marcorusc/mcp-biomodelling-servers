@@ -12,7 +12,10 @@ Features lightweight session management and progress tracking.
 
 import inspect
 import math
+import os
+import shutil
 import sys
+import tempfile
 import time
 from collections.abc import Mapping
 from contextlib import ExitStack
@@ -41,6 +44,17 @@ from artifact_manager import (
     write_session_meta,
 )
 from mcp_biomodelling_servers import __version__
+from mcp_biomodelling_servers.handoff import (
+    MaBoSSToPhysiCellHandoffManifest,
+    NeKoToMaBoSSHandoffManifest,
+    PhysiCellHandoffImportResult,
+    bnd_node_names,
+    handoff_artifact,
+    load_handoff_manifest,
+    sha256_file,
+    verify_handoff_artifact,
+    verify_handoff_manifest,
+)
 from mcp_biomodelling_servers.structured_outputs import (
     ArtifactSessionSummary,
     PhysiCellArtifactCleanupResult,
@@ -107,8 +121,11 @@ PHYSICELL_SERVER_INSTRUCTIONS = (
     "validate, load, and analyze it before editing. When revising "
     "`configure_cell_parameters()` or `set_substrate_interaction()`, provide "
     "every value that must be preserved because omitted arguments currently "
-    "use defaults. Inspect session resources or `get_simulation_summary()` "
-    "before export. Read `docs://physicell/agent_manual` or use "
+    "use defaults. Prefer `import_maboss_handoff()` for an integrity-checked "
+    "PhysiBoSS model transfer, then configure its timing and biologically "
+    "justified signal/node mappings. Inspect session resources or "
+    "`get_simulation_summary()` before export. Read "
+    "`docs://physicell/agent_manual` or use "
     "`physicell_workflow_prompt` for the complete workflow."
 )
 
@@ -164,6 +181,18 @@ ComponentType = Literal["substrates", "cell_types", "physiboss", "all"]
 RuleDirection = Literal["increases", "decreases"]
 PhysiBoSSAction = Literal["activation", "inhibition"]
 MutationState = Literal[0, 1]
+HandoffArtifactPrefix = Annotated[
+    str,
+    Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9_-])?$",
+        description=(
+            "Safe basename prefix for copied handoff artifacts. Directory "
+            "components and a trailing dot are forbidden."
+        ),
+    ),
+]
 
 _READ_ONLY_TOOL = ToolAnnotations(
     read_only_hint=True,
@@ -318,6 +347,140 @@ def _validate_export_filename(filename: str, expected_suffix: str) -> str:
             f"{filename!r}."
         )
     return filename
+
+
+def _require_unused_handoff_paths(paths: list[Path]) -> None:
+    """Reject an import prefix when any destination already exists."""
+    existing = [path for path in paths if path.exists()]
+    if existing:
+        raise FileExistsError(
+            "Refusing to overwrite existing PhysiCell handoff artifacts: "
+            + ", ".join(str(path) for path in existing)
+            + ". Choose a different artifact_prefix."
+        )
+
+
+def _copy_verified_handoff_artifact(artifact, destination: Path) -> None:
+    """Copy one verified source artifact and retain its recorded bytes."""
+    source = verify_handoff_artifact(artifact)
+    try:
+        shutil.copyfile(source, destination)
+    except OSError as exc:
+        raise RuntimeError(
+            f"Could not copy handoff artifact {source}: {exc}"
+        ) from exc
+    if destination.stat().st_size != artifact.size_bytes:
+        raise RuntimeError(
+            f"Copied handoff artifact size changed for {source}."
+        )
+    if sha256_file(destination) != artifact.sha256:
+        raise RuntimeError(
+            f"Copied handoff artifact digest changed for {source}."
+        )
+
+
+def _link_handoff_artifact_without_overwrite(
+    source: Path,
+    destination: Path,
+) -> None:
+    """Atomically publish one complete temporary artifact if absent."""
+    if not source.is_file():
+        raise FileNotFoundError(
+            f"Expected temporary handoff artifact was not created: {source}"
+        )
+    try:
+        os.link(source, destination)
+    except FileExistsError as exc:
+        raise FileExistsError(
+            "Refusing to overwrite a PhysiCell handoff artifact created "
+            f"concurrently: {destination}"
+        ) from exc
+
+
+def _rollback_handoff_artifacts(paths: list[Path]) -> None:
+    """Best-effort cleanup for an incomplete multi-file import."""
+    for path in reversed(paths):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _physiboss_tracking(
+    config,
+) -> tuple[list[str], int, int, int, int]:
+    """Derive current PhysiBoSS model and operation counts from a config."""
+    try:
+        cell_types = config.cell_types.get_cell_types()
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not inspect PhysiCell cell types: {exc}"
+        ) from exc
+    if not isinstance(cell_types, Mapping):
+        raise TypeError(
+            "PhysiCell cell_types.get_cell_types() did not return a mapping."
+        )
+
+    model_names: list[str] = []
+    settings_count = 0
+    input_links_count = 0
+    output_links_count = 0
+    mutations_count = 0
+    for raw_name, raw_cell_type in cell_types.items():
+        cell_type = raw_cell_type if isinstance(raw_cell_type, Mapping) else {}
+        phenotype = _mapping_at(cell_type, "phenotype")
+        intracellular = _mapping_at(phenotype, "intracellular")
+        if not intracellular or intracellular.get("type") != "maboss":
+            continue
+
+        model_names.append(str(raw_name))
+        settings = _mapping_at(intracellular, "settings")
+        if any(key != "mutations" for key in settings):
+            settings_count += 1
+        mutations = settings.get("mutations", [])
+        if isinstance(mutations, list):
+            mutations_count += len(mutations)
+
+        mapping = _mapping_at(intracellular, "mapping")
+        inputs = mapping.get("inputs", [])
+        outputs = mapping.get("outputs", [])
+        if isinstance(inputs, list):
+            input_links_count += len(inputs)
+        if isinstance(outputs, list):
+            output_links_count += len(outputs)
+
+    return (
+        model_names,
+        settings_count,
+        input_links_count,
+        output_links_count,
+        mutations_count,
+    )
+
+
+def _maboss_context_record(
+    context: MaBoSSContext,
+) -> PhysiCellMaBoSSContextRecord:
+    """Return one strict machine-readable target-cell context."""
+    return PhysiCellMaBoSSContextRecord(
+        model_name=context.model_name,
+        bnd_file_path=context.bnd_file_path,
+        cfg_file_path=context.cfg_file_path,
+        available_nodes=list(context.available_nodes),
+        output_nodes=list(context.output_nodes),
+        simulation_results=context.simulation_results or None,
+        target_cell_type=context.target_cell_type,
+        biological_context=context.biological_context or None,
+        source_manifest_path=context.source_manifest_path or None,
+        local_manifest_path=context.local_manifest_path or None,
+        source_session_id=context.source_session_id or None,
+        result_file_path=context.result_file_path or None,
+        simulation_parameters=dict(context.simulation_parameters),
+        neko_session_id=context.neko_session_id or None,
+        neko_manifest_path=context.neko_manifest_path or None,
+        local_neko_manifest_path=context.local_neko_manifest_path or None,
+        local_bnet_path=context.local_bnet_path or None,
+    )
 
 
 def _optional_finite_float(value) -> float | None:
@@ -768,24 +931,36 @@ def _format_physiboss_resource(session: SessionState) -> str:
         "",
         f"- Session: `{session.session_id}`",
     ]
-    context = session.maboss_context
-    if context is not None:
+    contexts = list(session.maboss_contexts.values())
+    if contexts:
         lines.extend(
             [
                 "",
-                "## MaBoSS context",
+                "## MaBoSS contexts",
                 "",
-                f"- Model: {_display_value(context.model_name)}",
-                (
-                    "- Target cell type: "
-                    f"{_display_value(context.target_cell_type)}"
-                ),
-                f"- BND file: `{context.bnd_file_path}`",
-                f"- CFG file: `{context.cfg_file_path}`",
-                f"- Available nodes: {len(context.available_nodes)}",
-                f"- Output nodes: {len(context.output_nodes)}",
+                f"- Context count: {len(contexts)}",
             ]
         )
+        for context in contexts:
+            lines.extend(
+                [
+                    "",
+                    (
+                        f"### {_display_value(context.target_cell_type)} — "
+                        f"{_display_value(context.model_name)}"
+                    ),
+                    "",
+                    f"- Model: {_display_value(context.model_name)}",
+                    f"- BND file: `{context.bnd_file_path}`",
+                    f"- CFG file: `{context.cfg_file_path}`",
+                    f"- Available nodes: {len(context.available_nodes)}",
+                    f"- Output nodes: {len(context.output_nodes)}",
+                    (
+                        "- Source manifest: "
+                        f"`{context.source_manifest_path or 'not recorded'}`"
+                    ),
+                ]
+            )
 
     intracellular_models: dict[str, Mapping[str, Any]] = {}
     try:
@@ -1172,6 +1347,388 @@ def delete_session(
         return f"**Session deleted:** {session_id[:8]}..."
     raise ValueError(f"Session not found: {session_id}")
 
+@mcp.tool(annotations=_DESTRUCTIVE_TOOL)
+@_session_locked
+def import_maboss_handoff(
+    manifest_path: Annotated[
+        NonEmptyString,
+        Field(
+            description=(
+                "Path to a `maboss-to-physicell` handoff manifest. The "
+                "manifest and its complete artifact lineage are verified."
+            )
+        ),
+    ],
+    artifact_prefix: HandoffArtifactPrefix = Field(
+        default="maboss_import",
+        description=(
+            "Safe prefix for the copied handoff artifacts. Choose a new "
+            "prefix for every retained import."
+        ),
+    ),
+    replace_existing: bool = Field(
+        default=False,
+        description=(
+            "Replace an intracellular model already attached to the target "
+            "cell type. Replacement resets that target's PhysiBoSS settings, "
+            "links, and mutations."
+        ),
+    ),
+    session_id: Optional[NonEmptyString] = Field(
+        default=None,
+        description="Session to update; omit to use the active session.",
+    ),
+) -> Annotated[CallToolResult, PhysiCellHandoffImportResult]:
+    """Verify and atomically attach a typed MaBoSS handoff through PhysiBoSS."""
+    session = _require_configuration(session_id)
+    _require_physiboss()
+
+    loaded_manifest = load_handoff_manifest(
+        manifest_path,
+        expected_handoff_type="maboss-to-physicell",
+        verify_artifacts=True,
+    )
+    if not isinstance(loaded_manifest, MaBoSSToPhysiCellHandoffManifest):
+        raise ValueError(
+            "The supplied handoff is not a MaBoSS-to-PhysiCell manifest."
+        )
+
+    source_manifest_path = Path(manifest_path).resolve()
+    source_manifest_file = handoff_artifact(
+        source_manifest_path,
+        server="MaBoSS",
+        session_id=loaded_manifest.source.session_id,
+        role="parent_manifest",
+    )
+    stored_nodes = bnd_node_names(loaded_manifest.bnd_file.path)
+    if stored_nodes != loaded_manifest.network.nodes:
+        raise ValueError(
+            "The MaBoSS BND node order does not match the handoff manifest."
+        )
+
+    neko_manifest = None
+    if loaded_manifest.parent_manifest is not None:
+        loaded_parent = load_handoff_manifest(
+            loaded_manifest.parent_manifest.path,
+            expected_handoff_type="neko-to-maboss",
+            verify_artifacts=True,
+        )
+        if not isinstance(loaded_parent, NeKoToMaBoSSHandoffManifest):
+            raise ValueError(
+                "The MaBoSS handoff parent is not a NeKo manifest."
+            )
+        if (
+            not loaded_manifest.lineage
+            or loaded_parent.source != loaded_manifest.lineage[0]
+        ):
+            raise ValueError(
+                "The NeKo parent provenance does not match MaBoSS lineage."
+            )
+        if set(loaded_parent.network.nodes) != set(
+            loaded_manifest.network.nodes
+        ):
+            raise ValueError(
+                "The NeKo and MaBoSS handoff node sets do not match."
+            )
+        if set(loaded_parent.network.output_nodes) != set(
+            loaded_manifest.network.output_nodes
+        ):
+            raise ValueError(
+                "The NeKo and MaBoSS output-node selections do not match."
+            )
+        neko_manifest = loaded_parent
+
+    target_cell_type = loaded_manifest.target.cell_type
+    try:
+        cell_types = session.config.cell_types.get_cell_types()
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not inspect PhysiCell cell types: {exc}"
+        ) from exc
+    if not isinstance(cell_types, Mapping):
+        raise TypeError(
+            "PhysiCell cell_types.get_cell_types() did not return a mapping."
+        )
+    if target_cell_type not in cell_types:
+        available = ", ".join(str(name) for name in cell_types) or "none"
+        raise ValueError(
+            f"Target cell type {target_cell_type!r} is not configured. "
+            f"Available cell types: {available}."
+        )
+
+    target_data = cell_types[target_cell_type]
+    target_mapping = target_data if isinstance(target_data, Mapping) else {}
+    existing_intracellular = _mapping_at(
+        target_mapping,
+        "phenotype",
+        "intracellular",
+    )
+    replaced_existing = bool(existing_intracellular)
+    if replaced_existing and not replace_existing:
+        raise ValueError(
+            f"Cell type {target_cell_type!r} already has an intracellular "
+            "model. Set replace_existing=true to replace it explicitly."
+        )
+
+    art_dir = get_artifact_dir(_SERVER_ROOT, session.session_id)
+    destinations: dict[str, Path] = {
+        "manifest": safe_artifact_path(
+            art_dir,
+            f"{artifact_prefix}.handoff.json",
+        ),
+        "bnd": safe_artifact_path(art_dir, f"{artifact_prefix}.bnd"),
+        "cfg": safe_artifact_path(art_dir, f"{artifact_prefix}.cfg"),
+    }
+    if loaded_manifest.simulation.result_file is not None:
+        destinations["result"] = safe_artifact_path(
+            art_dir,
+            f"{artifact_prefix}.result.csv",
+        )
+    if neko_manifest is not None:
+        destinations["neko_manifest"] = safe_artifact_path(
+            art_dir,
+            f"{artifact_prefix}.neko.handoff.json",
+        )
+        destinations["bnet"] = safe_artifact_path(
+            art_dir,
+            f"{artifact_prefix}.neko.bnet",
+        )
+    _require_unused_handoff_paths(list(destinations.values()))
+
+    try:
+        candidate_config = session.config.copy()
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not copy the PhysiCell configuration for import: {exc}"
+        ) from exc
+    try:
+        candidate_config.physiboss.add_intracellular_model(
+            cell_type_name=target_cell_type,
+            model_type="maboss",
+            bnd_filename=str(destinations["bnd"]),
+            cfg_filename=str(destinations["cfg"]),
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not attach the MaBoSS model to {target_cell_type!r}: {exc}"
+        ) from exc
+
+    tracking = _physiboss_tracking(candidate_config)
+    created_paths: list[Path] = []
+    try:
+        with tempfile.TemporaryDirectory(
+            dir=art_dir,
+            prefix=".maboss-handoff-import-",
+        ) as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            temporary_paths = {
+                key: temporary_root / destination.name
+                for key, destination in destinations.items()
+            }
+            sources = {
+                "manifest": source_manifest_file,
+                "bnd": loaded_manifest.bnd_file,
+                "cfg": loaded_manifest.cfg_file,
+            }
+            if loaded_manifest.simulation.result_file is not None:
+                sources["result"] = loaded_manifest.simulation.result_file
+            if neko_manifest is not None:
+                assert loaded_manifest.parent_manifest is not None
+                sources["neko_manifest"] = loaded_manifest.parent_manifest
+                sources["bnet"] = neko_manifest.bnet_file
+
+            for key, source in sources.items():
+                _copy_verified_handoff_artifact(
+                    source,
+                    temporary_paths[key],
+                )
+
+            reloaded_manifest = load_handoff_manifest(
+                source_manifest_path,
+                expected_handoff_type="maboss-to-physicell",
+                verify_artifacts=True,
+            )
+            if reloaded_manifest != loaded_manifest:
+                raise RuntimeError(
+                    "The MaBoSS handoff changed while it was imported."
+                )
+            verify_handoff_artifact(source_manifest_file)
+            verify_handoff_manifest(loaded_manifest)
+            if neko_manifest is not None:
+                assert loaded_manifest.parent_manifest is not None
+                reloaded_parent = load_handoff_manifest(
+                    loaded_manifest.parent_manifest.path,
+                    expected_handoff_type="neko-to-maboss",
+                    verify_artifacts=True,
+                )
+                if reloaded_parent != neko_manifest:
+                    raise RuntimeError(
+                        "The NeKo parent handoff changed while it was imported."
+                    )
+
+            for key, destination in destinations.items():
+                _link_handoff_artifact_without_overwrite(
+                    temporary_paths[key],
+                    destination,
+                )
+                created_paths.append(destination)
+
+        manifest_snapshot_file = handoff_artifact(
+            destinations["manifest"],
+            server="PhysiCell",
+            session_id=session.session_id,
+            role="parent_manifest",
+        )
+        bnd_file = handoff_artifact(
+            destinations["bnd"],
+            server="PhysiCell",
+            session_id=session.session_id,
+            role="maboss_bnd",
+        )
+        cfg_file = handoff_artifact(
+            destinations["cfg"],
+            server="PhysiCell",
+            session_id=session.session_id,
+            role="maboss_cfg",
+        )
+        result_file = (
+            handoff_artifact(
+                destinations["result"],
+                server="PhysiCell",
+                session_id=session.session_id,
+                role="maboss_result",
+            )
+            if "result" in destinations
+            else None
+        )
+        neko_manifest_file = (
+            handoff_artifact(
+                destinations["neko_manifest"],
+                server="PhysiCell",
+                session_id=session.session_id,
+                role="parent_manifest",
+            )
+            if "neko_manifest" in destinations
+            else None
+        )
+        bnet_file = (
+            handoff_artifact(
+                destinations["bnet"],
+                server="PhysiCell",
+                session_id=session.session_id,
+                role="neko_bnet",
+            )
+            if "bnet" in destinations
+            else None
+        )
+        payload = PhysiCellHandoffImportResult(
+            server="PhysiCell",
+            session_id=session.session_id,
+            source_manifest_file=source_manifest_file,
+            source_manifest=loaded_manifest,
+            manifest_snapshot_file=manifest_snapshot_file,
+            bnd_file=bnd_file,
+            cfg_file=cfg_file,
+            result_file=result_file,
+            neko_manifest=neko_manifest,
+            neko_manifest_file=neko_manifest_file,
+            bnet_file=bnet_file,
+            target_cell_type=target_cell_type,
+            nodes=list(loaded_manifest.network.nodes),
+            output_nodes=list(loaded_manifest.network.output_nodes),
+            replaced_existing=replaced_existing,
+            context_count=(
+                len(session.maboss_contexts)
+                + (
+                    0
+                    if target_cell_type in session.maboss_contexts
+                    else 1
+                )
+            ),
+        )
+    except Exception:
+        _rollback_handoff_artifacts(created_paths)
+        raise
+
+    context = MaBoSSContext(
+        model_name=Path(loaded_manifest.bnd_file.path).stem,
+        bnd_file_path=str(destinations["bnd"]),
+        cfg_file_path=str(destinations["cfg"]),
+        available_nodes=list(loaded_manifest.network.nodes),
+        output_nodes=list(loaded_manifest.network.output_nodes),
+        simulation_results=(
+            loaded_manifest.simulation.simulation_summary or ""
+        ),
+        target_cell_type=target_cell_type,
+        biological_context=loaded_manifest.biological_context or "",
+        source_manifest_path=str(source_manifest_path),
+        local_manifest_path=str(destinations["manifest"]),
+        source_session_id=loaded_manifest.source.session_id,
+        result_file_path=(
+            str(destinations["result"])
+            if "result" in destinations
+            else ""
+        ),
+        simulation_parameters=dict(
+            loaded_manifest.simulation.parameters
+        ),
+        neko_session_id=(
+            neko_manifest.source.session_id
+            if neko_manifest is not None
+            else ""
+        ),
+        neko_manifest_path=(
+            loaded_manifest.parent_manifest.path
+            if loaded_manifest.parent_manifest is not None
+            else ""
+        ),
+        local_neko_manifest_path=(
+            str(destinations["neko_manifest"])
+            if "neko_manifest" in destinations
+            else ""
+        ),
+        local_bnet_path=(
+            str(destinations["bnet"])
+            if "bnet" in destinations
+            else ""
+        ),
+    )
+    session.publish_physiboss_import(
+        config=candidate_config,
+        context=context,
+        model_names=tracking[0],
+        settings_count=tracking[1],
+        input_links_count=tracking[2],
+        output_links_count=tracking[3],
+        mutations_count=tracking[4],
+    )
+
+    replacement_text = (
+        "replaced the previous intracellular model"
+        if replaced_existing
+        else "attached a new intracellular model"
+    )
+    lineage_text = (
+        f"NeKo session {neko_manifest.source.session_id}"
+        if neko_manifest is not None
+        else "standalone MaBoSS model"
+    )
+    text = (
+        "MaBoSS handoff imported into PhysiCell successfully.\n"
+        f"  Session: {session.session_id}\n"
+        f"  Target cell type: {target_cell_type}\n"
+        f"  Action: {replacement_text}\n"
+        f"  BND: {destinations['bnd']}\n"
+        f"  CFG: {destinations['cfg']}\n"
+        f"  Boolean nodes: {len(loaded_manifest.network.nodes)}\n"
+        f"  Output nodes: {', '.join(loaded_manifest.network.output_nodes)}\n"
+        f"  Lineage: {lineage_text}\n\n"
+        "Next: configure PhysiBoSS timing, then add biologically justified "
+        "input and output links."
+    )
+    return structured_report(text, payload)
+
+
 @mcp.tool(annotations=_IDEMPOTENT_TOOL)
 @_session_locked
 def set_maboss_context(
@@ -1206,11 +1763,12 @@ def set_maboss_context(
         biological_context=biological_context
     )
     
-    session.maboss_context = maboss_context
+    session.register_maboss_context(maboss_context)
     
     result = f"**MaBoSS context stored:**\n"
     result += f"- Model: {model_name}\n"
     result += f"- Target cell type: {target_cell_type}\n"
+    result += f"- Stored contexts: {len(session.maboss_contexts)}\n"
     result += f"- Available nodes: {len(maboss_context.available_nodes)}\n"
     result += f"- Output nodes: {len(maboss_context.output_nodes)}\n"
     if simulation_results:
@@ -1222,72 +1780,80 @@ def set_maboss_context(
 @mcp.tool(annotations=_READ_ONLY_TOOL)
 @_session_locked
 def get_maboss_context(
+    cell_type: Optional[NonEmptyString] = Field(
+        default=None,
+        description=(
+            "Optional target cell type to select. Omit to return every stored "
+            "MaBoSS context and retain the most recent compatibility view."
+        ),
+    ),
     session_id: Optional[NonEmptyString] = Field(default=None, description="Session to query. Omit to use the active session."),
 ) -> Annotated[CallToolResult, PhysiCellMaBoSSContextResult]:
-    """Return the stored MaBoSS context for the current session.
+    """Return all stored MaBoSS contexts or select one target cell type.
 
-    Shows the linked boolean model name, file paths, available nodes, and
-    simulation results previously stored via `set_maboss_context()`.
+    Shows linked Boolean model paths, nodes, results, and handoff provenance.
 
     Returns:
-        str: MaBoSS context information, or a message if none is stored.
+        CallToolResult: Human-readable context plus a validated context list.
     """
     session = _require_session(session_id)
-    
-    if not session.maboss_context:
+    contexts = list(session.maboss_contexts.values())
+    if not contexts:
         payload = PhysiCellMaBoSSContextResult(
             server="PhysiCell",
             session_id=session.session_id,
             has_context=False,
             context=None,
+            context_count=0,
+            contexts=[],
+            selected_cell_type=None,
         )
         return structured_report(
             "No MaBoSS context available in current session.",
             payload,
         )
-    
-    ctx = session.maboss_context
-    result = f"## MaBoSS Context\n\n"
-    result += f"**Model:** {ctx.model_name}\n"
-    result += f"**Target Cell Type:** {ctx.target_cell_type}\n"
-    result += f"**Files:**\n"
-    result += f"- BND: {ctx.bnd_file_path}\n"
-    result += f"- CFG: {ctx.cfg_file_path}\n\n"
-    
-    if ctx.available_nodes:
-        result += f"**Available Nodes ({len(ctx.available_nodes)}):**\n"
-        for node in ctx.available_nodes:
-            result += f"- {node}\n"
-        result += "\n"
-    
-    if ctx.output_nodes:
-        result += f"**Output Nodes ({len(ctx.output_nodes)}):**\n"
-        for node in ctx.output_nodes:
-            result += f"- {node}\n"
-        result += "\n"
-    
-    if ctx.simulation_results:
-        result += f"**Simulation Results:**\n{ctx.simulation_results}\n\n"
-    
-    if ctx.biological_context:
-        result += f"**Biological Context:**\n{ctx.biological_context}"
-    
+
+    if cell_type is not None:
+        selected_context = session.maboss_contexts.get(cell_type)
+        if selected_context is None:
+            available = ", ".join(session.maboss_contexts) or "none"
+            raise ValueError(
+                f"No MaBoSS context is stored for cell type {cell_type!r}. "
+                f"Available targets: {available}."
+            )
+    else:
+        selected_context = contexts[-1]
+
+    records = [_maboss_context_record(context) for context in contexts]
+    result_lines = [
+        f"## MaBoSS Contexts ({len(contexts)})",
+        "",
+    ]
+    for context in contexts:
+        result_lines.extend(
+            [
+                f"### {context.target_cell_type}: {context.model_name}",
+                f"- BND: {context.bnd_file_path}",
+                f"- CFG: {context.cfg_file_path}",
+                f"- Available nodes: {len(context.available_nodes)}",
+                f"- Output nodes: {len(context.output_nodes)}",
+                (
+                    "- Source manifest: "
+                    f"{context.source_manifest_path or 'not recorded'}"
+                ),
+                "",
+            ]
+        )
     payload = PhysiCellMaBoSSContextResult(
         server="PhysiCell",
         session_id=session.session_id,
         has_context=True,
-        context=PhysiCellMaBoSSContextRecord(
-            model_name=ctx.model_name,
-            bnd_file_path=ctx.bnd_file_path,
-            cfg_file_path=ctx.cfg_file_path,
-            available_nodes=list(ctx.available_nodes),
-            output_nodes=list(ctx.output_nodes),
-            simulation_results=ctx.simulation_results or None,
-            target_cell_type=ctx.target_cell_type,
-            biological_context=ctx.biological_context or None,
-        ),
+        context=_maboss_context_record(selected_context),
+        context_count=len(records),
+        contexts=records,
+        selected_cell_type=cell_type,
     )
-    return structured_report(result, payload)
+    return structured_report("\n".join(result_lines).rstrip(), payload)
 
 # ============================================================================
 # XML CONFIGURATION LOADING
@@ -2192,10 +2758,9 @@ def add_physiboss_model(
         session.physiboss_models_count += 1
         session.mark_step_complete(WorkflowStep.PHYSIBOSS_MODELS_ADDED)
         
-        # Auto-create MaBoSS context if not exists to enable PhysiBoSS progress tracking
-        if not session.maboss_context:
-            from session_manager import MaBoSSContext
-            session.maboss_context = MaBoSSContext(
+        # Auto-create only the missing target-cell context.
+        if cell_type not in session.maboss_contexts:
+            session.register_maboss_context(MaBoSSContext(
                 model_name="auto_created",
                 bnd_file_path=bnd_file,
                 cfg_file_path=cfg_file,
@@ -2204,7 +2769,7 @@ def add_physiboss_model(
                 simulation_results="",
                 target_cell_type=cell_type,
                 biological_context=""
-            )
+            ))
         
         result = f"**PhysiBoSS model added to {cell_type}:**\n"
         result += f"- Model file: {bnd_file}\n"

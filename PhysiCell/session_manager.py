@@ -54,6 +54,18 @@ class MaBoSSContext:
     simulation_results: str = ""  # Summary of MaBoSS simulation behavior
     target_cell_type: str = ""  # Which cell type this model targets
     biological_context: str = ""  # Original biological question/context
+    source_manifest_path: str = ""
+    local_manifest_path: str = ""
+    source_session_id: str = ""
+    result_file_path: str = ""
+    simulation_parameters: dict[
+        str,
+        bool | int | float | str | None,
+    ] = field(default_factory=dict)
+    neko_session_id: str = ""
+    neko_manifest_path: str = ""
+    local_neko_manifest_path: str = ""
+    local_bnet_path: str = ""
 
 @dataclass
 class SessionState:
@@ -62,7 +74,7 @@ class SessionState:
     session_name: str | None = None  # Human-readable name for cross-server linking
     config: object | None = None  # PhysiCellConfig instance
     scenario_context: str = ""
-    maboss_context: MaBoSSContext | None = None  # Context from MaBoSS analysis
+    maboss_contexts: dict[str, MaBoSSContext] = field(default_factory=dict)
     completed_steps: set[WorkflowStep] = field(default_factory=set)
     created_at: float = field(default_factory=time.time)
     last_accessed: float = field(default_factory=time.time)
@@ -100,6 +112,63 @@ class SessionState:
 
     def _touch_unlocked(self) -> None:
         self.last_accessed = time.time()
+
+    @property
+    def maboss_context(self) -> MaBoSSContext | None:
+        """Return the most recently registered context for compatibility."""
+        with self._operation_lock:
+            return next(reversed(self.maboss_contexts.values()), None)
+
+    @maboss_context.setter
+    def maboss_context(self, context: MaBoSSContext | None) -> None:
+        """Register one context through the legacy single-context attribute."""
+        with self._operation_lock:
+            if context is None:
+                self.maboss_contexts.clear()
+            else:
+                self._store_maboss_context_unlocked(context)
+            self._touch_unlocked()
+
+    def _store_maboss_context_unlocked(self, context: MaBoSSContext) -> None:
+        """Store a context last so compatibility reads return the newest one."""
+        self.maboss_contexts.pop(context.target_cell_type, None)
+        self.maboss_contexts[context.target_cell_type] = context
+
+    def register_maboss_context(self, context: MaBoSSContext) -> None:
+        """Store or replace the MaBoSS context for one target cell type."""
+        if not context.target_cell_type:
+            raise ValueError("MaBoSS context requires a target cell type.")
+        with self._operation_lock:
+            self._store_maboss_context_unlocked(context)
+            self._touch_unlocked()
+
+    def publish_physiboss_import(
+        self,
+        *,
+        config: object,
+        context: MaBoSSContext,
+        model_names: list[str],
+        settings_count: int,
+        input_links_count: int,
+        output_links_count: int,
+        mutations_count: int,
+    ) -> None:
+        """Atomically publish a validated PhysiBoSS model import."""
+        if not context.target_cell_type:
+            raise ValueError("Imported MaBoSS context requires a target cell type.")
+        with self._operation_lock:
+            self.config = config
+            self._store_maboss_context_unlocked(context)
+            self.loaded_physiboss_models = list(model_names)
+            self.physiboss_models_count = len(model_names)
+            self.physiboss_settings_count = settings_count
+            self.physiboss_input_links_count = input_links_count
+            self.physiboss_output_links_count = output_links_count
+            self.physiboss_mutations_count = mutations_count
+            self.completed_steps.add(WorkflowStep.PHYSIBOSS_MODELS_ADDED)
+            if self.loaded_from_xml:
+                self.xml_modification_count += 1
+            self._touch_unlocked()
     
     def mark_step_complete(self, step: WorkflowStep) -> None:
         """Mark a workflow step as completed."""
@@ -264,6 +333,29 @@ class SessionState:
         with self._operation_lock:
             return self._to_dict_unlocked()
 
+    @staticmethod
+    def _maboss_context_dict(context: MaBoSSContext) -> dict[str, Any]:
+        """Return one serialization-safe MaBoSS context."""
+        return {
+            "model_name": context.model_name,
+            "bnd_file_path": context.bnd_file_path,
+            "cfg_file_path": context.cfg_file_path,
+            "available_nodes": list(context.available_nodes),
+            "output_nodes": list(context.output_nodes),
+            "simulation_results": context.simulation_results,
+            "target_cell_type": context.target_cell_type,
+            "biological_context": context.biological_context,
+            "source_manifest_path": context.source_manifest_path,
+            "local_manifest_path": context.local_manifest_path,
+            "source_session_id": context.source_session_id,
+            "result_file_path": context.result_file_path,
+            "simulation_parameters": dict(context.simulation_parameters),
+            "neko_session_id": context.neko_session_id,
+            "neko_manifest_path": context.neko_manifest_path,
+            "local_neko_manifest_path": context.local_neko_manifest_path,
+            "local_bnet_path": context.local_bnet_path,
+        }
+
     def _to_dict_unlocked(self) -> dict:
         result: dict[str, Any] = {
             'session_id': self.session_id,
@@ -282,17 +374,12 @@ class SessionState:
             'physiboss_mutations_count': self.physiboss_mutations_count
         }
         
-        if self.maboss_context:
-            result['maboss_context'] = {
-                'model_name': self.maboss_context.model_name,
-                'bnd_file_path': self.maboss_context.bnd_file_path,
-                'cfg_file_path': self.maboss_context.cfg_file_path,
-                'available_nodes': self.maboss_context.available_nodes,
-                'output_nodes': self.maboss_context.output_nodes,
-                'simulation_results': self.maboss_context.simulation_results,
-                'target_cell_type': self.maboss_context.target_cell_type,
-                'biological_context': self.maboss_context.biological_context
-            }
+        contexts = list(self.maboss_contexts.values())
+        if contexts:
+            result["maboss_context"] = self._maboss_context_dict(contexts[-1])
+            result["maboss_contexts"] = [
+                self._maboss_context_dict(context) for context in contexts
+            ]
         
         return result
 
@@ -752,6 +839,17 @@ class SessionManager:
                 return session.maboss_context
         except (RuntimeError, ValueError):
             return None
+
+    def get_maboss_contexts(
+        self,
+        session_id: str | None = None,
+    ) -> dict[str, MaBoSSContext]:
+        """Get a snapshot of all target-cell MaBoSS contexts."""
+        try:
+            with self.session_scope(session_id) as session:
+                return dict(session.maboss_contexts)
+        except (RuntimeError, ValueError):
+            return {}
 
 # Global session manager instance
 session_manager = SessionManager()

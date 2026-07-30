@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from mcp_biomodelling_servers.structured_outputs import StructuredOutputModel
 
@@ -56,6 +56,18 @@ class PhysiCellMaBoSSContextRecord(StructuredOutputModel):
     simulation_results: str | None = None
     target_cell_type: str
     biological_context: str | None = None
+    source_manifest_path: str | None = None
+    local_manifest_path: str | None = None
+    source_session_id: str | None = None
+    result_file_path: str | None = None
+    simulation_parameters: dict[
+        str,
+        bool | int | float | str | None,
+    ] = Field(default_factory=dict)
+    neko_session_id: str | None = None
+    neko_manifest_path: str | None = None
+    local_neko_manifest_path: str | None = None
+    local_bnet_path: str | None = None
 
 
 class PhysiCellMaBoSSContextResult(PhysiCellScientificResult):
@@ -64,6 +76,28 @@ class PhysiCellMaBoSSContextResult(PhysiCellScientificResult):
     session_id: str = Field(min_length=1)
     has_context: bool
     context: PhysiCellMaBoSSContextRecord | None = None
+    context_count: int = Field(ge=0)
+    contexts: list[PhysiCellMaBoSSContextRecord]
+    selected_cell_type: str | None = None
+
+    @model_validator(mode="after")
+    def validate_context_summary(self) -> PhysiCellMaBoSSContextResult:
+        """Align the compatibility view and complete context collection."""
+        if self.context_count != len(self.contexts):
+            raise ValueError("context_count must match contexts.")
+        if self.has_context is not bool(self.contexts):
+            raise ValueError("has_context must reflect contexts availability.")
+        if self.context is not None and self.context not in self.contexts:
+            raise ValueError("context must be one of the returned contexts.")
+        if self.selected_cell_type is not None:
+            if (
+                self.context is None
+                or self.context.target_cell_type != self.selected_cell_type
+            ):
+                raise ValueError(
+                    "selected_cell_type must identify the compatibility context."
+                )
+        return self
 
 
 class PhysiCellXmlValidationResult(PhysiCellScientificResult):

@@ -49,6 +49,7 @@ EXPECTED_NAMED_OUTPUTS = {
     "PhysiCell": {
         "list_sessions": "PhysiCellSessionListResult",
         "list_artifact_sessions": "PhysiCellArtifactSessionListResult",
+        "import_maboss_handoff": "PhysiCellHandoffImportResult",
         "get_workflow_status": "PhysiCellWorkflowStatusResult",
         "get_maboss_context": "PhysiCellMaBoSSContextResult",
         "validate_xml_file": "PhysiCellXmlValidationResult",
@@ -70,7 +71,7 @@ EXPECTED_NAMED_OUTPUTS = {
 EXPECTED_TOOL_COUNTS = {
     "MaBoSS": 24,
     "NeKo": 33,
-    "PhysiCell": 33,
+    "PhysiCell": 34,
 }
 
 

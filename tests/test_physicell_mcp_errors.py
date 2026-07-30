@@ -1,6 +1,9 @@
 """Protocol-level tests for PhysiCell tool failure semantics."""
 
+from __future__ import annotations
+
 import asyncio
+import copy
 import inspect
 import sys
 from collections.abc import Coroutine
@@ -67,6 +70,17 @@ _install_physicell_import_stubs()
 # The launchers import their local session manager as the top-level module.
 sys.modules.pop("session_manager", None)
 
+from mcp_biomodelling_servers.handoff import (  # noqa: E402
+    HandoffNetwork,
+    HandoffPackage,
+    HandoffProvenance,
+    MaBoSSSimulationHandoff,
+    MaBoSSToPhysiCellHandoffManifest,
+    NeKoToMaBoSSHandoffManifest,
+    PhysiCellTarget,
+    handoff_artifact,
+    write_handoff_manifest,
+)
 from PhysiCell import server as physicell_server  # noqa: E402
 
 mcp = physicell_server.mcp
@@ -249,6 +263,213 @@ def _session_resource_config() -> SimpleNamespace:
                 }
             },
         ),
+    )
+
+
+class HandoffPhysiBoSSStub:
+    """Minimal candidate-config PhysiBoSS mutation surface."""
+
+    def __init__(self, config: HandoffConfigStub) -> None:
+        self._config = config
+
+    def add_intracellular_model(
+        self,
+        *,
+        cell_type_name: str,
+        model_type: str,
+        bnd_filename: str,
+        cfg_filename: str,
+    ) -> None:
+        if self._config.fail_attach:
+            raise RuntimeError("candidate attach failed")
+        if cell_type_name not in self._config.cell_type_data:
+            raise ValueError(f"unknown cell type {cell_type_name}")
+        phenotype = self._config.cell_type_data[cell_type_name]["phenotype"]
+        phenotype["intracellular"] = {
+            "type": model_type,
+            "bnd_filename": bnd_filename,
+            "cfg_filename": cfg_filename,
+            "settings": {},
+            "mapping": {"inputs": [], "outputs": []},
+            "initial_values": [],
+        }
+
+
+class HandoffConfigStub:
+    """Copyable PhysiCell configuration for atomic handoff tests."""
+
+    def __init__(
+        self,
+        cell_type_data: dict[str, dict[str, Any]],
+        *,
+        fail_copy: bool = False,
+        fail_attach: bool = False,
+    ) -> None:
+        self.cell_type_data = copy.deepcopy(cell_type_data)
+        self.fail_copy = fail_copy
+        self.fail_attach = fail_attach
+        self.cell_types = SimpleNamespace(
+            get_cell_types=lambda: self.cell_type_data
+        )
+        self.physiboss = HandoffPhysiBoSSStub(self)
+
+    def copy(self) -> HandoffConfigStub:
+        if self.fail_copy:
+            raise RuntimeError("candidate copy failed")
+        return HandoffConfigStub(
+            self.cell_type_data,
+            fail_attach=self.fail_attach,
+        )
+
+
+def _handoff_config(
+    *cell_types: str,
+    existing_target: str | None = None,
+    fail_copy: bool = False,
+    fail_attach: bool = False,
+) -> HandoffConfigStub:
+    data = {
+        name: {"phenotype": {}}
+        for name in cell_types
+    }
+    if existing_target is not None:
+        data[existing_target]["phenotype"]["intracellular"] = {
+            "type": "maboss",
+            "bnd_filename": "old.bnd",
+            "cfg_filename": "old.cfg",
+            "settings": {"intracellular_dt": 6.0},
+            "mapping": {
+                "inputs": [{"intracellular_name": "OldInput"}],
+                "outputs": [{"intracellular_name": "OldOutput"}],
+            },
+            "initial_values": [],
+        }
+    return HandoffConfigStub(
+        data,
+        fail_copy=fail_copy,
+        fail_attach=fail_attach,
+    )
+
+
+def _handoff_provenance(
+    server: str,
+    session_id: str,
+) -> HandoffProvenance:
+    modelling_package = {
+        "NeKo": "nekomata",
+        "MaBoSS": "maboss",
+    }[server]
+    return HandoffProvenance(
+        server=server,
+        session_id=session_id,
+        mcp_package=HandoffPackage(
+            name="mcp-biomodelling-servers",
+            version="1.0.0",
+        ),
+        modelling_package=HandoffPackage(
+            name=modelling_package,
+            version="1.2.3",
+        ),
+        operation=f"export-{server.lower()}-handoff",
+    )
+
+
+def _create_maboss_handoff(
+    tmp_path: Path,
+    *,
+    target_cell_type: str = "tumour",
+    prefix: str = "source",
+    with_neko_parent: bool = False,
+    include_result: bool = True,
+) -> Path:
+    source_root = tmp_path / prefix
+    source_root.mkdir()
+    maboss_session = f"{prefix}-maboss-session"
+    bnd_path = source_root / "model.bnd"
+    bnd_path.write_text(
+        "Node A { logic = B; }\nNode B { logic = A; }\n",
+        encoding="utf-8",
+    )
+    cfg_path = source_root / "model.cfg"
+    cfg_path.write_text("max_time = 100;\n", encoding="utf-8")
+
+    lineage = []
+    parent_manifest_file = None
+    if with_neko_parent:
+        neko_session = f"{prefix}-neko-session"
+        bnet_path = source_root / "network.bnet"
+        bnet_path.write_text(
+            "targets, factors\nA, B\nB, A\n",
+            encoding="utf-8",
+        )
+        neko_manifest = NeKoToMaBoSSHandoffManifest(
+            source=_handoff_provenance("NeKo", neko_session),
+            biological_context="drug response",
+            network=HandoffNetwork(
+                nodes=["A", "B"],
+                output_nodes=["A"],
+            ),
+            bnet_file=handoff_artifact(
+                bnet_path,
+                server="NeKo",
+                session_id=neko_session,
+                role="neko_bnet",
+            ),
+        )
+        parent_path = write_handoff_manifest(
+            source_root / "neko.handoff.json",
+            neko_manifest,
+        )
+        lineage = [neko_manifest.source]
+        parent_manifest_file = handoff_artifact(
+            parent_path,
+            server="NeKo",
+            session_id=neko_session,
+            role="parent_manifest",
+        )
+
+    result_file = None
+    if include_result:
+        result_path = source_root / "result.csv"
+        result_path.write_text("Time,A\n100,0.75\n", encoding="utf-8")
+        result_file = handoff_artifact(
+            result_path,
+            server="MaBoSS",
+            session_id=maboss_session,
+            role="maboss_result",
+        )
+
+    manifest = MaBoSSToPhysiCellHandoffManifest(
+        source=_handoff_provenance("MaBoSS", maboss_session),
+        lineage=lineage,
+        biological_context="drug response",
+        network=HandoffNetwork(
+            nodes=["A", "B"],
+            output_nodes=["A"],
+        ),
+        bnd_file=handoff_artifact(
+            bnd_path,
+            server="MaBoSS",
+            session_id=maboss_session,
+            role="maboss_bnd",
+        ),
+        cfg_file=handoff_artifact(
+            cfg_path,
+            server="MaBoSS",
+            session_id=maboss_session,
+            role="maboss_cfg",
+        ),
+        parent_manifest=parent_manifest_file,
+        simulation=MaBoSSSimulationHandoff(
+            parameters={"max_time": 100.0, "sample_count": 1000},
+            simulation_summary="A reaches probability 0.75.",
+            result_file=result_file,
+        ),
+        target=PhysiCellTarget(cell_type=target_cell_type),
+    )
+    return write_handoff_manifest(
+        source_root / "maboss.handoff.json",
+        manifest,
     )
 
 
@@ -621,6 +842,7 @@ def test_scientific_tools_publish_structured_output_schemas() -> None:
     tools = {tool.name: tool for tool in listed_tools.tools}
 
     expected_models = {
+        "import_maboss_handoff": "PhysiCellHandoffImportResult",
         "get_workflow_status": "PhysiCellWorkflowStatusResult",
         "get_maboss_context": "PhysiCellMaBoSSContextResult",
         "validate_xml_file": "PhysiCellXmlValidationResult",
@@ -784,6 +1006,413 @@ def test_unavailable_physiboss_support_is_tool_error(
 
     assert result.is_error is True
     assert "PhysiBoSS support is not available" in result.content[0].text
+
+
+def test_import_maboss_handoff_copies_and_attaches_standalone_model(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(physicell_server, "PHYSIBOSS_AVAILABLE", True)
+    manifest_path = _create_maboss_handoff(tmp_path)
+    original_config = _handoff_config("tumour")
+    session_id = _create_session(original_config)
+
+    result = _run(
+        _call_tool(
+            "import_maboss_handoff",
+            {
+                "manifest_path": str(manifest_path),
+                "artifact_prefix": "tumour_model",
+                "session_id": session_id,
+            },
+        )
+    )
+
+    assert result.is_error is False
+    payload = result.structured_content
+    assert payload["target_cell_type"] == "tumour"
+    assert payload["nodes"] == ["A", "B"]
+    assert payload["output_nodes"] == ["A"]
+    assert payload["replaced_existing"] is False
+    assert payload["context_count"] == 1
+    assert payload["result_file"]["name"] == "tumour_model.result.csv"
+    assert payload["neko_manifest"] is None
+    assert payload["neko_manifest_file"] is None
+    assert payload["bnet_file"] is None
+
+    session = session_manager.get_session(session_id)
+    assert session is not None
+    assert session.config is not original_config
+    assert "intracellular" not in (
+        original_config.cell_type_data["tumour"]["phenotype"]
+    )
+    intracellular = session.config.cell_type_data["tumour"]["phenotype"][
+        "intracellular"
+    ]
+    assert intracellular["bnd_filename"].endswith("tumour_model.bnd")
+    assert intracellular["cfg_filename"].endswith("tumour_model.cfg")
+    assert session.physiboss_models_count == 1
+    context = session.maboss_contexts["tumour"]
+    assert context.source_manifest_path == str(manifest_path)
+    assert context.simulation_parameters == {
+        "max_time": 100.0,
+        "sample_count": 1000,
+    }
+    assert context.result_file_path.endswith("tumour_model.result.csv")
+
+
+def test_import_maboss_handoff_preserves_complete_neko_lineage(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(physicell_server, "PHYSIBOSS_AVAILABLE", True)
+    manifest_path = _create_maboss_handoff(
+        tmp_path,
+        with_neko_parent=True,
+    )
+    session_id = _create_session(_handoff_config("tumour"))
+
+    result = _run(
+        _call_tool(
+            "import_maboss_handoff",
+            {
+                "manifest_path": str(manifest_path),
+                "session_id": session_id,
+            },
+        )
+    )
+
+    assert result.is_error is False
+    payload = result.structured_content
+    assert payload["neko_manifest"]["handoff_type"] == "neko-to-maboss"
+    assert payload["neko_manifest_file"]["server"] == "PhysiCell"
+    assert payload["bnet_file"]["server"] == "PhysiCell"
+    assert payload["bnet_file"]["name"] == "maboss_import.neko.bnet"
+    session = session_manager.get_session(session_id)
+    assert session is not None
+    context = session.maboss_contexts["tumour"]
+    assert context.neko_session_id == "source-neko-session"
+    assert context.local_neko_manifest_path.endswith(
+        "maboss_import.neko.handoff.json"
+    )
+    assert context.local_bnet_path.endswith("maboss_import.neko.bnet")
+
+
+def test_import_maboss_handoffs_retain_context_per_target_cell(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(physicell_server, "PHYSIBOSS_AVAILABLE", True)
+    tumour_manifest = _create_maboss_handoff(
+        tmp_path,
+        target_cell_type="tumour",
+        prefix="tumour_source",
+    )
+    immune_manifest = _create_maboss_handoff(
+        tmp_path,
+        target_cell_type="immune",
+        prefix="immune_source",
+        include_result=False,
+    )
+    session_id = _create_session(_handoff_config("tumour", "immune"))
+
+    tumour_result = _run(
+        _call_tool(
+            "import_maboss_handoff",
+            {
+                "manifest_path": str(tumour_manifest),
+                "artifact_prefix": "tumour",
+                "session_id": session_id,
+            },
+        )
+    )
+    immune_result = _run(
+        _call_tool(
+            "import_maboss_handoff",
+            {
+                "manifest_path": str(immune_manifest),
+                "artifact_prefix": "immune",
+                "session_id": session_id,
+            },
+        )
+    )
+    replacement_result = _run(
+        _call_tool(
+            "import_maboss_handoff",
+            {
+                "manifest_path": str(tumour_manifest),
+                "artifact_prefix": "tumour_reimport",
+                "replace_existing": True,
+                "session_id": session_id,
+            },
+        )
+    )
+    contexts = _run(
+        _call_tool(
+            "get_maboss_context",
+            {"cell_type": "immune", "session_id": session_id},
+        )
+    )
+    latest_context = _run(
+        _call_tool(
+            "get_maboss_context",
+            {"session_id": session_id},
+        )
+    )
+
+    assert tumour_result.is_error is False
+    assert immune_result.is_error is False
+    assert replacement_result.is_error is False
+    assert immune_result.structured_content["context_count"] == 2
+    assert replacement_result.structured_content["context_count"] == 2
+    assert contexts.structured_content["context_count"] == 2
+    assert contexts.structured_content["selected_cell_type"] == "immune"
+    assert contexts.structured_content["context"]["target_cell_type"] == "immune"
+    assert latest_context.structured_content["selected_cell_type"] is None
+    assert latest_context.structured_content["context"]["target_cell_type"] == (
+        "tumour"
+    )
+    assert {
+        context["target_cell_type"]
+        for context in contexts.structured_content["contexts"]
+    } == {"tumour", "immune"}
+
+
+def test_import_maboss_handoff_requires_explicit_replacement(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(physicell_server, "PHYSIBOSS_AVAILABLE", True)
+    manifest_path = _create_maboss_handoff(tmp_path)
+    original_config = _handoff_config(
+        "tumour",
+        "immune",
+        existing_target="tumour",
+    )
+    session_id = _create_session(original_config)
+
+    refused = _run(
+        _call_tool(
+            "import_maboss_handoff",
+            {
+                "manifest_path": str(manifest_path),
+                "session_id": session_id,
+            },
+        )
+    )
+    assert refused.is_error is True
+    assert "replace_existing=true" in refused.content[0].text
+    session = session_manager.get_session(session_id)
+    assert session is not None
+    assert session.config is original_config
+    assert not (tmp_path / "artifacts" / session_id).exists()
+
+    replaced = _run(
+        _call_tool(
+            "import_maboss_handoff",
+            {
+                "manifest_path": str(manifest_path),
+                "replace_existing": True,
+                "session_id": session_id,
+            },
+        )
+    )
+    assert replaced.is_error is False
+    assert replaced.structured_content["replaced_existing"] is True
+    session = session_manager.get_session(session_id)
+    assert session is not None
+    intracellular = session.config.cell_type_data["tumour"]["phenotype"][
+        "intracellular"
+    ]
+    assert intracellular["settings"] == {}
+    assert intracellular["mapping"] == {"inputs": [], "outputs": []}
+    assert session.config.cell_type_data["immune"] == (
+        original_config.cell_type_data["immune"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("config", "message"),
+    [
+        (_handoff_config("immune"), "Target cell type 'tumour'"),
+        (
+            _handoff_config("tumour", fail_copy=True),
+            "Could not copy the PhysiCell configuration",
+        ),
+        (
+            _handoff_config("tumour", fail_attach=True),
+            "Could not attach the MaBoSS model",
+        ),
+    ],
+)
+def test_import_maboss_handoff_candidate_failures_preserve_session(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    config: HandoffConfigStub,
+    message: str,
+) -> None:
+    monkeypatch.setattr(physicell_server, "PHYSIBOSS_AVAILABLE", True)
+    manifest_path = _create_maboss_handoff(tmp_path)
+    session_id = _create_session(config)
+
+    result = _run(
+        _call_tool(
+            "import_maboss_handoff",
+            {
+                "manifest_path": str(manifest_path),
+                "session_id": session_id,
+            },
+        )
+    )
+
+    assert result.is_error is True
+    assert message in result.content[0].text
+    session = session_manager.get_session(session_id)
+    assert session is not None
+    assert session.config is config
+    assert session.maboss_contexts == {}
+    artifact_dir = tmp_path / "artifacts" / session_id
+    assert not artifact_dir.exists() or not list(artifact_dir.iterdir())
+
+
+def test_import_maboss_handoff_rejects_changed_source_without_state_change(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(physicell_server, "PHYSIBOSS_AVAILABLE", True)
+    manifest_path = _create_maboss_handoff(tmp_path)
+    source_bnd = manifest_path.parent / "model.bnd"
+    source_bnd.write_text(
+        "Node A { logic = 0; }\nNode B { logic = 0; }\n",
+        encoding="utf-8",
+    )
+    config = _handoff_config("tumour")
+    session_id = _create_session(config)
+
+    result = _run(
+        _call_tool(
+            "import_maboss_handoff",
+            {
+                "manifest_path": str(manifest_path),
+                "session_id": session_id,
+            },
+        )
+    )
+
+    assert result.is_error is True
+    assert "size changed" in result.content[0].text or (
+        "digest changed" in result.content[0].text
+    )
+    session = session_manager.get_session(session_id)
+    assert session is not None
+    assert session.config is config
+    assert session.maboss_contexts == {}
+
+
+def test_import_maboss_handoff_rejects_stale_neko_lineage(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(physicell_server, "PHYSIBOSS_AVAILABLE", True)
+    manifest_path = _create_maboss_handoff(
+        tmp_path,
+        with_neko_parent=True,
+    )
+    source_bnet = manifest_path.parent / "network.bnet"
+    source_bnet.write_text("targets, factors\nA, 0\nB, 0\n", encoding="utf-8")
+    config = _handoff_config("tumour")
+    session_id = _create_session(config)
+
+    result = _run(
+        _call_tool(
+            "import_maboss_handoff",
+            {
+                "manifest_path": str(manifest_path),
+                "session_id": session_id,
+            },
+        )
+    )
+
+    assert result.is_error is True
+    assert "digest changed" in result.content[0].text
+    session = session_manager.get_session(session_id)
+    assert session is not None
+    assert session.config is config
+    assert session.maboss_contexts == {}
+
+
+def test_import_maboss_handoff_rolls_back_partial_artifact_publication(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(physicell_server, "PHYSIBOSS_AVAILABLE", True)
+    manifest_path = _create_maboss_handoff(tmp_path)
+    config = _handoff_config("tumour")
+    session_id = _create_session(config)
+    original_link = physicell_server._link_handoff_artifact_without_overwrite
+    calls = 0
+
+    def fail_second_link(source: Path, destination: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("simulated publication failure")
+        original_link(source, destination)
+
+    monkeypatch.setattr(
+        physicell_server,
+        "_link_handoff_artifact_without_overwrite",
+        fail_second_link,
+    )
+    result = _run(
+        _call_tool(
+            "import_maboss_handoff",
+            {
+                "manifest_path": str(manifest_path),
+                "session_id": session_id,
+            },
+        )
+    )
+
+    assert result.is_error is True
+    assert "simulated publication failure" in result.content[0].text
+    session = session_manager.get_session(session_id)
+    assert session is not None
+    assert session.config is config
+    assert session.maboss_contexts == {}
+    artifact_dir = tmp_path / "artifacts" / session_id
+    assert list(artifact_dir.glob("maboss_import*")) == []
+
+
+def test_import_maboss_handoff_refuses_existing_artifact_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(physicell_server, "PHYSIBOSS_AVAILABLE", True)
+    manifest_path = _create_maboss_handoff(tmp_path)
+    config = _handoff_config("tumour")
+    session_id = _create_session(config)
+    artifact_dir = tmp_path / "artifacts" / session_id
+    artifact_dir.mkdir(parents=True)
+    existing = artifact_dir / "maboss_import.cfg"
+    existing.write_text("keep\n", encoding="utf-8")
+
+    result = _run(
+        _call_tool(
+            "import_maboss_handoff",
+            {
+                "manifest_path": str(manifest_path),
+                "session_id": session_id,
+            },
+        )
+    )
+
+    assert result.is_error is True
+    assert "Refusing to overwrite" in result.content[0].text
+    assert existing.read_text(encoding="utf-8") == "keep\n"
+    session = session_manager.get_session(session_id)
+    assert session is not None
+    assert session.config is config
 
 
 def test_export_without_rules_is_tool_error() -> None:
@@ -1099,6 +1728,9 @@ def test_empty_status_results_remain_successful() -> None:
         "session_id": session_id,
         "has_context": False,
         "context": None,
+        "context_count": 0,
+        "contexts": [],
+        "selected_cell_type": None,
     }
 
 
@@ -1175,20 +1807,33 @@ def test_maboss_context_returns_cross_server_handoff_fields() -> None:
     )
 
     assert store_result.is_error is False
+    expected_context = {
+        "model_name": "cell_fate",
+        "bnd_file_path": "/models/cell_fate.bnd",
+        "cfg_file_path": "/models/cell_fate.cfg",
+        "available_nodes": ["Apoptosis", "Proliferation"],
+        "output_nodes": ["Apoptosis"],
+        "simulation_results": "Apoptosis reaches 0.7 probability.",
+        "target_cell_type": "tumour",
+        "biological_context": "drug response",
+        "source_manifest_path": None,
+        "local_manifest_path": None,
+        "source_session_id": None,
+        "result_file_path": None,
+        "simulation_parameters": {},
+        "neko_session_id": None,
+        "neko_manifest_path": None,
+        "local_neko_manifest_path": None,
+        "local_bnet_path": None,
+    }
     assert context_result.structured_content == {
         "server": "PhysiCell",
         "session_id": session_id,
         "has_context": True,
-        "context": {
-            "model_name": "cell_fate",
-            "bnd_file_path": "/models/cell_fate.bnd",
-            "cfg_file_path": "/models/cell_fate.cfg",
-            "available_nodes": ["Apoptosis", "Proliferation"],
-            "output_nodes": ["Apoptosis"],
-            "simulation_results": "Apoptosis reaches 0.7 probability.",
-            "target_cell_type": "tumour",
-            "biological_context": "drug response",
-        },
+        "context": expected_context,
+        "context_count": 1,
+        "contexts": [expected_context],
+        "selected_cell_type": None,
     }
 
 
@@ -1378,6 +2023,7 @@ def test_cycle_signal_and_behavior_discovery_return_exact_names(
         "list_all_available_signals",
         "list_all_available_behaviors",
         "add_single_cell_rule",
+        "import_maboss_handoff",
         "add_physiboss_model",
         "configure_physiboss_settings",
         "add_physiboss_input_link",
@@ -1404,6 +2050,7 @@ def test_session_locking_preserves_public_tool_schemas() -> None:
         "get_workflow_status",
         "set_maboss_context",
         "get_maboss_context",
+        "import_maboss_handoff",
         "load_xml_configuration",
         "analyze_loaded_configuration",
         "list_loaded_components",
@@ -1476,6 +2123,7 @@ def test_all_physicell_tools_publish_safety_annotations() -> None:
         "add_single_substrate",
         "add_single_cell_type",
         "add_physiboss_model",
+        "import_maboss_handoff",
     }
     idempotent_destructive = {
         "load_xml_configuration",
@@ -1604,12 +2252,32 @@ def test_physicell_tool_schemas_publish_stable_enums_and_bounds() -> None:
     ].input_schema["properties"]
     assert load_schema["filepath"]["minLength"] == 1
 
+    import_schema = tools[
+        "import_maboss_handoff"
+    ].input_schema
+    import_properties = import_schema["properties"]
+    assert "manifest_path" in import_schema["required"]
+    assert import_properties["manifest_path"]["minLength"] == 1
+    assert import_properties["artifact_prefix"]["default"] == "maboss_import"
+    assert import_properties["artifact_prefix"]["pattern"] == (
+        r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9_-])?$"
+    )
+    assert import_properties["replace_existing"]["default"] is False
+
 
 @pytest.mark.parametrize(
     ("tool_name", "arguments"),
     [
         ("set_default_session", {"session_id": ""}),
         ("load_xml_configuration", {"filepath": "   "}),
+        ("import_maboss_handoff", {"manifest_path": "   "}),
+        (
+            "import_maboss_handoff",
+            {
+                "manifest_path": "/tmp/handoff.json",
+                "artifact_prefix": "../unsafe",
+            },
+        ),
         (
             "create_simulation_domain",
             {"domain_x": 0, "domain_y": 100},

@@ -150,6 +150,21 @@ def test_physicell_settings_runtime_exposes_server_contract() -> None:
         config = PhysiCellConfig()
         assert callable(config.generate_xml)
         assert callable(config.load_xml)
+        config.cell_types.add_cell_type("tumour")
+        candidate = config.copy()
+        candidate.physiboss.add_intracellular_model(
+            cell_type_name="tumour",
+            model_type="maboss",
+            bnd_filename="/tmp/runtime.bnd",
+            cfg_filename="/tmp/runtime.cfg",
+        )
+        original_cell = config.cell_types.get_cell_types()["tumour"]
+        candidate_cell = candidate.cell_types.get_cell_types()["tumour"]
+        assert "intracellular" not in original_cell["phenotype"]
+        intracellular = candidate_cell["phenotype"]["intracellular"]
+        assert intracellular["type"] == "maboss"
+        assert intracellular["bnd_filename"] == "/tmp/runtime.bnd"
+        assert intracellular["cfg_filename"] == "/tmp/runtime.cfg"
         assert callable(get_default_parameters)
         assert callable(get_signals_behaviors)
         assert callable(get_signal_by_name)
