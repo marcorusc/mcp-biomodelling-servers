@@ -66,6 +66,7 @@ from physicell_outputs import (
     PhysiCellWorkflowStatusResult,
     PhysiCellXmlValidationResult,
 )
+from physicell_guidance import PHYSICELL_AGENT_MANUAL
 
 _SERVER_ROOT = current_dir
 
@@ -103,6 +104,34 @@ mcp = MCPServer(
     ),
     version=__version__,
 )
+
+
+@mcp.prompt(
+    name="physicell_workflow_prompt",
+    title="Build or revise a PhysiCell configuration",
+    description=(
+        "Operating manual for creating, modifying, integrating, and "
+        "exporting PhysiCell configurations."
+    ),
+)
+def physicell_workflow_prompt() -> str:
+    """Return the PhysiCell configuration-building workflow."""
+    return PHYSICELL_AGENT_MANUAL
+
+
+@mcp.resource(
+    uri="docs://physicell/agent_manual",
+    name="PhysiCell Agent Operations Manual",
+    description=(
+        "Single source of truth for PhysiCell configuration workflows, "
+        "repeatable operations, PhysiBoSS integration, and export."
+    ),
+    mime_type="text/markdown",
+)
+def physicell_agent_manual_resource() -> str:
+    """Return the PhysiCell agent operations manual."""
+    return PHYSICELL_AGENT_MANUAL
+
 
 _signals_behaviors_lock = RLock()
 
@@ -2224,40 +2253,12 @@ def clean_generated_files(
 
 @mcp.tool(annotations=_READ_ONLY_TOOL)
 def get_help() -> str:
-    """Return the PhysiCell server workflow guide with tool usage and examples.
+    """Return the same workflow guide exposed as a prompt and resource.
 
     Returns:
         str: Markdown-formatted help guide.
     """
-    return """# PhysiCell MCP Server Help
-
-## Basic Workflow
-1. **analyze_biological_scenario()** - Store your biological context
-2. **create_simulation_domain()** - Set up spatial/temporal framework
-3. **add_single_substrate()** - Add oxygen, nutrients, drugs, etc.
-4. **add_single_cell_type()** - Add cancer cells, immune cells, etc.
-5. **add_single_cell_rule()** - Create realistic cell responses
-6. **export_xml_configuration()** - Generate PhysiCell XML
-7. **export_cell_rules_csv()** - Generate rules CSV
-
-## Key Functions
-- **list_all_available_signals()** - See what signals cells can sense
-- **list_all_available_behaviors()** - See what cells can do
-- **get_simulation_summary()** - Check current setup
-- **list_generated_files()** - See exported files
-- **clean_generated_files()** - Remove old files
-
-## Example Usage
-```
-analyze_biological_scenario("hypoxic tumor with immune infiltration")
-create_simulation_domain(domain_x=2000, max_time=7200)
-add_single_substrate("oxygen", 100000, 0.01, 38.0)
-add_single_cell_type("cancer_cell")
-add_single_cell_rule("cancer_cell", "oxygen", "decreases", "necrosis", 0.0001, 5.0)
-export_xml_configuration("tumor_sim.xml")
-```
-
-Most parameters are optional with sensible defaults!"""
+    return PHYSICELL_AGENT_MANUAL
 
 if __name__ == "__main__":
     mcp.run()

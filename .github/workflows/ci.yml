@@ -96,6 +96,7 @@ jobs:
             NeKo/src/history.py \
             NeKo/src/structured_outputs.py \
             NeKo/session_manager.py \
+            PhysiCell/physicell_guidance.py \
             PhysiCell/physicell_outputs.py \
             PhysiCell/session_manager.py \
             tests/
@@ -125,6 +126,7 @@ jobs:
             NeKo/src/history.py \
             NeKo/src/structured_outputs.py \
             NeKo/session_manager.py \
+            PhysiCell/physicell_guidance.py \
             PhysiCell/physicell_outputs.py \
             PhysiCell/session_manager.py
 

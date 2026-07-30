@@ -87,6 +87,31 @@ async def _list_tools() -> Any:
         return await client.list_tools()
 
 
+async def _list_prompts() -> Any:
+    async with Client(mcp) as client:
+        return await client.list_prompts()
+
+
+async def _get_prompt(name: str) -> Any:
+    async with Client(mcp) as client:
+        return await client.get_prompt(name)
+
+
+async def _list_resources() -> Any:
+    async with Client(mcp) as client:
+        return await client.list_resources()
+
+
+async def _list_resource_templates() -> Any:
+    async with Client(mcp) as client:
+        return await client.list_resource_templates()
+
+
+async def _read_resource(uri: str) -> Any:
+    async with Client(mcp) as client:
+        return await client.read_resource(uri)
+
+
 def _clear_sessions() -> None:
     for session in list(session_manager.list_sessions()):
         session_manager.delete_session(session.session_id)
@@ -142,6 +167,36 @@ def test_create_session_is_successful() -> None:
     result = _run(_call_tool("create_session"))
 
     assert result.is_error is False
+
+
+def test_workflow_prompt_manual_resource_and_help_share_guidance() -> None:
+    prompts = _run(_list_prompts())
+    resources = _run(_list_resources())
+    templates = _run(_list_resource_templates())
+    rendered_prompt = _run(_get_prompt("physicell_workflow_prompt"))
+    manual = _run(_read_resource("docs://physicell/agent_manual"))
+    help_result = _run(_call_tool("get_help"))
+
+    assert len(prompts.prompts) == 1
+    assert prompts.prompts[0].name == "physicell_workflow_prompt"
+    assert prompts.prompts[0].title == (
+        "Build or revise a PhysiCell configuration"
+    )
+    assert prompts.prompts[0].arguments == []
+    assert len(resources.resources) == 1
+    assert str(resources.resources[0].uri) == (
+        "docs://physicell/agent_manual"
+    )
+    assert resources.resources[0].mime_type == "text/markdown"
+    assert templates.resource_templates == []
+
+    expected = physicell_server.PHYSICELL_AGENT_MANUAL
+    assert rendered_prompt.messages[0].content.text == expected
+    assert manual.contents[0].mime_type == "text/markdown"
+    assert manual.contents[0].text == expected
+    assert help_result.is_error is False
+    assert help_result.content[0].text == expected
+    assert help_result.structured_content == {"result": expected}
 
 
 def test_session_discovery_tools_publish_structured_output_schemas() -> None:
