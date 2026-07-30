@@ -350,7 +350,7 @@ def test_invalid_database_is_tool_error() -> None:
     )
 
     assert result.is_error is True
-    assert "Unsupported database" in result.content[0].text
+    assert "validation error" in result.content[0].text.lower()
     assert session_manager.list_sessions() == {}
 
 
@@ -383,7 +383,7 @@ def test_invalid_export_format_is_tool_error() -> None:
     )
 
     assert result.is_error is True
-    assert "Export Format Not Supported" in result.content[0].text
+    assert "validation error" in result.content[0].text.lower()
 
 
 def test_invalid_targeted_strategy_is_tool_error() -> None:
@@ -401,7 +401,7 @@ def test_invalid_targeted_strategy_is_tool_error() -> None:
     )
 
     assert result.is_error is True
-    assert "Unsupported targeted strategy" in result.content[0].text
+    assert "validation error" in result.content[0].text.lower()
 
 
 def test_partial_add_gene_failure_is_reported_as_tool_error() -> None:
@@ -789,6 +789,329 @@ def test_session_locking_preserves_public_tool_schemas() -> None:
         assert tools[tool_name].output_schema is not None
 
 
+def test_all_neko_tools_publish_safety_annotations() -> None:
+    listed_tools = _run(_list_tools())
+    tools = {tool.name: tool for tool in listed_tools.tools}
+
+    read_only_closed = {
+        "list_genes_and_interactions",
+        "find_paths",
+        "list_network_history",
+        "compare_network_states",
+        "list_bnet_files",
+        "check_disconnected_nodes",
+        "get_references",
+        "filter_interactions",
+        "list_sessions",
+        "list_artifact_sessions",
+        "status",
+        "list_components",
+    }
+    read_only_open = {"candidate_connectors"}
+    idempotent_closed = {
+        "export_network",
+        "set_default_params",
+        "set_default_session",
+    }
+    non_idempotent_closed = {
+        "create_session",
+        "navigate_network_history",
+    }
+    non_idempotent_open = {
+        "add_gene",
+        "extend_network",
+        "bridge_components",
+        "connect_targeted_nodes",
+        "apply_global_connection",
+    }
+    destructive_idempotent = {
+        "reset_network",
+        "set_network_history_limit",
+        "clean_generated_files",
+        "remove_bimodal_interactions",
+        "remove_undefined_interactions",
+    }
+    destructive_non_idempotent = {
+        "remove_gene",
+        "remove_interaction",
+        "delete_session",
+    }
+    destructive_open = {"create_network"}
+
+    assert set(tools) == (
+        read_only_closed
+        | read_only_open
+        | idempotent_closed
+        | non_idempotent_closed
+        | non_idempotent_open
+        | destructive_idempotent
+        | destructive_non_idempotent
+        | destructive_open
+    )
+
+    read_only = read_only_closed | read_only_open
+    destructive = (
+        destructive_idempotent
+        | destructive_non_idempotent
+        | destructive_open
+    )
+    idempotent = read_only | idempotent_closed | destructive_idempotent
+    open_world = read_only_open | non_idempotent_open | destructive_open
+
+    for tool_name, tool in tools.items():
+        annotations = tool.annotations
+        assert annotations is not None
+        assert annotations.read_only_hint is (tool_name in read_only)
+        assert annotations.destructive_hint is (tool_name in destructive)
+        assert annotations.idempotent_hint is (tool_name in idempotent)
+        assert annotations.open_world_hint is (tool_name in open_world)
+
+
+def test_neko_tool_schemas_publish_stable_enums_and_bounds() -> None:
+    listed_tools = _run(_list_tools())
+    tools = {tool.name: tool for tool in listed_tools.tools}
+
+    create_schema = tools["create_network"].input_schema["properties"]
+    assert create_schema["database"]["enum"] == ["omnipath", "signor"]
+    assert create_schema["algorithm"]["enum"] == ["bfs", "dfs"]
+    assert create_schema["verbosity"]["enum"] == [
+        "summary",
+        "preview",
+        "full",
+    ]
+    assert create_schema["max_len"]["minimum"] == 1
+    assert create_schema["max_len"]["maximum"] == 4
+    assert create_schema["list_of_initial_genes"]["items"]["minLength"] == 1
+
+    export_schema = tools["export_network"].input_schema["properties"]
+    assert export_schema["format"]["enum"] == ["sif", "bnet"]
+
+    path_schema = tools["find_paths"].input_schema["properties"]["maxlen"]
+    assert path_schema["minimum"] == 1
+    assert path_schema["maximum"] == 5
+
+    parameter_schema = tools["set_default_params"].input_schema["properties"]
+    max_len_schema = next(
+        option
+        for option in parameter_schema["max_len"]["anyOf"]
+        if option.get("type") == "integer"
+    )
+    assert max_len_schema["minimum"] == 1
+    assert max_len_schema["maximum"] == 4
+    algorithm_schema = next(
+        option
+        for option in parameter_schema["algorithm"]["anyOf"]
+        if option.get("type") == "string"
+    )
+    assert algorithm_schema["enum"] == ["bfs", "dfs"]
+
+    filter_schema = tools["filter_interactions"].input_schema["properties"]
+    assert filter_schema["format"]["enum"] == ["markdown", "json"]
+    assert filter_schema["max_rows"]["minimum"] == 1
+
+    candidate_schema = tools["candidate_connectors"].input_schema["properties"]
+    assert candidate_schema["method"]["enum"] == [
+        "hubs",
+        "relax_max_len",
+        "unsigned",
+    ]
+    assert candidate_schema["top_k"]["minimum"] == 1
+
+    bridge_schema = tools["bridge_components"].input_schema["properties"]
+    assert bridge_schema["mode"]["enum"] == ["OUT", "IN", "ALL"]
+    assert bridge_schema["comp_a"]["minItems"] == 1
+    assert bridge_schema["comp_b"]["minItems"] == 1
+    assert bridge_schema["max_len"]["minimum"] == 1
+
+    targeted_schema = tools["connect_targeted_nodes"].input_schema["properties"]
+    assert targeted_schema["strategy"]["enum"] == [
+        "connect_to_upstream_nodes",
+        "connect_subgroup",
+        "connect_as_atopo",
+    ]
+    atopo_schema = next(
+        option
+        for option in targeted_schema["strategy_mode"]["anyOf"]
+        if option.get("type") == "string"
+    )
+    assert atopo_schema["enum"] == ["radial", "complete"]
+    assert targeted_schema["nodes"]["minItems"] == 1
+    assert targeted_schema["outputs"]["anyOf"][0]["minItems"] == 1
+
+    global_schema = tools["apply_global_connection"].input_schema["properties"]
+    assert global_schema["strategy"]["enum"] == [
+        "complete_connection",
+        "connect_network_radially",
+    ]
+    assert global_schema["algorithm"]["enum"] == ["bfs", "dfs"]
+    assert global_schema["direction"]["enum"] == ["OUT", "IN"]
+    assert global_schema["max_len"]["minimum"] == 1
+
+    navigation_schema = tools[
+        "navigate_network_history"
+    ].input_schema["properties"]["state_id"]
+    state_id_schema = next(
+        option
+        for option in navigation_schema["anyOf"]
+        if option.get("type") == "integer"
+    )
+    assert state_id_schema["minimum"] == 0
+    comparison_schema = tools["compare_network_states"].input_schema["properties"]
+    assert comparison_schema["state_a"]["minimum"] == 0
+    assert comparison_schema["state_b"]["minimum"] == 0
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "arguments"),
+    [
+        ("set_default_session", {"session_id": ""}),
+        ("set_default_session", {"session_id": "   "}),
+        ("create_network", {"list_of_initial_genes": [""]}),
+        ("create_network", {"list_of_initial_genes": ["TP53"], "max_len": 0}),
+        ("create_network", {"list_of_initial_genes": ["TP53"], "max_len": 5}),
+        (
+            "create_network",
+            {"list_of_initial_genes": ["TP53"], "algorithm": "astar"},
+        ),
+        ("list_genes_and_interactions", {"max_rows": 0}),
+        (
+            "find_paths",
+            {"source": "TP53", "target": "MDM2", "maxlen": 6},
+        ),
+        (
+            "navigate_network_history",
+            {"action": "checkout", "state_id": -1},
+        ),
+        ("compare_network_states", {"state_a": -1, "state_b": 0}),
+        ("extend_network", {"genes": []}),
+        ("set_default_params", {"max_len": 0}),
+        ("set_default_params", {"algorithm": "astar"}),
+        ("filter_interactions", {"effect": [""]}),
+        ("filter_interactions", {"format": "xml"}),
+        ("candidate_connectors", {"top_k": 0}),
+        ("bridge_components", {"comp_a": [], "comp_b": ["MDM2"]}),
+        (
+            "bridge_components",
+            {"comp_a": ["TP53"], "comp_b": ["MDM2"], "mode": "SIDEWAYS"},
+        ),
+        (
+            "connect_targeted_nodes",
+            {"strategy": "connect_subgroup", "nodes": []},
+        ),
+        (
+            "connect_targeted_nodes",
+            {
+                "strategy": "connect_as_atopo",
+                "nodes": ["TP53"],
+                "outputs": [],
+            },
+        ),
+        (
+            "connect_targeted_nodes",
+            {
+                "strategy": "connect_as_atopo",
+                "nodes": ["TP53"],
+                "strategy_mode": "hierarchy",
+            },
+        ),
+        (
+            "apply_global_connection",
+            {"strategy": "complete_connection", "direction": "SIDEWAYS"},
+        ),
+    ],
+)
+def test_invalid_neko_inputs_are_rejected_before_execution(
+    tool_name: str,
+    arguments: dict[str, Any],
+) -> None:
+    result = _run(_call_tool(tool_name, arguments))
+
+    assert result.is_error is True
+    assert "validation error" in result.content[0].text.lower()
+    assert session_manager.list_sessions() == {}
+
+
+def test_case_insensitive_public_options_remain_compatible(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class RecordingExports:
+        paths: list[str] = []
+
+        def __init__(self, network: object) -> None:
+            del network
+
+        def export_sif(self, path: str) -> None:
+            self.paths.append(path)
+
+    network = _network_stub(
+        nodes=pd.DataFrame(
+            [{"Uniprot": "P04637", "Genesymbol": "TP53"}]
+        ),
+        edges=pd.DataFrame(
+            [{"source": "P04637", "target": "P04637", "Effect": "stimulation"}]
+        ),
+        convert_edgelist_into_genesymbol=lambda: pd.DataFrame(
+            [{"source": "TP53", "target": "TP53", "Effect": "stimulation"}]
+        ),
+    )
+    session_id = _create_session(network)
+    monkeypatch.setattr(neko_server, "Exports", RecordingExports)
+    monkeypatch.setattr(
+        neko_server,
+        "_export_dir",
+        lambda _session_id: tmp_path,
+    )
+
+    export_result = _run(
+        _call_tool(
+            "export_network",
+            {
+                "format": "SIF",
+                "session_id": session_id,
+                "verbosity": "SUMMARY",
+            },
+        )
+    )
+    listing_result = _run(
+        _call_tool(
+            "list_genes_and_interactions",
+            {"session_id": session_id, "verbosity": "FULL"},
+        )
+    )
+    connector_result = _run(
+        _call_tool(
+            "candidate_connectors",
+            {
+                "session_id": session_id,
+                "method": "HUBS",
+                "verbosity": "SUMMARY",
+            },
+        )
+    )
+
+    assert export_result.is_error is False
+    assert RecordingExports.paths == [str(tmp_path / "Network.sif")]
+    assert listing_result.is_error is False
+    assert connector_result.is_error is False
+
+
+def test_list_bnet_files_does_not_create_artifact_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    session_id = _create_session()
+    monkeypatch.setattr(neko_server, "_SERVER_ROOT", tmp_path)
+
+    result = _run(
+        _call_tool("list_bnet_files", {"session_id": session_id})
+    )
+
+    assert result.is_error is False
+    assert "No .bnet files found" in result.content[0].text
+    assert not (tmp_path / "artifacts").exists()
+
+
 @pytest.mark.parametrize(
     "handler_name",
     [
@@ -1025,7 +1348,11 @@ def test_failed_rebuild_preserves_existing_network(
     [
         (
             "bridge_components",
-            {"comp_a": ["TP53"], "comp_b": ["MDM2"]},
+            {
+                "comp_a": ["TP53"],
+                "comp_b": ["MDM2"],
+                "mode": "ALL",
+            },
             "connect_component",
         ),
         (
@@ -1040,7 +1367,11 @@ def test_failed_rebuild_preserves_existing_network(
         ),
         (
             "connect_targeted_nodes",
-            {"strategy": "connect_as_atopo", "nodes": ["TP53"]},
+            {
+                "strategy": "connect_as_atopo",
+                "nodes": ["TP53"],
+                "strategy_mode": "radial",
+            },
             "connect_as_atopo",
         ),
         (
@@ -1050,7 +1381,10 @@ def test_failed_rebuild_preserves_existing_network(
         ),
         (
             "apply_global_connection",
-            {"strategy": "connect_network_radially"},
+            {
+                "strategy": "connect_network_radially",
+                "direction": "IN",
+            },
             "connect_network_radially",
         ),
     ],

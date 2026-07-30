@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 from threading import Lock
 from typing import Annotated, Literal, Optional, List
-from pydantic import Field
+from pydantic import BeforeValidator, Field
 
 import anyio
 from neko.core.network import Network
@@ -23,7 +23,7 @@ from session_manager import session_manager, ensure_session, normalize_verbosity
 
 # Make the repo root importable so we can use the shared artifact_manager
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from artifact_manager import get_artifact_dir, safe_artifact_path, list_artifacts, clean_artifacts, write_session_meta, list_artifact_sessions as _list_artifact_sessions_on_disk
+from artifact_manager import safe_artifact_path, list_artifacts, clean_artifacts, write_session_meta, list_artifact_sessions as _list_artifact_sessions_on_disk
 from mcp_biomodelling_servers import __version__
 
 from src.helpers import (
@@ -47,6 +47,7 @@ import pandas as pd
 
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ResourceNotFoundError
+from mcp.types import ToolAnnotations
 
 logger = logging.getLogger(__name__)
 _stdout_capture_lock = Lock()
@@ -58,6 +59,96 @@ mcp = MCPServer(
         "Build and analyze signalling networks from biological interaction databases."
     ),
     version=__version__,
+)
+
+NonEmptyString = Annotated[
+    str,
+    Field(
+        min_length=1,
+        pattern=r".*\S.*",
+        description="A non-empty string containing at least one non-whitespace character.",
+    ),
+]
+NonEmptyStringList = Annotated[List[NonEmptyString], Field(min_length=1)]
+
+
+def _lower_string(value):
+    """Normalize values whose existing public contract is case-insensitive."""
+    return value.lower() if isinstance(value, str) else value
+
+
+Database = Literal["omnipath", "signor"]
+SearchAlgorithm = Literal["bfs", "dfs"]
+NormalizedVerbosity = Annotated[
+    Literal["summary", "preview", "full"],
+    BeforeValidator(_lower_string),
+]
+NormalizedExportFormat = Annotated[
+    Literal["sif", "bnet"],
+    BeforeValidator(_lower_string),
+]
+OutputFormat = Literal["markdown", "json"]
+NormalizedConnectorMethod = Annotated[
+    Literal["hubs", "relax_max_len", "unsigned"],
+    BeforeValidator(_lower_string),
+]
+BridgeMode = Literal["OUT", "IN", "ALL"]
+TargetStrategy = Literal[
+    "connect_to_upstream_nodes",
+    "connect_subgroup",
+    "connect_as_atopo",
+]
+AtopoStrategy = Literal["radial", "complete"]
+GlobalStrategy = Literal["complete_connection", "connect_network_radially"]
+RadialDirection = Literal["OUT", "IN"]
+
+_READ_ONLY_CLOSED = ToolAnnotations(
+    read_only_hint=True,
+    destructive_hint=False,
+    idempotent_hint=True,
+    open_world_hint=False,
+)
+_READ_ONLY_OPEN = ToolAnnotations(
+    read_only_hint=True,
+    destructive_hint=False,
+    idempotent_hint=True,
+    open_world_hint=True,
+)
+_IDEMPOTENT_CLOSED = ToolAnnotations(
+    read_only_hint=False,
+    destructive_hint=False,
+    idempotent_hint=True,
+    open_world_hint=False,
+)
+_NON_IDEMPOTENT_CLOSED = ToolAnnotations(
+    read_only_hint=False,
+    destructive_hint=False,
+    idempotent_hint=False,
+    open_world_hint=False,
+)
+_NON_IDEMPOTENT_OPEN = ToolAnnotations(
+    read_only_hint=False,
+    destructive_hint=False,
+    idempotent_hint=False,
+    open_world_hint=True,
+)
+_DESTRUCTIVE_IDEMPOTENT_CLOSED = ToolAnnotations(
+    read_only_hint=False,
+    destructive_hint=True,
+    idempotent_hint=True,
+    open_world_hint=False,
+)
+_DESTRUCTIVE_NON_IDEMPOTENT_CLOSED = ToolAnnotations(
+    read_only_hint=False,
+    destructive_hint=True,
+    idempotent_hint=False,
+    open_world_hint=False,
+)
+_DESTRUCTIVE_NON_IDEMPOTENT_OPEN = ToolAnnotations(
+    read_only_hint=False,
+    destructive_hint=True,
+    idempotent_hint=False,
+    open_world_hint=True,
 )
 
 # NOTE: Previous implementation used a single global `network` object.
@@ -138,19 +229,19 @@ def network_history_resource(session_id: str) -> str:
             f"NeKo session not found: {session_id}"
         ) from exc
 
-@mcp.tool()
+@mcp.tool(annotations=_DESTRUCTIVE_NON_IDEMPOTENT_OPEN)
 async def create_network(
-                   list_of_initial_genes: Annotated[List[str], Field(description="Gene symbols to seed the network (e.g. ['TP53', 'MYC', 'CASP3']). Can be empty if sif_file is provided.")],
+                   list_of_initial_genes: Annotated[List[NonEmptyString], Field(description="Gene symbols to seed the network (e.g. ['TP53', 'MYC', 'CASP3']). Can be empty if sif_file is provided.")],
                    ctx: Context,
-                   database: str = Field("omnipath", description="Knowledge-base to query. 'omnipath' (default) or 'signor'."),
-                   sif_file: Optional[str] = Field(None, description="Absolute path to an existing SIF file to bootstrap the network from. Combined with list_of_initial_genes when both are given."),
-                   max_len: int = Field(2, description="Maximum path length used by complete_connection to bridge seed genes (1-4; larger = denser but slower)."),
-                   algorithm: str = Field("bfs", description="Search algorithm for path completion: 'bfs' (breadth-first, default) or 'dfs' (depth-first)."),
+                   database: Database = Field("omnipath", description="Knowledge-base to query. 'omnipath' (default) or 'signor'."),
+                   sif_file: Optional[NonEmptyString] = Field(None, description="Absolute path to an existing SIF file to bootstrap the network from. Combined with list_of_initial_genes when both are given."),
+                   max_len: int = Field(2, ge=1, le=4, description="Maximum path length used by complete_connection to bridge seed genes (1-4; larger = denser but slower)."),
+                   algorithm: SearchAlgorithm = Field("bfs", description="Search algorithm for path completion: 'bfs' (breadth-first, default) or 'dfs' (depth-first)."),
                    only_signed: bool = Field(True, description="Restrict to signed (+/-) interactions only. Set False to allow unsigned interactions when network is sparse."),
                    connect_with_bias: bool = Field(False, description="Avoids looking for paths between pairs of nodes that are already connected by another path previously found."),
                    consensus: bool = Field(True, description="Require interactions supported by multiple curated sources (higher confidence)."),
-                   session_id: Optional[str] = Field(None, description="Session ID to write the network into. Omit to use the active/default session."),
-                   verbosity: str = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary' (default, token-frugal), 'preview' (truncated tables), 'full'.")) -> str:
+                   session_id: Optional[NonEmptyString] = Field(None, description="Session ID to write the network into. Omit to use the active/default session."),
+                   verbosity: NormalizedVerbosity = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary' (default, token-frugal), 'preview' (truncated tables), 'full'.")) -> str:
     """Build a NeKo gene regulatory network from seed genes and/or a SIF file.
 
     Calls complete_connection internally to bridge genes via the chosen database.
@@ -320,11 +411,11 @@ async def create_network(
     await ctx.report_progress(4, 4)
     return response
 
-@mcp.tool()
+@mcp.tool(annotations=_NON_IDEMPOTENT_OPEN)
 @requires_network
 def add_gene(
-        gene: Annotated[str, Field(description="Gene symbol to add (e.g. 'TP53'). Case-sensitive; use uppercase HGNC symbols.")],
-        session_id: Optional[str] = Field(None, description="Session ID; omit to use the active/default session."),
+        gene: Annotated[NonEmptyString, Field(description="Gene symbol to add (e.g. 'TP53'). Case-sensitive; use uppercase HGNC symbols.")],
+        session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session."),
         autoconnect: bool = Field(False, description="Re-run complete_connection after adding the gene to integrate it into the network topology."),
         sess=None, network=None) -> str:
     """Add a single gene node to the current network.
@@ -353,11 +444,11 @@ def add_gene(
             "**Tip:** Ensure gene symbol is valid (e.g., 'TP53', not 'tp53')."
         ) from e
 
-@mcp.tool()
+@mcp.tool(annotations=_DESTRUCTIVE_NON_IDEMPOTENT_CLOSED)
 @requires_network
 def remove_gene(
-        gene: Annotated[str, Field(description="Gene symbol to remove. Case-insensitive; closest match is suggested if not found.")],
-        session_id: Optional[str] = Field(None, description="Session ID; omit to use the active/default session."),
+        gene: Annotated[NonEmptyString, Field(description="Gene symbol to remove. Case-insensitive; closest match is suggested if not found.")],
+        session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session."),
         sess=None, network=None) -> str:
     """Remove a gene node (and all its edges) from the current network.
 
@@ -406,12 +497,12 @@ def remove_gene(
     except Exception as e:
         raise RuntimeError(f"Error removing gene {gene}: {e}") from e
 
-@mcp.tool()
+@mcp.tool(annotations=_DESTRUCTIVE_NON_IDEMPOTENT_CLOSED)
 @requires_network
 def remove_interaction(
-        node_A: Annotated[str, Field(description="Source gene symbol (interaction goes A -> B).")],
-        node_B: Annotated[str, Field(description="Target gene symbol (interaction goes A -> B).")],
-        session_id: Optional[str] = Field(None, description="Session ID; omit to use the active/default session."),
+        node_A: Annotated[NonEmptyString, Field(description="Source gene symbol (interaction goes A -> B).")],
+        node_B: Annotated[NonEmptyString, Field(description="Target gene symbol (interaction goes A -> B).")],
+        session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session."),
         sess=None, network=None) -> str:
     """Remove a directed edge A -> B from the network (does not affect B -> A if it exists).
 
@@ -449,12 +540,12 @@ def remove_interaction(
 
 # TO DO: implement GO enrichment
 
-@mcp.tool()
+@mcp.tool(annotations=_IDEMPOTENT_CLOSED)
 @session_locked
 def export_network(
-        format: str = Field("sif", description="Export format: 'sif' (Simple Interaction Format, tab-separated) or 'bnet' (Boolean network for MaBoSS). BNET requires a fully connected network."),
-        session_id: Optional[str] = Field(None, description="Session ID; omit to use the active/default session."),
-        verbosity: str = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary', 'preview', or 'full'.")) -> str:
+        format: NormalizedExportFormat = Field("sif", description="Export format: 'sif' (Simple Interaction Format, tab-separated) or 'bnet' (Boolean network for MaBoSS). BNET requires a fully connected network."),
+        session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session."),
+        verbosity: NormalizedVerbosity = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary', 'preview', or 'full'.")) -> str:
     """Export the current network to SIF or BNET format.
 
     After BNET export, hand the file path to the MaBoSS server via bnet_to_bnd_and_cfg().
@@ -534,12 +625,12 @@ def export_network(
                             f"{', '.join(sorted(set(result['duplicates_removed'])))}")
         return "\n".join(md_lines)
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY_CLOSED)
 @session_locked
 def list_genes_and_interactions(
-        session_id: Optional[str] = Field(None, description="Session ID; omit to use the active/default session."),
-        verbosity: str = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary' (counts only), 'preview' (truncated table), 'full' (up to 100 rows)."),
-        max_rows: int = Field(50, description="Maximum rows to return in preview/full mode.")) -> str:
+        session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session."),
+        verbosity: NormalizedVerbosity = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary' (counts only), 'preview' (truncated table), 'full' (up to 100 rows)."),
+        max_rows: int = Field(50, ge=1, description="Maximum rows to return in preview/full mode.")) -> str:
     """Return a Markdown table of all nodes and directed edges in the network.
 
     Equivalent to 'show the network'. Use filter_interactions() for targeted queries.
@@ -564,14 +655,14 @@ def list_genes_and_interactions(
     except Exception as e:
         raise RuntimeError(f"Unable to retrieve network data: {e}") from e
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY_CLOSED)
 @session_locked
 def find_paths(
-        source: Annotated[str, Field(description="Source gene symbol (path start).")],
-        target: Annotated[str, Field(description="Target gene symbol (path end).")],
-        maxlen: int = Field(3, description="Maximum number of edges in a path (1-5; longer paths are slower to compute)."),
-        session_id: Optional[str] = Field(None, description="Session ID; omit to use the active/default session."),
-        verbosity: str = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary' (count only), 'preview'/'full' (path listing).")) -> str:
+        source: Annotated[NonEmptyString, Field(description="Source gene symbol (path start).")],
+        target: Annotated[NonEmptyString, Field(description="Target gene symbol (path end).")],
+        maxlen: int = Field(3, ge=1, le=5, description="Maximum number of edges in a path (1-5; longer paths are slower to compute)."),
+        session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session."),
+        verbosity: NormalizedVerbosity = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary' (count only), 'preview'/'full' (path listing).")) -> str:
     """Find and display all directed paths between two genes up to maxlen edges.
 
     Useful for verifying biological signal flow before BNET export.
@@ -605,10 +696,10 @@ def find_paths(
             sys.stdout = old_stdout
             buffer.close()
 
-@mcp.tool()
+@mcp.tool(annotations=_DESTRUCTIVE_IDEMPOTENT_CLOSED)
 @session_locked
 def reset_network(
-        session_id: Optional[str] = Field(None, description="Session ID to reset; omit to use the active/default session.")) -> str:
+        session_id: Optional[NonEmptyString] = Field(None, description="Session ID to reset; omit to use the active/default session.")) -> str:
     """Discard the current network in the session without deleting the session itself.
 
     Use delete_session() to remove the session entirely, or create_network() to rebuild.
@@ -618,10 +709,10 @@ def reset_network(
     return f"Session {sess.session_id} network reset."
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY_CLOSED)
 @requires_network
 def list_network_history(
-        session_id: str | None = Field(
+        session_id: NonEmptyString | None = Field(
             None,
             description=(
                 "Session ID; omit to inspect the active/default session."
@@ -639,7 +730,7 @@ def list_network_history(
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=_NON_IDEMPOTENT_CLOSED)
 @requires_network
 def navigate_network_history(
         action: Annotated[
@@ -653,12 +744,13 @@ def navigate_network_history(
         ],
         state_id: int | None = Field(
             None,
+            ge=0,
             description=(
                 "Exact target state ID. Required for checkout; optional for "
                 "redo when the current state has one child; invalid for undo."
             ),
         ),
-        session_id: str | None = Field(
+        session_id: NonEmptyString | None = Field(
             None,
             description=(
                 "Session ID; omit to use the active/default session."
@@ -712,18 +804,18 @@ def navigate_network_history(
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY_CLOSED)
 @requires_network
 def compare_network_states(
         state_a: Annotated[
             int,
-            Field(description="Exact ID of the baseline history state."),
+            Field(ge=0, description="Exact ID of the baseline history state."),
         ],
         state_b: Annotated[
             int,
-            Field(description="Exact ID of the comparison history state."),
+            Field(ge=0, description="Exact ID of the comparison history state."),
         ],
-        session_id: str | None = Field(
+        session_id: NonEmptyString | None = Field(
             None,
             description=(
                 "Session ID; omit to use the active/default session."
@@ -742,7 +834,7 @@ def compare_network_states(
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=_DESTRUCTIVE_IDEMPOTENT_CLOSED)
 @session_locked
 def set_network_history_limit(
         max_states: Annotated[
@@ -756,7 +848,7 @@ def set_network_history_limit(
                 ),
             ),
         ],
-        session_id: str | None = Field(
+        session_id: NonEmptyString | None = Field(
             None,
             description=(
                 "Session ID; omit to configure the active/default session."
@@ -798,10 +890,10 @@ def set_network_history_limit(
         message=policy,
     )
 
-@mcp.tool()
+@mcp.tool(annotations=_DESTRUCTIVE_IDEMPOTENT_CLOSED)
 @session_locked
 def clean_generated_files(
-        session_id: Optional[str] = Field(None, description="Session ID whose artifact files (SIF, BNET, etc.) should be removed. Omit for the active/default session.")) -> str:
+        session_id: Optional[NonEmptyString] = Field(None, description="Session ID whose artifact files (SIF, BNET, etc.) should be removed. Omit for the active/default session.")) -> str:
     """Delete all exported artifact files (SIF, BNET) for the given session."""
     sess = ensure_session(session_id)
     try:
@@ -810,10 +902,10 @@ def clean_generated_files(
     except Exception as e:
         raise RuntimeError(f"Error during cleanup: {e}") from e
 
-@mcp.tool()
+@mcp.tool(annotations=_DESTRUCTIVE_IDEMPOTENT_CLOSED)
 @session_locked
 def remove_bimodal_interactions(
-        session_id: Optional[str] = Field(None, description="Session ID; omit to use the active/default session.")) -> str:
+        session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session.")) -> str:
     """Remove all bimodal (simultaneously activating and inhibiting) edges from the network.
 
     Bimodal interactions are ambiguous and cause contradictory Boolean rules in BNET export.
@@ -831,10 +923,10 @@ def remove_bimodal_interactions(
     removed = before - after
     return f"Removed {removed} bimodal interactions from the network."
 
-@mcp.tool()
+@mcp.tool(annotations=_DESTRUCTIVE_IDEMPOTENT_CLOSED)
 @session_locked
 def remove_undefined_interactions(
-        session_id: Optional[str] = Field(None, description="Session ID; omit to use the active/default session.")) -> str:
+        session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session.")) -> str:
     """Remove all edges whose Effect is 'undefined' (unknown sign) from the network.
 
     Undefined interactions cannot be mapped to Boolean activations or inhibitions.
@@ -853,22 +945,25 @@ def remove_undefined_interactions(
     return f"Removed {removed} undefined interactions from the network."
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY_CLOSED)
 @session_locked
 def list_bnet_files(
-        session_id: Optional[str] = Field(None, description="Session ID to query; omit to use the active/default session.")) -> str:
+        session_id: Optional[NonEmptyString] = Field(None, description="Session ID to query; omit to use the active/default session.")) -> str:
     """List names of all .bnet files in the session artifact directory (newline-separated)."""
     sess = ensure_session(session_id)
-    art_dir = get_artifact_dir(_SERVER_ROOT, sess.session_id)
-    files = [f.name for f in art_dir.glob("*.bnet")]
+    files = [
+        path.name
+        for path in list_artifacts(_SERVER_ROOT, session_id=sess.session_id)
+        if path.suffix == ".bnet"
+    ]
     if not files:
         return f"No .bnet files found in session {sess.session_id} artifact directory."
     return "\n".join(files)
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY_CLOSED)
 @session_locked
 def check_disconnected_nodes(
-        session_id: Optional[str] = Field(None, description="Session ID; omit to use the active/default session.")) -> str:
+        session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session.")) -> str:
     """List any nodes in the network that have no edges (isolated nodes)."""
     sess, network = _session_network(session_id)
     if network is None:
@@ -895,13 +990,13 @@ def check_disconnected_nodes(
     
     return "Disconnected nodes (Gene Symbols):\n" + "\n".join(disconnected_symbols)
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY_CLOSED)
 @session_locked
 def get_references(
-        node1: Annotated[str, Field(description="Gene symbol. Returns all edges where this gene is source or target.")],
-        node2: Optional[str] = Field(None, description="Second gene symbol. When provided, returns only edges between node1 and node2 (either direction)."),
-        session_id: Optional[str] = Field(None, description="Session ID; omit to use the active/default session."),
-        verbosity: str = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary' (count only), 'preview'/'full' (Markdown table).")) -> str:
+        node1: Annotated[NonEmptyString, Field(description="Gene symbol. Returns all edges where this gene is source or target.")],
+        node2: Optional[NonEmptyString] = Field(None, description="Second gene symbol. When provided, returns only edges between node1 and node2 (either direction)."),
+        session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session."),
+        verbosity: NormalizedVerbosity = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary' (count only), 'preview'/'full' (Markdown table).")) -> str:
     """Show literature references for interactions involving one or two genes.
 
     References are truncated to the first 5 per edge with a count of remaining.
@@ -944,12 +1039,12 @@ def get_references(
     md = clean_for_markdown(filtered).to_markdown(index=False, tablefmt="plain")
     return md
 
-@mcp.tool()
+@mcp.tool(annotations=_NON_IDEMPOTENT_OPEN)
 @session_locked
 def extend_network(
-        genes: Annotated[List[str], Field(description="Gene symbols to add (e.g. ['EGFR', 'AKT1']).")],
-        session_id: Optional[str] = Field(None, description="Session ID; omit to use the active/default session."),
-        verbosity: str = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary', 'preview', or 'full'."),
+        genes: Annotated[NonEmptyStringList, Field(description="Gene symbols to add (e.g. ['EGFR', 'AKT1']).")],
+        session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session."),
+        verbosity: NormalizedVerbosity = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary', 'preview', or 'full'."),
         autoconnect: bool = Field(True, description="Re-run complete_connection with session defaults after adding all genes.")) -> str:
     """Add multiple genes to the network in one call, optionally re-running connection completion.
 
@@ -987,31 +1082,31 @@ def extend_network(
         return f"Added {added}/{len(genes)} genes. {SUMMARY_HINT}"
     return f"Added {added}/{len(genes)} genes. Autoconnect={'yes' if autoconnect else 'no'}."
 
-@mcp.tool()
+@mcp.tool(annotations=_IDEMPOTENT_CLOSED)
 @session_locked
 def set_default_params(
-        max_len: Optional[int] = Field(None, description="Default maximum path length for complete_connection calls (1-4)."),
-        algorithm: Optional[str] = Field(None, description="Default path-search algorithm: 'bfs' or 'dfs'."),
+        max_len: Optional[int] = Field(None, ge=1, le=4, description="Default maximum path length for complete_connection calls (1-4)."),
+        algorithm: Optional[SearchAlgorithm] = Field(None, description="Default path-search algorithm: 'bfs' or 'dfs'."),
         only_signed: Optional[bool] = Field(None, description="Default signed-only filter for complete_connection."),
         connect_with_bias: Optional[bool] = Field(None, description="Default activation-bias preference."),
         consensus: Optional[bool] = Field(None, description="Default multi-source consensus requirement."),
-        session_id: Optional[str] = Field(None, description="Session ID; omit to use the active/default session.")) -> str:
+        session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session.")) -> str:
     """Persist completion parameters in the session so extend_network() and add_gene(autoconnect=True) reuse them."""
     sess = ensure_session(session_id)
     sess.update_default_params(max_len=max_len, algorithm=algorithm, only_signed=only_signed,
                                connect_with_bias=connect_with_bias, consensus=consensus)
     return "Defaults updated." 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY_CLOSED)
 @session_locked
 def filter_interactions(
-        effect: Optional[List[str]] = Field(None, description="Effect types to keep, e.g. ['stimulation', 'inhibition']. Omit to include all effects."),
-        source: Optional[str] = Field(None, description="Keep only edges where the source matches this gene symbol."),
-        target: Optional[str] = Field(None, description="Keep only edges where the target matches this gene symbol."),
-        session_id: Optional[str] = Field(None, description="Session ID; omit to use the active/default session."),
-        verbosity: str = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary' (count), 'preview'/'full' (Markdown table)."),
-        format: str = Field("markdown", description="Output format: 'markdown' (default) or 'json'."),
-        max_rows: int = Field(50, description="Maximum rows returned in preview mode.")) -> str:
+        effect: Optional[List[NonEmptyString]] = Field(None, description="Effect types to keep, e.g. ['stimulation', 'inhibition']. Omit to include all effects."),
+        source: Optional[NonEmptyString] = Field(None, description="Keep only edges where the source matches this gene symbol."),
+        target: Optional[NonEmptyString] = Field(None, description="Keep only edges where the target matches this gene symbol."),
+        session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session."),
+        verbosity: NormalizedVerbosity = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary' (count), 'preview'/'full' (Markdown table)."),
+        format: OutputFormat = Field("markdown", description="Output format: 'markdown' (default) or 'json'."),
+        max_rows: int = Field(50, ge=1, description="Maximum rows returned in preview mode.")) -> str:
     """Filter and display interactions by effect type, source gene, or target gene.
 
     Non-destructive - does not modify the network; use remove_interaction() to permanently delete edges.
@@ -1041,7 +1136,7 @@ def filter_interactions(
     table, truncated = _short_table(df[[c for c in df.columns if c in ['source','target','Effect']]], max_rows if verbosity=='preview' else 100)
     return table + (" (truncated)" if truncated else "")
 
-@mcp.tool()
+@mcp.tool(annotations=_NON_IDEMPOTENT_CLOSED)
 def create_session(
         label: Optional[str] = Field(None, description="Optional human-readable label for this session (e.g. 'TP53-MYC cancer'). Stored on disk so the session can be rediscovered after a server restart.")) -> str:
     """Create a new isolated modelling session (always call before create_network).
@@ -1061,7 +1156,7 @@ def create_session(
     label_info = f" ({label})" if label else ""
     return f"Created session: {sid}{label_info}"
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY_CLOSED)
 def list_sessions() -> str:
     """List all active sessions with network presence and basic node/edge counts."""
     data = session_manager.list_sessions()
@@ -1072,7 +1167,7 @@ def list_sessions() -> str:
         lines.append(f"- {sid}: has_network={meta['has_network']} nodes={meta['nodes']} edges={meta['edges']}")
     return "\n".join(lines)
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY_CLOSED)
 def list_artifact_sessions() -> str:
     """List all NeKo sessions that have artifact files on disk (including past server runs).
 
@@ -1101,28 +1196,28 @@ def list_artifact_sessions() -> str:
             lines.append("  Files: (none)")
     return "\n".join(lines)
 
-@mcp.tool()
+@mcp.tool(annotations=_IDEMPOTENT_CLOSED)
 def set_default_session(
-        session_id: Annotated[str, Field(description="Session ID to make the active default; used when session_id is omitted in subsequent tool calls.")]) -> str:
+        session_id: Annotated[NonEmptyString, Field(description="Session ID to make the active default; used when session_id is omitted in subsequent tool calls.")]) -> str:
     """Set the default session used when session_id is omitted in other tool calls."""
     ok = session_manager.set_default(session_id)
     if not ok:
         raise ValueError(f"Session not found: {session_id}")
     return "Default set."
 
-@mcp.tool()
+@mcp.tool(annotations=_DESTRUCTIVE_NON_IDEMPOTENT_CLOSED)
 def delete_session(
-        session_id: Annotated[str, Field(description="Session ID to permanently delete (irreversible).")]) -> str:
+        session_id: Annotated[NonEmptyString, Field(description="Session ID to permanently delete (irreversible).")]) -> str:
     """Permanently delete a session and its in-memory network."""
     ok = session_manager.delete_session(session_id)
     if not ok:
         raise ValueError(f"Session not found: {session_id}")
     return "Deleted."
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY_CLOSED)
 @session_locked
 def status(
-        session_id: Optional[str] = Field(None, description="Session ID; omit to query the active/default session.")) -> str:
+        session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to query the active/default session.")) -> str:
     """Return a one-line session summary: session ID, node count, edge count."""
     sess, network = _session_network(session_id)
     if network is None:
@@ -1132,12 +1227,12 @@ def status(
     return f"Session {sess.session_id}: nodes={len(network.nodes)} edges={edges}."
 
 # ===== Component & Strategy Tools =====
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY_CLOSED)
 @session_locked
 def list_components(
-        session_id: Optional[str] = Field(None, description="Session ID; omit to use the active/default session."),
-        verbosity: str = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary' (counts), 'preview'/'full' (per-component stats)."),
-        format: str = Field("markdown", description="Output format: 'markdown' (default) or 'json'.")) -> str:
+        session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session."),
+        verbosity: NormalizedVerbosity = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary' (counts), 'preview'/'full' (per-component stats)."),
+        format: OutputFormat = Field("markdown", description="Output format: 'markdown' (default) or 'json'.")) -> str:
     """List connected components with size, average degree, and sample nodes.
 
     Use this after check_disconnected_nodes() to understand the component structure
@@ -1183,14 +1278,14 @@ def list_components(
         lines.append(f"- {row['id']}: size={row['size']} avg_deg={row['avg_degree']} sample={row['sample']}")
     return "\n".join(lines)
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY_OPEN)
 @session_locked
 def candidate_connectors(
-        method: str = Field("hubs", description="Suggestion strategy: 'hubs' (rank high-degree nodes), 'relax_max_len' (simulate +1 max_len), 'unsigned' (simulate allowing unsigned interactions)."),
-        top_k: int = Field(10, description="Number of hub genes to report when method='hubs'."),
-        session_id: Optional[str] = Field(None, description="Session ID; omit to use the active/default session."),
-        format: str = Field("markdown", description="Output format: 'markdown' (default) or 'json'."),
-        verbosity: str = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary', 'preview', or 'full'.")) -> str:
+        method: NormalizedConnectorMethod = Field("hubs", description="Suggestion strategy: 'hubs' (rank high-degree nodes), 'relax_max_len' (simulate +1 max_len), 'unsigned' (simulate allowing unsigned interactions)."),
+        top_k: int = Field(10, ge=1, description="Number of hub genes to report when method='hubs'."),
+        session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session."),
+        format: OutputFormat = Field("markdown", description="Output format: 'markdown' (default) or 'json'."),
+        verbosity: NormalizedVerbosity = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary', 'preview', or 'full'.")) -> str:
     """Suggest nodes or parameter relaxations that could bridge disconnected components.
 
     Run before applying a connection strategy to estimate the benefit without committing to changes.
@@ -1290,16 +1385,16 @@ def candidate_connectors(
         
     return "\n".join(lines)
 
-@mcp.tool()
+@mcp.tool(annotations=_NON_IDEMPOTENT_OPEN)
 @session_locked
 def bridge_components(
-        comp_a: List[str] = Field(..., description="First list of nodes (Gene Symbols) to bridge."),
-        comp_b: List[str] = Field(..., description="Second list of nodes (Gene Symbols) to bridge."),
-        max_len: int = Field(2, description="Maximum path length for connecting edges."),
-        mode: str = Field("OUT", description="Edge direction mode: 'OUT' or 'IN'."),
+        comp_a: NonEmptyStringList = Field(..., description="First non-empty list of nodes (Gene Symbols) to bridge."),
+        comp_b: NonEmptyStringList = Field(..., description="Second non-empty list of nodes (Gene Symbols) to bridge."),
+        max_len: int = Field(2, ge=1, description="Maximum path length for connecting edges."),
+        mode: BridgeMode = Field("OUT", description="Edge direction mode: 'OUT', 'IN', or 'ALL'."),
         only_signed: Optional[bool] = Field(None, description="Restrict to signed interactions."),
         consensus: Optional[bool] = Field(None, description="Require multi-source consensus."),
-        session_id: Optional[str] = Field(None, description="Session ID.")) -> str:
+        session_id: Optional[NonEmptyString] = Field(None, description="Session ID.")) -> str:
     """Connect two specific disconnected components or subgroups of genes together."""
     sess, network = _session_network(session_id)
     if network is None:
@@ -1331,17 +1426,17 @@ def bridge_components(
     except Exception as e:
         raise RuntimeError(f"Bridging failed: {e}") from e
 
-@mcp.tool()
+@mcp.tool(annotations=_NON_IDEMPOTENT_OPEN)
 @session_locked
 def connect_targeted_nodes(
-        strategy: Annotated[str, Field(description="Targeted strategy.", json_schema_extra={"enum": ["connect_to_upstream_nodes", "connect_subgroup", "connect_as_atopo"]})],
-        nodes: List[str] = Field(..., description="Target genes (Gene Symbols) to connect or expand."),
-        outputs: Optional[List[str]] = Field(None, description="[connect_as_atopo] Output gene symbols to anchor topology."),
-        max_len: int = Field(1, description="Max path length or upstream depth."),
-        strategy_mode: Optional[str] = Field(None, description="[connect_as_atopo] Sub-mode passed to atopo (e.g., 'hierarchy')."),
+        strategy: Annotated[TargetStrategy, Field(description="Targeted strategy.")],
+        nodes: NonEmptyStringList = Field(..., description="Non-empty target genes (Gene Symbols) to connect or expand."),
+        outputs: Optional[NonEmptyStringList] = Field(None, description="[connect_as_atopo] Non-empty output gene symbols to anchor topology."),
+        max_len: int = Field(1, ge=1, description="Max path length or upstream depth."),
+        strategy_mode: Optional[AtopoStrategy] = Field(None, description="[connect_as_atopo] ATOPO connection strategy: 'radial' or 'complete'."),
         only_signed: Optional[bool] = Field(None),
         consensus: Optional[bool] = Field(None),
-        session_id: Optional[str] = None) -> str:
+        session_id: Optional[NonEmptyString] = None) -> str:
     """Apply strategies targeting specific genes (upstream regulators, dense subgroups, or topological mapping)."""
     sess, network = _session_network(session_id)
     if network is None:
@@ -1394,17 +1489,17 @@ def connect_targeted_nodes(
     except Exception as e:
         raise RuntimeError(f"Targeted strategy failed: {e}") from e
 
-@mcp.tool()
+@mcp.tool(annotations=_NON_IDEMPOTENT_OPEN)
 @session_locked
 def apply_global_connection(
-        strategy: Annotated[str, Field(description="Global connection strategy.", json_schema_extra={"enum": ["complete_connection", "connect_network_radially"]})],
-        max_len: int = Field(2, description="Maximum path length to search for connections."),
-        algorithm: str = Field("bfs", description="[complete_connection] Search algorithm: 'bfs' or 'dfs'."),
+        strategy: Annotated[GlobalStrategy, Field(description="Global connection strategy.")],
+        max_len: int = Field(2, ge=1, description="Maximum path length to search for connections."),
+        algorithm: SearchAlgorithm = Field("bfs", description="[complete_connection] Search algorithm: 'bfs' or 'dfs'."),
         minimal: bool = Field(True, description="[complete_connection] Add only minimum required edges."),
-        direction: str = Field("OUT", description="[connect_network_radially] Growth direction ('OUT' or 'IN')."),
+        direction: RadialDirection = Field("OUT", description="[connect_network_radially] Growth direction ('OUT' or 'IN')."),
         only_signed: Optional[bool] = Field(None),
         consensus: Optional[bool] = Field(None),
-        session_id: Optional[str] = None) -> str:
+        session_id: Optional[NonEmptyString] = None) -> str:
     """Apply a global connection strategy across the entire network to resolve missing edges."""
     sess, network = _session_network(session_id)
     if network is None:
