@@ -91,7 +91,9 @@ jobs:
             artifact_manager.py \
             mcp_biomodelling_servers/artifact_manager.py \
             mcp_biomodelling_servers/structured_outputs.py \
+            MaBoSS/scientific_outputs.py \
             MaBoSS/session_manager.py \
+            NeKo/src/structured_outputs.py \
             NeKo/session_manager.py \
             PhysiCell/session_manager.py \
             tests/
@@ -116,7 +118,9 @@ jobs:
             --strict-optional \
             artifact_manager.py \
             mcp_biomodelling_servers/structured_outputs.py \
+            MaBoSS/scientific_outputs.py \
             MaBoSS/session_manager.py \
+            NeKo/src/structured_outputs.py \
             NeKo/session_manager.py \
             PhysiCell/session_manager.py
 
