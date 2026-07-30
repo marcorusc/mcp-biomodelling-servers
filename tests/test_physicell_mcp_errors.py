@@ -11,7 +11,7 @@ from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
-from mcp import Client
+from mcp import Client, MCPError
 
 
 def _install_physicell_import_stubs() -> None:
@@ -112,6 +112,15 @@ async def _read_resource(uri: str) -> Any:
         return await client.read_resource(uri)
 
 
+async def _read_resource_error(uri: str) -> MCPError:
+    async with Client(mcp) as client:
+        try:
+            await client.read_resource(uri)
+        except MCPError as error:
+            return error
+    raise AssertionError("Expected the resource read to raise MCPError.")
+
+
 def _clear_sessions() -> None:
     for session in list(session_manager.list_sessions()):
         session_manager.delete_session(session.session_id)
@@ -152,6 +161,97 @@ def _cell_rules_export_config(
     return SimpleNamespace(cell_rules=cell_rules)
 
 
+def _session_resource_config() -> SimpleNamespace:
+    intracellular = {
+        "type": "maboss",
+        "bnd_filename": "tumour.bnd",
+        "cfg_filename": "tumour.cfg",
+        "settings": {
+            "intracellular_dt": 6.0,
+            "mutations": [{"intracellular_name": "TP53", "value": "1"}],
+        },
+        "mapping": {
+            "inputs": [{"intracellular_name": "Hypoxia"}],
+            "outputs": [{"intracellular_name": "Apoptosis"}],
+        },
+        "initial_values": [{"intracellular_name": "TP53", "value": 0}],
+    }
+    cell_type = {
+        "phenotype": {
+            "cycle": {"model": "Ki67_basic"},
+            "volume": {"total": 2500.0, "nuclear": 500.0},
+            "motility": {"speed": 0.5, "persistence_time": 5.0},
+            "death": {
+                "apoptosis": {"default_rate": 0.0001},
+                "necrosis": {"default_rate": 0.0002},
+            },
+            "intracellular": intracellular,
+        }
+    }
+    return SimpleNamespace(
+        domain=SimpleNamespace(
+            get_info=lambda: {
+                "x_min": -500.0,
+                "x_max": 500.0,
+                "y_min": -250.0,
+                "y_max": 250.0,
+                "z_min": -10.0,
+                "z_max": 10.0,
+                "dx": 20.0,
+                "dy": 20.0,
+                "dz": 20.0,
+                "use_2D": True,
+            }
+        ),
+        options=SimpleNamespace(
+            get_options=lambda: {
+                "max_time": 7200.0,
+                "time_units": "min",
+                "space_units": "micron",
+                "dt_diffusion": 0.01,
+                "dt_mechanics": 0.1,
+                "dt_phenotype": 6.0,
+            }
+        ),
+        substrates=SimpleNamespace(
+            get_substrates=lambda: {
+                "oxygen": {
+                    "diffusion_coefficient": 100000.0,
+                    "decay_rate": 0.01,
+                    "initial_condition": 38.0,
+                    "units": "mmHg",
+                    "dirichlet_enabled": True,
+                    "dirichlet_value": 38.0,
+                }
+            }
+        ),
+        cell_types=SimpleNamespace(
+            get_cell_types=lambda: {"tumour": cell_type}
+        ),
+        cell_rules=SimpleNamespace(
+            get_rules=lambda: [
+                {
+                    "cell_type": "tumour",
+                    "signal": "oxygen",
+                    "direction": "decreases",
+                    "behavior": "apoptosis",
+                    "saturation_value": 0.01,
+                    "half_max": 5.0,
+                    "hill_power": 4.0,
+                    "apply_to_dead": 0,
+                }
+            ],
+            get_rulesets=lambda: {
+                "main": {
+                    "enabled": True,
+                    "folder": "./config",
+                    "filename": "rules.csv",
+                }
+            },
+        ),
+    )
+
+
 @pytest.fixture(autouse=True)
 def isolated_sessions(
     monkeypatch: pytest.MonkeyPatch,
@@ -188,7 +288,7 @@ def test_workflow_prompt_manual_resource_and_help_share_guidance() -> None:
         "docs://physicell/agent_manual"
     )
     assert resources.resources[0].mime_type == "text/markdown"
-    assert templates.resource_templates == []
+    assert len(templates.resource_templates) == 7
 
     expected = physicell_server.PHYSICELL_AGENT_MANUAL
     assert rendered_prompt.messages[0].content.text == expected
@@ -197,6 +297,209 @@ def test_workflow_prompt_manual_resource_and_help_share_guidance() -> None:
     assert help_result.is_error is False
     assert help_result.content[0].text == expected
     assert help_result.structured_content == {"result": expected}
+
+
+def test_session_resource_templates_publish_exact_contracts() -> None:
+    templates = _run(_list_resource_templates()).resource_templates
+    published = {
+        str(template.uri_template): (template.name, template.mime_type)
+        for template in templates
+    }
+
+    assert published == {
+        "physicell://session/{session_id}/workflow": (
+            "PhysiCell Workflow Status",
+            "text/markdown",
+        ),
+        "physicell://session/{session_id}/domain": (
+            "PhysiCell Domain",
+            "text/markdown",
+        ),
+        "physicell://session/{session_id}/substrates": (
+            "PhysiCell Substrates",
+            "text/markdown",
+        ),
+        "physicell://session/{session_id}/cell_types": (
+            "PhysiCell Cell Types",
+            "text/markdown",
+        ),
+        "physicell://session/{session_id}/cell_rules": (
+            "PhysiCell Cell Rules",
+            "text/markdown",
+        ),
+        "physicell://session/{session_id}/physiboss": (
+            "PhysiBoSS Integration",
+            "text/markdown",
+        ),
+        "physicell://session/{session_id}/files": (
+            "PhysiCell Artifact Files",
+            "text/markdown",
+        ),
+    }
+
+
+def test_session_resources_return_meaningful_configuration_snapshots(
+    tmp_path: Path,
+) -> None:
+    session_id = _create_session(_session_resource_config())
+    session = session_manager.get_session(session_id)
+    assert session is not None
+    session.scenario_context = "hypoxic tumour"
+    session.maboss_context = physicell_server.MaBoSSContext(
+        model_name="cell_fate",
+        bnd_file_path="/models/cell_fate.bnd",
+        cfg_file_path="/models/cell_fate.cfg",
+        target_cell_type="tumour",
+        available_nodes=["Hypoxia", "TP53", "Apoptosis"],
+        output_nodes=["Apoptosis"],
+    )
+    session.loaded_physiboss_models = ["tumour"]
+    session.physiboss_models_count = 1
+    session.physiboss_settings_count = 1
+    session.physiboss_input_links_count = 1
+    session.physiboss_output_links_count = 1
+    session.physiboss_mutations_count = 1
+    session.completed_steps.update(
+        {
+            physicell_server.WorkflowStep.DOMAIN_SETUP,
+            physicell_server.WorkflowStep.SUBSTRATES_ADDED,
+            physicell_server.WorkflowStep.CELL_TYPES_ADDED,
+        }
+    )
+    artifact_dir = tmp_path / "artifacts" / session_id
+    artifact_dir.mkdir(parents=True)
+    artifact = artifact_dir / "PhysiCell_settings.xml"
+    artifact.write_text("<PhysiCell_settings/>", encoding="utf-8")
+
+    rendered = {
+        suffix: _run(
+            _read_resource(
+                f"physicell://session/{session_id}/{suffix}"
+            )
+        ).contents[0]
+        for suffix in (
+            "workflow",
+            "domain",
+            "substrates",
+            "cell_types",
+            "cell_rules",
+            "physiboss",
+            "files",
+        )
+    }
+
+    assert all(
+        content.mime_type == "text/markdown"
+        for content in rendered.values()
+    )
+    assert "hypoxic tumour" in rendered["workflow"].text
+    assert "Mode: 2D" in rendered["domain"].text
+    assert "x=[-500, 500]" in rendered["domain"].text
+    assert "Extent: x=1000, y=500, z=20 micron" in rendered["domain"].text
+    assert "diffusion=0.01" in rendered["domain"].text
+    assert "**oxygen**" in rendered["substrates"].text
+    assert "diffusion=100000" in rendered["substrates"].text
+    assert "**tumour**" in rendered["cell_types"].text
+    assert "cycle=Ki67_basic" in rendered["cell_types"].text
+    assert "apoptosis=0.0001" in rendered["cell_types"].text
+    assert "oxygen decreases apoptosis" in rendered["cell_rules"].text
+    assert "**main**" in rendered["cell_rules"].text
+    assert "Model: cell_fate" in rendered["physiboss"].text
+    assert "settings=[intracellular_dt=6]" in rendered["physiboss"].text
+    assert "inputs=1" in rendered["physiboss"].text
+    assert "mutations=1" in rendered["physiboss"].text
+    assert str(artifact) in rendered["files"].text
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        "workflow",
+        "domain",
+        "substrates",
+        "cell_types",
+        "cell_rules",
+        "physiboss",
+        "files",
+    ],
+)
+def test_unknown_session_resources_return_typed_not_found(
+    suffix: str,
+) -> None:
+    uri = f"physicell://session/missing-session/{suffix}"
+
+    error = _run(_read_resource_error(uri))
+
+    assert error.code == -32602
+    assert "PhysiCell session not found: missing-session" in str(error)
+    assert error.data == {"uri": uri}
+    assert session_manager.list_sessions() == []
+
+
+def test_resources_distinguish_absent_configuration_from_valid_session() -> None:
+    session_id = _create_session()
+
+    workflow = _run(
+        _read_resource(f"physicell://session/{session_id}/workflow")
+    )
+    files = _run(
+        _read_resource(f"physicell://session/{session_id}/files")
+    )
+
+    assert "No simulation configured yet" in workflow.contents[0].text
+    assert "No artifact files found" in files.contents[0].text
+    for suffix in (
+        "domain",
+        "substrates",
+        "cell_types",
+        "cell_rules",
+        "physiboss",
+    ):
+        error = _run(
+            _read_resource_error(
+                f"physicell://session/{session_id}/{suffix}"
+            )
+        )
+        assert error.code == -32602
+        assert "No PhysiCell configuration in this session" in str(error)
+
+
+def test_empty_configuration_resources_are_successful() -> None:
+    config = _session_resource_config()
+    config.substrates.get_substrates = lambda: {}
+    config.cell_types.get_cell_types = lambda: {}
+    config.cell_rules.get_rules = lambda: []
+    config.cell_rules.get_rulesets = lambda: {}
+    session_id = _create_session(config)
+
+    expected_messages = {
+        "substrates": "No substrates configured.",
+        "cell_types": "No cell types configured.",
+        "cell_rules": "No cell rules configured.",
+        "physiboss": "No PhysiBoSS integration configured.",
+    }
+    for suffix, expected in expected_messages.items():
+        result = _run(
+            _read_resource(
+                f"physicell://session/{session_id}/{suffix}"
+            )
+        )
+        assert expected in result.contents[0].text
+
+
+def test_files_resource_does_not_create_artifact_directory(
+    tmp_path: Path,
+) -> None:
+    session_id = _create_session()
+    artifacts_dir = tmp_path / "artifacts"
+    assert not artifacts_dir.exists()
+
+    result = _run(
+        _read_resource(f"physicell://session/{session_id}/files")
+    )
+
+    assert "No artifact files found" in result.contents[0].text
+    assert not artifacts_dir.exists()
 
 
 def test_session_discovery_tools_publish_structured_output_schemas() -> None:
@@ -1554,6 +1857,61 @@ def test_artifact_cleanup_waits_for_same_session_export(
     assert not (
         tmp_path / "artifacts" / session_id / "concurrent.xml"
     ).exists()
+
+
+def test_files_resource_waits_for_same_session_export_only(
+    tmp_path: Path,
+) -> None:
+    export_entered = Event()
+    release_export = Event()
+
+    def generate_xml() -> str:
+        export_entered.set()
+        assert release_export.wait(timeout=2)
+        return "<PhysiCell_settings/>"
+
+    blocked_id = _create_session(
+        SimpleNamespace(generate_xml=generate_xml)
+    )
+    independent_id = _create_session()
+    blocked_session = session_manager.get_session(blocked_id)
+    assert blocked_session is not None
+
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        export_future = executor.submit(
+            physicell_server.export_xml_configuration,
+            filename="concurrent.xml",
+            session_id=blocked_id,
+        )
+        assert export_entered.wait(timeout=2)
+        blocked_resource = executor.submit(
+            physicell_server.physicell_files_resource,
+            session_id=blocked_id,
+        )
+
+        with session_manager._condition:
+            assert session_manager._condition.wait_for(
+                lambda: blocked_session._lease_count == 2,
+                timeout=2,
+            )
+        assert not blocked_resource.done()
+
+        independent_resource = executor.submit(
+            physicell_server.physicell_files_resource,
+            session_id=independent_id,
+        )
+        assert "No artifact files found" in independent_resource.result(
+            timeout=2
+        )
+
+        release_export.set()
+        export_future.result(timeout=2)
+        resource_text = blocked_resource.result(timeout=2)
+
+    expected_path = (
+        tmp_path / "artifacts" / blocked_id / "concurrent.xml"
+    )
+    assert str(expected_path) in resource_text
 
 
 def test_signal_context_is_isolated_between_sessions(

@@ -58,7 +58,23 @@ preserved during an update.
 Use node names returned by the MaBoSS server and signal/behavior names returned
 by the PhysiCell discovery tools.
 
-## 4. Inspection and export
+## 4. Read-only session resources
+
+Applications can load concise snapshots without calling an inspection tool:
+
+- `physicell://session/{session_id}/workflow` reports progress and next steps.
+- `physicell://session/{session_id}/domain` reports space and time settings.
+- `physicell://session/{session_id}/substrates` lists diffusion components.
+- `physicell://session/{session_id}/cell_types` summarizes phenotypes.
+- `physicell://session/{session_id}/cell_rules` lists behavior rules.
+- `physicell://session/{session_id}/physiboss` summarizes intracellular models.
+- `physicell://session/{session_id}/files` lists generated artifacts.
+
+These resources are read-only snapshots. Use tools to change a configuration.
+The workflow and files resources work before a simulation domain exists; the
+other five require a configured simulation.
+
+## 5. Inspection and export
 
 - `get_workflow_status()` and `get_simulation_summary()` expose the same
   complete workflow state.
