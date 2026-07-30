@@ -95,6 +95,7 @@ jobs:
             MaBoSS/session_manager.py \
             NeKo/src/structured_outputs.py \
             NeKo/session_manager.py \
+            PhysiCell/physicell_outputs.py \
             PhysiCell/session_manager.py \
             tests/
 
@@ -122,6 +123,7 @@ jobs:
             MaBoSS/session_manager.py \
             NeKo/src/structured_outputs.py \
             NeKo/session_manager.py \
+            PhysiCell/physicell_outputs.py \
             PhysiCell/session_manager.py
 
       # ------------------------------------------------------------------ #
