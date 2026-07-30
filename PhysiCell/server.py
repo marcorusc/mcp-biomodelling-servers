@@ -16,8 +16,9 @@ import time
 from functools import wraps
 from pathlib import Path
 from threading import RLock
-from typing import Annotated, Optional
+from typing import Annotated, Literal, Optional
 
+from mcp.types import ToolAnnotations
 from pydantic import Field
 
 # Add the physicell_config package to Python path
@@ -74,6 +75,50 @@ mcp = MCPServer(
 )
 
 _signals_behaviors_lock = RLock()
+
+NonEmptyString = Annotated[
+    str,
+    Field(
+        min_length=1,
+        pattern=r".*\S.*",
+        description="A non-empty string containing at least one non-whitespace character.",
+    ),
+]
+ComponentType = Literal["substrates", "cell_types", "physiboss", "all"]
+RuleDirection = Literal["increases", "decreases"]
+PhysiBoSSAction = Literal["activation", "inhibition"]
+MutationState = Literal[0, 1]
+
+_READ_ONLY_TOOL = ToolAnnotations(
+    read_only_hint=True,
+    destructive_hint=False,
+    idempotent_hint=True,
+    open_world_hint=False,
+)
+_IDEMPOTENT_TOOL = ToolAnnotations(
+    read_only_hint=False,
+    destructive_hint=False,
+    idempotent_hint=True,
+    open_world_hint=False,
+)
+_NON_IDEMPOTENT_TOOL = ToolAnnotations(
+    read_only_hint=False,
+    destructive_hint=False,
+    idempotent_hint=False,
+    open_world_hint=False,
+)
+_DESTRUCTIVE_TOOL = ToolAnnotations(
+    read_only_hint=False,
+    destructive_hint=True,
+    idempotent_hint=False,
+    open_world_hint=False,
+)
+_IDEMPOTENT_DESTRUCTIVE_TOOL = ToolAnnotations(
+    read_only_hint=False,
+    destructive_hint=True,
+    idempotent_hint=True,
+    open_world_hint=False,
+)
 
 
 def _session_locked(handler):
@@ -170,10 +215,10 @@ def _validate_export_filename(filename: str, expected_suffix: str) -> str:
 # SESSION MANAGEMENT TOOLS
 # ============================================================================
 
-@mcp.tool()
+@mcp.tool(annotations=_NON_IDEMPOTENT_TOOL)
 def create_session(
     set_as_default: bool = Field(default=True, description="Set this as the default session for subsequent operations."),
-    session_name: Optional[str] = Field(default=None, description="Optional human-readable name for cross-server linking (e.g., 'gastric_cancer_v1')."),
+    session_name: Optional[NonEmptyString] = Field(default=None, description="Optional human-readable name for cross-server linking (e.g., 'gastric_cancer_v1')."),
 ) -> str:
     """Create a new PhysiCell simulation session.
 
@@ -206,7 +251,7 @@ def create_session(
     
     return result
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY_TOOL)
 def list_sessions() -> str:
     """List all active simulation sessions with their status and progress.
 
@@ -242,7 +287,7 @@ def list_sessions() -> str:
     
     return result
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY_TOOL)
 def list_artifact_sessions() -> str:
     """List all PhysiCell sessions that have artifact files on disk (including past server runs).
 
@@ -272,10 +317,10 @@ def list_artifact_sessions() -> str:
             lines.append("  Files: (none)")
     return "\n".join(lines)
 
-@mcp.tool()
+@mcp.tool(annotations=_IDEMPOTENT_TOOL)
 @_session_locked
 def set_default_session(
-    session_id: Annotated[str, Field(description="ID of the session to activate. May be shortened to the first 8 characters.")],
+    session_id: Annotated[NonEmptyString, Field(description="ID of the session to activate. May be shortened to the first 8 characters.")],
 ) -> str:
     """Switch the default session used by subsequent tool calls.
 
@@ -289,10 +334,10 @@ def set_default_session(
         return f"**Switched to session:** {session.session_id[:8]}... (Progress: {progress:.0f}%)"
     raise ValueError(f"Session not found: {session_id}")
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY_TOOL)
 @_optional_session_locked
 def get_workflow_status(
-    session_id: Optional[str] = Field(
+    session_id: Optional[NonEmptyString] = Field(
         default=None,
         description="Session to query. Omit to use the active session.",
     ),
@@ -307,9 +352,9 @@ def get_workflow_status(
     """
     return _format_simulation_summary(get_current_session(session_id))
 
-@mcp.tool()
+@mcp.tool(annotations=_DESTRUCTIVE_TOOL)
 def delete_session(
-    session_id: Annotated[str, Field(description="The ID of the session to delete permanently.")],
+    session_id: Annotated[NonEmptyString, Field(description="The ID of the session to delete permanently.")],
 ) -> str:
     """Delete a simulation session and all its state permanently.
 
@@ -321,18 +366,18 @@ def delete_session(
         return f"**Session deleted:** {session_id[:8]}..."
     raise ValueError(f"Session not found: {session_id}")
 
-@mcp.tool()
+@mcp.tool(annotations=_IDEMPOTENT_TOOL)
 @_session_locked
 def set_maboss_context(
-    model_name: Annotated[str, Field(description="Name of the MaBoSS model.")],
-    bnd_file_path: Annotated[str, Field(description="Absolute path to the .bnd boolean network file.")],
-    cfg_file_path: Annotated[str, Field(description="Absolute path to the .cfg configuration file.")],
-    target_cell_type: Annotated[str, Field(description="Cell type this boolean model will be integrated into.")],
+    model_name: Annotated[NonEmptyString, Field(description="Name of the MaBoSS model.")],
+    bnd_file_path: Annotated[NonEmptyString, Field(description="Absolute path to the .bnd boolean network file.")],
+    cfg_file_path: Annotated[NonEmptyString, Field(description="Absolute path to the .cfg configuration file.")],
+    target_cell_type: Annotated[NonEmptyString, Field(description="Cell type this boolean model will be integrated into.")],
     available_nodes: str = Field(default="", description="Comma-separated list of available boolean nodes."),
     output_nodes: str = Field(default="", description="Comma-separated list of output nodes."),
     simulation_results: str = Field(default="", description="Summary of MaBoSS simulation behaviour."),
     biological_context: str = Field(default="", description="Original biological question or context."),
-    session_id: Optional[str] = Field(default=None, description="Session to use. Omit to use the active session."),
+    session_id: Optional[NonEmptyString] = Field(default=None, description="Session to use. Omit to use the active session."),
 ) -> str:
     """Store MaBoSS model context for integration into a PhysiCell simulation.
 
@@ -368,10 +413,10 @@ def set_maboss_context(
     
     return result
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY_TOOL)
 @_session_locked
 def get_maboss_context(
-    session_id: Optional[str] = Field(default=None, description="Session to query. Omit to use the active session."),
+    session_id: Optional[NonEmptyString] = Field(default=None, description="Session to query. Omit to use the active session."),
 ) -> str:
     """Return the stored MaBoSS context for the current session.
 
@@ -418,11 +463,11 @@ def get_maboss_context(
 # XML CONFIGURATION LOADING
 # ============================================================================
 
-@mcp.tool()
+@mcp.tool(annotations=_IDEMPOTENT_DESTRUCTIVE_TOOL)
 def load_xml_configuration(
-    filepath: Annotated[str, Field(description="Absolute path to the PhysiCell XML configuration file to load.")],
-    session_name: Optional[str] = Field(default=None, description="Optional name for the session, useful for cross-server tracking."),
-    session_id: Optional[str] = Field(default=None, description="Session to use. Omit to use the active session."),
+    filepath: Annotated[NonEmptyString, Field(description="Absolute path to the PhysiCell XML configuration file to load.")],
+    session_name: Optional[NonEmptyString] = Field(default=None, description="Optional name for the session, useful for cross-server tracking."),
+    session_id: Optional[NonEmptyString] = Field(default=None, description="Session to use. Omit to use the active session."),
 ) -> str:
     """Load an existing PhysiCell XML configuration file into the current session.
 
@@ -482,9 +527,9 @@ def load_xml_configuration(
     )
     return result
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY_TOOL)
 def validate_xml_file(
-    filepath: Annotated[str, Field(description="Absolute path to the PhysiCell XML file to validate.")],
+    filepath: Annotated[NonEmptyString, Field(description="Absolute path to the PhysiCell XML file to validate.")],
 ) -> str:
     """Validate a PhysiCell XML configuration file without loading it.
 
@@ -509,10 +554,10 @@ def validate_xml_file(
         return f"Valid PhysiCell XML: {xml_path.name}"
     return f"Invalid: {error_msg}"
 
-@mcp.tool()
+@mcp.tool(annotations=_IDEMPOTENT_TOOL)
 @_session_locked
 def analyze_loaded_configuration(
-    session_id: Optional[str] = Field(default=None, description="Session to query. Omit to use the active session."),
+    session_id: Optional[NonEmptyString] = Field(default=None, description="Session to query. Omit to use the active session."),
 ) -> str:
     """Show an overview of the loaded XML configuration with modification instructions.
 
@@ -556,11 +601,11 @@ def analyze_loaded_configuration(
     session.mark_step_complete(WorkflowStep.XML_ANALYZED)
     return "\n".join(lines)
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY_TOOL)
 @_session_locked
 def list_loaded_components(
-    component_type: str = Field(default="all", description="Filter results: 'substrates', 'cell_types', 'physiboss', or 'all'."),
-    session_id: Optional[str] = Field(default=None, description="Session to query. Omit to use the active session."),
+    component_type: ComponentType = Field(default="all", description="Filter results: 'substrates', 'cell_types', 'physiboss', or 'all'."),
+    session_id: Optional[NonEmptyString] = Field(default=None, description="Session to query. Omit to use the active session."),
 ) -> str:
     """List components from a loaded XML configuration with details and modification hints.
 
@@ -624,10 +669,10 @@ def list_loaded_components(
 # BIOLOGICAL SCENARIO ANALYSIS
 # ============================================================================
 
-@mcp.tool()
+@mcp.tool(annotations=_IDEMPOTENT_TOOL)
 def analyze_biological_scenario(
-    biological_scenario: Annotated[str, Field(description="Description of the biological scenario or experimental setup (e.g., 'Breast cancer cells in hypoxic 3D tissue with immune infiltration').")],
-    session_id: Optional[str] = Field(default=None, description="Session to use. Omit to use the active session."),
+    biological_scenario: Annotated[NonEmptyString, Field(description="Description of the biological scenario or experimental setup (e.g., 'Breast cancer cells in hypoxic 3D tissue with immune infiltration').")],
+    session_id: Optional[NonEmptyString] = Field(default=None, description="Session to use. Omit to use the active session."),
 ) -> str:
     """Store a biological scenario description to provide context for subsequent simulation setup.
 
@@ -653,15 +698,15 @@ def analyze_biological_scenario(
 # SIMULATION SETUP
 # ============================================================================
 
-@mcp.tool()
+@mcp.tool(annotations=_IDEMPOTENT_DESTRUCTIVE_TOOL)
 def create_simulation_domain(
-    domain_x: Annotated[float, Field(description="Domain width in micrometers (e.g., 2000).")],
-    domain_y: Annotated[float, Field(description="Domain height in micrometers (e.g., 2000).")],
+    domain_x: Annotated[float, Field(gt=0, allow_inf_nan=False, description="Domain width in micrometers (e.g., 2000).")],
+    domain_y: Annotated[float, Field(gt=0, allow_inf_nan=False, description="Domain height in micrometers (e.g., 2000).")],
     use_2d: bool = Field(default=True, description="If True (default), creates a quasi-2D simulation. The z thickness is automatically set to the mesh spacing (dx). Set to False for a full 3D simulation and provide domain_z."),
-    domain_z: Optional[float] = Field(default=None, description="Domain depth in micrometers. Required only for 3D simulations (use_2d=False). Ignored in 2D mode."),
-    dx: float = Field(default=20.0, description="Mesh spacing in micrometers. Smaller values increase spatial resolution and computation time. In 2D, also sets the z thickness."),
-    max_time: float = Field(default=7200.0, description="Maximum simulation time in minutes. 7200 = 5 days."),
-    session_id: Optional[str] = Field(default=None, description="Session to use. Omit to use the active session."),
+    domain_z: Optional[float] = Field(default=None, gt=0, allow_inf_nan=False, description="Domain depth in micrometers. Required only for 3D simulations (use_2d=False). Ignored in 2D mode."),
+    dx: float = Field(default=20.0, gt=0, allow_inf_nan=False, description="Mesh spacing in micrometers. Smaller values increase spatial resolution and computation time. In 2D, also sets the z thickness."),
+    max_time: float = Field(default=7200.0, gt=0, allow_inf_nan=False, description="Maximum simulation time in minutes. 7200 = 5 days."),
+    session_id: Optional[NonEmptyString] = Field(default=None, description="Session to use. Omit to use the active session."),
 ) -> str:
     """Create the spatial and temporal framework for a PhysiCell simulation.
 
@@ -730,17 +775,17 @@ def create_simulation_domain(
     
     return result
 
-@mcp.tool()
+@mcp.tool(annotations=_DESTRUCTIVE_TOOL)
 @_session_locked
 def add_single_substrate(
-    substrate_name: Annotated[str, Field(description="Name of the substrate (e.g., 'oxygen', 'glucose', 'drug').")],
-    diffusion_coefficient: Annotated[float, Field(description="Diffusion rate in μm²/min. Typical: 100000 for oxygen, 30000 for glucose.")],
-    decay_rate: Annotated[float, Field(description="Decay/uptake rate in 1/min. Typical: 0.01.")],
-    initial_condition: Annotated[float, Field(description="Starting concentration everywhere in the domain. Typical: 38 for oxygen (mmHg).")],
-    units: str = Field(default="dimensionless", description="Concentration units label (cosmetic only)."),
+    substrate_name: Annotated[NonEmptyString, Field(description="Name of the substrate (e.g., 'oxygen', 'glucose', 'drug').")],
+    diffusion_coefficient: Annotated[float, Field(ge=0, allow_inf_nan=False, description="Diffusion rate in μm²/min. Typical: 100000 for oxygen, 30000 for glucose.")],
+    decay_rate: Annotated[float, Field(ge=0, allow_inf_nan=False, description="Decay/uptake rate in 1/min. Typical: 0.01.")],
+    initial_condition: Annotated[float, Field(allow_inf_nan=False, description="Starting concentration everywhere in the domain. Typical: 38 for oxygen (mmHg).")],
+    units: NonEmptyString = Field(default="dimensionless", description="Concentration units label (cosmetic only)."),
     dirichlet_enabled: bool = Field(default=False, description="If True, enforce a fixed boundary concentration (Dirichlet condition)."),
-    dirichlet_value: Optional[float] = Field(default=None, description="Fixed boundary concentration. Defaults to initial_condition if omitted."),
-    session_id: Optional[str] = Field(default=None, description="Session to use. Omit to use the active session."),
+    dirichlet_value: Optional[float] = Field(default=None, allow_inf_nan=False, description="Fixed boundary concentration. Defaults to initial_condition if omitted."),
+    session_id: Optional[NonEmptyString] = Field(default=None, description="Session to use. Omit to use the active session."),
 ) -> str:
     """Add a chemical substrate (oxygen, glucose, drug, etc.) to the simulation environment.
 
@@ -809,12 +854,12 @@ def add_single_substrate(
     
     return result
 
-@mcp.tool()
+@mcp.tool(annotations=_DESTRUCTIVE_TOOL)
 @_session_locked
 def add_single_cell_type(
-    cell_type_name: Annotated[str, Field(description="Name for this cell type (e.g., 'cancer_cell', 'immune_cell', 'fibroblast').")],
-    cycle_model: str = Field(default="Ki67_basic", description="Cell cycle model. Use `get_available_cycle_models()` to list options. Common: 'Ki67_basic', 'Ki67_advanced', 'live'."),
-    session_id: Optional[str] = Field(default=None, description="Session to use. Omit to use the active session."),
+    cell_type_name: Annotated[NonEmptyString, Field(description="Name for this cell type (e.g., 'cancer_cell', 'immune_cell', 'fibroblast').")],
+    cycle_model: NonEmptyString = Field(default="Ki67_basic", description="Cell cycle model. Use `get_available_cycle_models()` to list options. Common: 'Ki67_basic', 'Ki67_advanced', 'live'."),
+    session_id: Optional[NonEmptyString] = Field(default=None, description="Session to use. Omit to use the active session."),
 ) -> str:
     """Add a cell type (cancer, immune, fibroblast, etc.) to the simulation.
 
@@ -853,18 +898,18 @@ def add_single_cell_type(
 
 
 
-@mcp.tool()
+@mcp.tool(annotations=_IDEMPOTENT_TOOL)
 @_session_locked
 def configure_cell_parameters(
-    cell_type: Annotated[str, Field(description="Name of an existing cell type to configure.")],
-    volume_total: float = Field(default=2500.0, description="Total cell volume in μm³."),
-    volume_nuclear: float = Field(default=500.0, description="Nuclear volume in μm³."),
-    fluid_fraction: float = Field(default=0.75, description="Cytoplasmic fluid fraction (0–1)."),
-    motility_speed: float = Field(default=0.5, description="Cell migration speed in μm/min."),
-    persistence_time: float = Field(default=5.0, description="Directional persistence time in minutes."),
-    apoptosis_rate: float = Field(default=0.0001, description="Spontaneous apoptosis rate in 1/min."),
-    necrosis_rate: float = Field(default=0.0001, description="Spontaneous necrosis rate in 1/min."),
-    session_id: Optional[str] = Field(default=None, description="Session to use. Omit to use the active session."),
+    cell_type: Annotated[NonEmptyString, Field(description="Name of an existing cell type to configure.")],
+    volume_total: float = Field(default=2500.0, gt=0, allow_inf_nan=False, description="Total cell volume in μm³."),
+    volume_nuclear: float = Field(default=500.0, gt=0, allow_inf_nan=False, description="Nuclear volume in μm³."),
+    fluid_fraction: float = Field(default=0.75, ge=0, le=1, allow_inf_nan=False, description="Cytoplasmic fluid fraction (0–1)."),
+    motility_speed: float = Field(default=0.5, ge=0, allow_inf_nan=False, description="Cell migration speed in μm/min."),
+    persistence_time: float = Field(default=5.0, ge=0, allow_inf_nan=False, description="Directional persistence time in minutes."),
+    apoptosis_rate: float = Field(default=0.0001, ge=0, allow_inf_nan=False, description="Spontaneous apoptosis rate in 1/min."),
+    necrosis_rate: float = Field(default=0.0001, ge=0, allow_inf_nan=False, description="Spontaneous necrosis rate in 1/min."),
+    session_id: Optional[NonEmptyString] = Field(default=None, description="Session to use. Omit to use the active session."),
 ) -> str:
     """Modify volume, motility, and death-rate parameters for an existing cell type.
 
@@ -904,14 +949,14 @@ def configure_cell_parameters(
             f"Could not configure cell type '{cell_type}': {exc}"
         ) from exc
 
-@mcp.tool()
+@mcp.tool(annotations=_IDEMPOTENT_TOOL)
 @_session_locked
 def set_substrate_interaction(
-    cell_type: Annotated[str, Field(description="Name of an existing cell type.")],
-    substrate: Annotated[str, Field(description="Name of an existing substrate (must match a name passed to add_single_substrate()).")],
-    secretion_rate: float = Field(default=0.0, description="Rate at which the cell secretes the substrate (1/min)."),
-    uptake_rate: float = Field(default=0.0, description="Rate at which the cell consumes the substrate (1/min). Typical oxygen uptake: 10."),
-    session_id: Optional[str] = Field(default=None, description="Session to use. Omit to use the active session."),
+    cell_type: Annotated[NonEmptyString, Field(description="Name of an existing cell type.")],
+    substrate: Annotated[NonEmptyString, Field(description="Name of an existing substrate (must match a name passed to add_single_substrate()).")],
+    secretion_rate: float = Field(default=0.0, ge=0, allow_inf_nan=False, description="Rate at which the cell secretes the substrate (1/min)."),
+    uptake_rate: float = Field(default=0.0, ge=0, allow_inf_nan=False, description="Rate at which the cell consumes the substrate (1/min). Typical oxygen uptake: 10."),
+    session_id: Optional[NonEmptyString] = Field(default=None, description="Session to use. Omit to use the active session."),
 ) -> str:
     """Define how a cell type interacts with a substrate via secretion and uptake rates.
 
@@ -942,7 +987,7 @@ def set_substrate_interaction(
 # PARAMETER DISCOVERY AND DEFAULTS
 # ============================================================================
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY_TOOL)
 def get_available_cycle_models() -> str:
     """List all available PhysiCell cell cycle models with their identifiers.
 
@@ -967,10 +1012,10 @@ def get_available_cycle_models() -> str:
 # SIGNAL AND BEHAVIOR DISCOVERY
 # ============================================================================
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY_TOOL)
 @_optional_session_locked
 def list_all_available_signals(
-    session_id: Optional[str] = Field(default=None, description="Session to query. Omit to use the active session."),
+    session_id: Optional[NonEmptyString] = Field(default=None, description="Session to query. Omit to use the active session."),
 ) -> str:
     """List all PhysiCell signals that can be used in cell rules.
 
@@ -1031,10 +1076,10 @@ def list_all_available_signals(
     
     return result
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY_TOOL)
 @_optional_session_locked
 def list_all_available_behaviors(
-    session_id: Optional[str] = Field(default=None, description="Session to query. Omit to use the active session."),
+    session_id: Optional[NonEmptyString] = Field(default=None, description="Session to query. Omit to use the active session."),
 ) -> str:
     """List all PhysiCell behaviours that can be controlled by cell rules.
 
@@ -1100,17 +1145,17 @@ def list_all_available_behaviors(
 # CELL RULES AND PHYSIBOSS
 # ============================================================================
 
-@mcp.tool()
+@mcp.tool(annotations=_NON_IDEMPOTENT_TOOL)
 @_session_locked
 def add_single_cell_rule(
-    cell_type: Annotated[str, Field(description="Name of existing cell type.")],
-    signal: Annotated[str, Field(description="Signal name. Use list_all_available_signals() to see options.")],
-    direction: Annotated[str, Field(description="'increases' or 'decreases' — whether the signal promotes or suppresses the behavior.")],
-    behavior: Annotated[str, Field(description="Behavior name. Use list_all_available_behaviors() to see options.")],
-    saturation_value: float = Field(default=1.0, description="Value of the behavior when the signal is at saturation (maximum effect)."),
-    half_max: float = Field(default=0.5, description="Signal level at which the behavior is halfway between its base value and the saturation value."),
-    hill_power: float = Field(default=4.0, description="Hill coefficient controlling the sharpness of the dose-response curve (typical: 1–8)."),
-    session_id: Optional[str] = Field(default=None, description="Session to use. Omit to use the active session."),
+    cell_type: Annotated[NonEmptyString, Field(description="Name of existing cell type.")],
+    signal: Annotated[NonEmptyString, Field(description="Signal name. Use list_all_available_signals() to see options.")],
+    direction: Annotated[RuleDirection, Field(description="'increases' or 'decreases' — whether the signal promotes or suppresses the behavior.")],
+    behavior: Annotated[NonEmptyString, Field(description="Behavior name. Use list_all_available_behaviors() to see options.")],
+    saturation_value: float = Field(default=1.0, allow_inf_nan=False, description="Value of the behavior when the signal is at saturation (maximum effect)."),
+    half_max: float = Field(default=0.5, gt=0, allow_inf_nan=False, description="Signal level at which the behavior is halfway between its base value and the saturation value."),
+    hill_power: float = Field(default=4.0, gt=0, allow_inf_nan=False, description="Hill coefficient controlling the sharpness of the dose-response curve (typical: 1–8)."),
+    session_id: Optional[NonEmptyString] = Field(default=None, description="Session to use. Omit to use the active session."),
 ) -> str:
     """Add a signal-behaviour rule that makes cells respond to environmental cues.
 
@@ -1184,13 +1229,13 @@ def add_single_cell_rule(
     
     return result
 
-@mcp.tool()
+@mcp.tool(annotations=_DESTRUCTIVE_TOOL)
 @_session_locked
 def add_physiboss_model(
-    cell_type: Annotated[str, Field(description="Name of an existing cell type to attach the boolean network to.")],
-    bnd_file: Annotated[str, Field(description="Absolute path to the MaBoSS .bnd boolean network file.")],
-    cfg_file: Annotated[str, Field(description="Absolute path to the MaBoSS .cfg configuration file.")],
-    session_id: Optional[str] = Field(default=None, description="Session to use. Omit to use the active session."),
+    cell_type: Annotated[NonEmptyString, Field(description="Name of an existing cell type to attach the boolean network to.")],
+    bnd_file: Annotated[NonEmptyString, Field(description="Absolute path to the MaBoSS .bnd boolean network file.")],
+    cfg_file: Annotated[NonEmptyString, Field(description="Absolute path to the MaBoSS .cfg configuration file.")],
+    session_id: Optional[NonEmptyString] = Field(default=None, description="Session to use. Omit to use the active session."),
 ) -> str:
     """Integrate a PhysiBoSS boolean network model into a cell type.
 
@@ -1242,16 +1287,16 @@ def add_physiboss_model(
     except Exception as exc:
         raise RuntimeError(f"Could not add the PhysiBoSS model: {exc}") from exc
 
-@mcp.tool()
+@mcp.tool(annotations=_IDEMPOTENT_TOOL)
 @_session_locked
 def configure_physiboss_settings(
-    cell_type: Annotated[str, Field(description="Name of an existing cell type with a PhysiBoSS model attached.")],
-    intracellular_dt: float = Field(default=6.0, description="PhysiBoSS update interval in minutes. Should be a multiple of the phenotype time step."),
-    time_stochasticity: int = Field(default=0, description="Time stochasticity level (0 = deterministic)."),
-    scaling: float = Field(default=1.0, description="Scaling factor applied to the intracellular dynamics."),
-    start_time: float = Field(default=0.0, description="Simulation time in minutes at which the boolean network starts running."),
+    cell_type: Annotated[NonEmptyString, Field(description="Name of an existing cell type with a PhysiBoSS model attached.")],
+    intracellular_dt: float = Field(default=6.0, gt=0, allow_inf_nan=False, description="PhysiBoSS update interval in minutes. Should be a multiple of the phenotype time step."),
+    time_stochasticity: int = Field(default=0, ge=0, description="Time stochasticity level (0 = deterministic)."),
+    scaling: float = Field(default=1.0, gt=0, allow_inf_nan=False, description="Scaling factor applied to the intracellular dynamics."),
+    start_time: float = Field(default=0.0, ge=0, allow_inf_nan=False, description="Simulation time in minutes at which the boolean network starts running."),
     inheritance_global: bool = Field(default=False, description="If True, daughter cells inherit the parent's boolean node states globally."),
-    session_id: Optional[str] = Field(default=None, description="Session to use. Omit to use the active session."),
+    session_id: Optional[NonEmptyString] = Field(default=None, description="Session to use. Omit to use the active session."),
 ) -> str:
     """Configure timing, stochasticity, and inheritance parameters for a PhysiBoSS model.
     Must be called after `add_physiboss_model()`. Repeat for each cell type.
@@ -1292,16 +1337,16 @@ def configure_physiboss_settings(
             f"Could not configure PhysiBoSS settings: {exc}"
         ) from exc
 
-@mcp.tool()
+@mcp.tool(annotations=_NON_IDEMPOTENT_TOOL)
 @_session_locked
 def add_physiboss_input_link(
-    cell_type: Annotated[str, Field(description="Name of an existing cell type with a PhysiBoSS model.")],
-    physicell_signal: Annotated[str, Field(description="PhysiCell signal name. Use list_all_available_signals() to see options.")],
-    boolean_node: Annotated[str, Field(description="MaBoSS boolean node name to drive (from the .bnd file).")],
-    action: str = Field(default="activation", description="'activation' (signal turns node ON) or 'inhibition' (signal turns node OFF)."),
-    threshold: float = Field(default=1.0, description="Signal level at which the node is toggled."),
-    smoothing: int = Field(default=0, description="Smoothing level (0 = no smoothing)."),
-    session_id: Optional[str] = Field(default=None, description="Session to use. Omit to use the active session."),
+    cell_type: Annotated[NonEmptyString, Field(description="Name of an existing cell type with a PhysiBoSS model.")],
+    physicell_signal: Annotated[NonEmptyString, Field(description="PhysiCell signal name. Use list_all_available_signals() to see options.")],
+    boolean_node: Annotated[NonEmptyString, Field(description="MaBoSS boolean node name to drive (from the .bnd file).")],
+    action: PhysiBoSSAction = Field(default="activation", description="'activation' (signal turns node ON) or 'inhibition' (signal turns node OFF)."),
+    threshold: float = Field(default=1.0, allow_inf_nan=False, description="Signal level at which the node is toggled."),
+    smoothing: int = Field(default=0, ge=0, description="Smoothing level (0 = no smoothing)."),
+    session_id: Optional[NonEmptyString] = Field(default=None, description="Session to use. Omit to use the active session."),
 ) -> str:
     """Create an input link from a PhysiCell signal to a MaBoSS boolean node.
     Requires a PhysiBoSS model already attached to the cell type.
@@ -1340,17 +1385,17 @@ def add_physiboss_input_link(
             f"Could not add the PhysiBoSS input link: {exc}"
         ) from exc
 
-@mcp.tool()
+@mcp.tool(annotations=_NON_IDEMPOTENT_TOOL)
 @_session_locked
 def add_physiboss_output_link(
-    cell_type: Annotated[str, Field(description="Name of an existing cell type with a PhysiBoSS model.")],
-    boolean_node: Annotated[str, Field(description="MaBoSS boolean node name whose state drives the behavior.")],
-    physicell_behavior: Annotated[str, Field(description="PhysiCell behavior name to control. Use list_all_available_behaviors() to see options.")],
-    action: str = Field(default="activation", description="'activation' (node ON increases behavior) or 'inhibition' (node ON decreases behavior)."),
-    value: float = Field(default=1000000.0, description="Behavior value applied when the node is active."),
-    base_value: float = Field(default=0.0, description="Baseline behavior value when the node is inactive."),
-    smoothing: int = Field(default=0, description="Smoothing level (0 = no smoothing)."),
-    session_id: Optional[str] = Field(default=None, description="Session to use. Omit to use the active session."),
+    cell_type: Annotated[NonEmptyString, Field(description="Name of an existing cell type with a PhysiBoSS model.")],
+    boolean_node: Annotated[NonEmptyString, Field(description="MaBoSS boolean node name whose state drives the behavior.")],
+    physicell_behavior: Annotated[NonEmptyString, Field(description="PhysiCell behavior name to control. Use list_all_available_behaviors() to see options.")],
+    action: PhysiBoSSAction = Field(default="activation", description="'activation' (node ON increases behavior) or 'inhibition' (node ON decreases behavior)."),
+    value: float = Field(default=1000000.0, allow_inf_nan=False, description="Behavior value applied when the node is active."),
+    base_value: float = Field(default=0.0, allow_inf_nan=False, description="Baseline behavior value when the node is inactive."),
+    smoothing: int = Field(default=0, ge=0, description="Smoothing level (0 = no smoothing)."),
+    session_id: Optional[NonEmptyString] = Field(default=None, description="Session to use. Omit to use the active session."),
 ) -> str:
     """Create an output link from a MaBoSS boolean node to a PhysiCell cell behaviour.
     Requires a PhysiBoSS model already attached to the cell type.
@@ -1391,13 +1436,13 @@ def add_physiboss_output_link(
             f"Could not add the PhysiBoSS output link: {exc}"
         ) from exc
 
-@mcp.tool()
+@mcp.tool(annotations=_NON_IDEMPOTENT_TOOL)
 @_session_locked
 def apply_physiboss_mutation(
-    cell_type: Annotated[str, Field(description="Name of an existing cell type with a PhysiBoSS model.")],
-    node_name: Annotated[str, Field(description="MaBoSS boolean node name to fix (from the .bnd file).")],
-    fixed_value: Annotated[int, Field(description="Fixed node state: 0 (always OFF / loss-of-function) or 1 (always ON / gain-of-function).")],
-    session_id: Optional[str] = Field(default=None, description="Session to use. Omit to use the active session."),
+    cell_type: Annotated[NonEmptyString, Field(description="Name of an existing cell type with a PhysiBoSS model.")],
+    node_name: Annotated[NonEmptyString, Field(description="MaBoSS boolean node name to fix (from the .bnd file).")],
+    fixed_value: Annotated[MutationState, Field(description="Fixed node state: 0 (always OFF / loss-of-function) or 1 (always ON / gain-of-function).")],
+    session_id: Optional[NonEmptyString] = Field(default=None, description="Session to use. Omit to use the active session."),
 ) -> str:
     """Fix a MaBoSS boolean node to a constant value, simulating a genetic mutation.
 
@@ -1436,10 +1481,10 @@ def apply_physiboss_mutation(
 # UTILITY AND EXPORT TOOLS
 # ============================================================================
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY_TOOL)
 @_optional_session_locked
 def get_simulation_summary(
-    session_id: Optional[str] = Field(default=None, description="Session to query. Omit to use the active session."),
+    session_id: Optional[NonEmptyString] = Field(default=None, description="Session to query. Omit to use the active session."),
 ) -> str:
     """Return a comprehensive summary of the current simulation configuration.
 
@@ -1525,11 +1570,11 @@ def _format_simulation_summary(session: Optional[SessionState]) -> str:
 
     return result
 
-@mcp.tool()
+@mcp.tool(annotations=_IDEMPOTENT_TOOL)
 @_session_locked
 def export_xml_configuration(
-    filename: str = Field(default="PhysiCell_settings.xml", description="Output filename for the XML configuration file."),
-    session_id: Optional[str] = Field(default=None, description="Session to use. Omit to use the active session."),
+    filename: NonEmptyString = Field(default="PhysiCell_settings.xml", description="Output filename for the XML configuration file."),
+    session_id: Optional[NonEmptyString] = Field(default=None, description="Session to use. Omit to use the active session."),
 ) -> str:
     """Export the complete PhysiCell configuration to an XML file in the session artifact directory.
 
@@ -1595,11 +1640,11 @@ def export_xml_configuration(
             f"Could not export the PhysiCell XML configuration: {exc}"
         ) from exc
 
-@mcp.tool()
+@mcp.tool(annotations=_IDEMPOTENT_TOOL)
 @_session_locked
 def export_cell_rules_csv(
-    filename: str = Field(default="cell_rules.csv", description="Output filename for the cell rules CSV file."),
-    session_id: Optional[str] = Field(default=None, description="Session to use. Omit to use the active session."),
+    filename: NonEmptyString = Field(default="cell_rules.csv", description="Output filename for the cell rules CSV file."),
+    session_id: Optional[NonEmptyString] = Field(default=None, description="Session to use. Omit to use the active session."),
 ) -> str:
     """Export cell signal-behaviour rules to a CSV file in the session artifact directory.
 
@@ -1666,9 +1711,9 @@ def clean_for_markdown(text: str) -> str:
         text = str(text)
     return text.replace("|", "\\|").replace("\n", " ").strip()
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY_TOOL)
 def list_generated_files(
-    session_id: Optional[str] = Field(default=None, description="Session to query. Omit to use the active session. Pass 'all' to list files across every session."),
+    session_id: Optional[NonEmptyString] = Field(default=None, description="Session to query. Omit to use the active session. Pass 'all' to list files across every session."),
 ) -> str:
     """List PhysiCell artifact files (XML/CSV) for the active session.
 
@@ -1707,10 +1752,10 @@ def list_generated_files(
     return result
 
 
-@mcp.tool()
+@mcp.tool(annotations=_IDEMPOTENT_DESTRUCTIVE_TOOL)
 @_session_locked
 def clean_generated_files(
-    session_id: Optional[str] = Field(default=None, description="Session to clean. Omit to use the active session."),
+    session_id: Optional[NonEmptyString] = Field(default=None, description="Session to clean. Omit to use the active session."),
 ) -> str:
     """Remove all artifact files (XML, CSV, etc.) for the active session.
 
@@ -1727,7 +1772,7 @@ def clean_generated_files(
             f"Could not clean generated PhysiCell files: {exc}"
         ) from exc
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY_TOOL)
 def get_help() -> str:
     """Return the PhysiCell server workflow guide with tool usage and examples.
 

@@ -212,7 +212,7 @@ def test_invalid_domain_is_tool_error_without_creating_session() -> None:
     )
 
     assert result.is_error is True
-    assert "Domain dimensions must be positive" in result.content[0].text
+    assert "validation error" in result.content[0].text.lower()
     assert session_manager.list_sessions() == []
 
 
@@ -542,6 +542,279 @@ def test_session_locking_preserves_public_tool_schemas() -> None:
         assert "session" not in properties
         assert "ctx" not in properties
         assert "session_id" in properties
+
+
+def test_all_physicell_tools_publish_safety_annotations() -> None:
+    listed_tools = _run(_list_tools())
+    tools = {tool.name: tool for tool in listed_tools.tools}
+
+    read_only = {
+        "list_sessions",
+        "list_artifact_sessions",
+        "get_workflow_status",
+        "get_maboss_context",
+        "validate_xml_file",
+        "list_loaded_components",
+        "get_available_cycle_models",
+        "list_all_available_signals",
+        "list_all_available_behaviors",
+        "get_simulation_summary",
+        "list_generated_files",
+        "get_help",
+    }
+    idempotent = {
+        "set_default_session",
+        "set_maboss_context",
+        "analyze_loaded_configuration",
+        "analyze_biological_scenario",
+        "configure_cell_parameters",
+        "set_substrate_interaction",
+        "configure_physiboss_settings",
+        "export_xml_configuration",
+        "export_cell_rules_csv",
+    }
+    non_idempotent = {
+        "create_session",
+        "add_single_cell_rule",
+        "add_physiboss_input_link",
+        "add_physiboss_output_link",
+        "apply_physiboss_mutation",
+    }
+    destructive = {
+        "delete_session",
+        "add_single_substrate",
+        "add_single_cell_type",
+        "add_physiboss_model",
+    }
+    idempotent_destructive = {
+        "load_xml_configuration",
+        "create_simulation_domain",
+        "clean_generated_files",
+    }
+
+    assert set(tools) == (
+        read_only
+        | idempotent
+        | non_idempotent
+        | destructive
+        | idempotent_destructive
+    )
+
+    for tool_name, tool in tools.items():
+        annotations = tool.annotations
+        assert annotations is not None
+        assert annotations.open_world_hint is False
+        assert annotations.read_only_hint is (tool_name in read_only)
+        assert annotations.destructive_hint is (
+            tool_name in destructive | idempotent_destructive
+        )
+        assert annotations.idempotent_hint is (
+            tool_name in read_only | idempotent | idempotent_destructive
+        )
+        assert tool.output_schema is not None
+
+
+def test_physicell_tool_schemas_publish_stable_enums_and_bounds() -> None:
+    listed_tools = _run(_list_tools())
+    tools = {tool.name: tool for tool in listed_tools.tools}
+
+    component_schema = tools[
+        "list_loaded_components"
+    ].input_schema["properties"]["component_type"]
+    assert component_schema["enum"] == [
+        "substrates",
+        "cell_types",
+        "physiboss",
+        "all",
+    ]
+
+    domain_schema = tools[
+        "create_simulation_domain"
+    ].input_schema["properties"]
+    assert domain_schema["domain_x"]["exclusiveMinimum"] == 0
+    assert domain_schema["domain_y"]["exclusiveMinimum"] == 0
+    assert domain_schema["domain_z"]["anyOf"][0]["exclusiveMinimum"] == 0
+    assert domain_schema["dx"]["exclusiveMinimum"] == 0
+    assert domain_schema["max_time"]["exclusiveMinimum"] == 0
+
+    substrate_schema = tools[
+        "add_single_substrate"
+    ].input_schema["properties"]
+    assert substrate_schema["substrate_name"]["minLength"] == 1
+    assert substrate_schema["diffusion_coefficient"]["minimum"] == 0
+    assert substrate_schema["decay_rate"]["minimum"] == 0
+    assert substrate_schema["units"]["minLength"] == 1
+
+    cell_schema = tools[
+        "configure_cell_parameters"
+    ].input_schema["properties"]
+    assert cell_schema["cell_type"]["minLength"] == 1
+    assert cell_schema["volume_total"]["exclusiveMinimum"] == 0
+    assert cell_schema["volume_nuclear"]["exclusiveMinimum"] == 0
+    assert cell_schema["fluid_fraction"]["minimum"] == 0
+    assert cell_schema["fluid_fraction"]["maximum"] == 1
+    assert cell_schema["motility_speed"]["minimum"] == 0
+    assert cell_schema["persistence_time"]["minimum"] == 0
+    assert cell_schema["apoptosis_rate"]["minimum"] == 0
+    assert cell_schema["necrosis_rate"]["minimum"] == 0
+
+    interaction_schema = tools[
+        "set_substrate_interaction"
+    ].input_schema["properties"]
+    assert interaction_schema["secretion_rate"]["minimum"] == 0
+    assert interaction_schema["uptake_rate"]["minimum"] == 0
+
+    rule_schema = tools[
+        "add_single_cell_rule"
+    ].input_schema["properties"]
+    assert rule_schema["direction"]["enum"] == [
+        "increases",
+        "decreases",
+    ]
+    assert rule_schema["signal"]["minLength"] == 1
+    assert rule_schema["behavior"]["minLength"] == 1
+    assert rule_schema["half_max"]["exclusiveMinimum"] == 0
+    assert rule_schema["hill_power"]["exclusiveMinimum"] == 0
+
+    settings_schema = tools[
+        "configure_physiboss_settings"
+    ].input_schema["properties"]
+    assert settings_schema["intracellular_dt"]["exclusiveMinimum"] == 0
+    assert settings_schema["time_stochasticity"]["minimum"] == 0
+    assert settings_schema["scaling"]["exclusiveMinimum"] == 0
+    assert settings_schema["start_time"]["minimum"] == 0
+
+    input_schema = tools[
+        "add_physiboss_input_link"
+    ].input_schema["properties"]
+    assert input_schema["action"]["enum"] == [
+        "activation",
+        "inhibition",
+    ]
+    assert input_schema["smoothing"]["minimum"] == 0
+
+    output_schema = tools[
+        "add_physiboss_output_link"
+    ].input_schema["properties"]
+    assert output_schema["action"]["enum"] == [
+        "activation",
+        "inhibition",
+    ]
+    assert output_schema["smoothing"]["minimum"] == 0
+
+    mutation_schema = tools[
+        "apply_physiboss_mutation"
+    ].input_schema["properties"]
+    assert mutation_schema["fixed_value"]["enum"] == [0, 1]
+    assert mutation_schema["node_name"]["minLength"] == 1
+
+    load_schema = tools[
+        "load_xml_configuration"
+    ].input_schema["properties"]
+    assert load_schema["filepath"]["minLength"] == 1
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "arguments"),
+    [
+        ("set_default_session", {"session_id": ""}),
+        ("load_xml_configuration", {"filepath": "   "}),
+        (
+            "create_simulation_domain",
+            {"domain_x": 0, "domain_y": 100},
+        ),
+        (
+            "add_single_substrate",
+            {
+                "substrate_name": "",
+                "diffusion_coefficient": 1,
+                "decay_rate": 0,
+                "initial_condition": 0,
+            },
+        ),
+        (
+            "add_single_substrate",
+            {
+                "substrate_name": "oxygen",
+                "diffusion_coefficient": -1,
+                "decay_rate": 0,
+                "initial_condition": 0,
+            },
+        ),
+        ("add_single_cell_type", {"cell_type_name": "   "}),
+        (
+            "configure_cell_parameters",
+            {"cell_type": "tumour", "volume_total": 0},
+        ),
+        (
+            "set_substrate_interaction",
+            {
+                "cell_type": "tumour",
+                "substrate": "oxygen",
+                "secretion_rate": -1,
+            },
+        ),
+        ("list_loaded_components", {"component_type": "unknown"}),
+        (
+            "add_single_cell_rule",
+            {
+                "cell_type": "tumour",
+                "signal": "oxygen",
+                "direction": "promotes",
+                "behavior": "cycle entry",
+            },
+        ),
+        (
+            "add_single_cell_rule",
+            {
+                "cell_type": "tumour",
+                "signal": "oxygen",
+                "direction": "increases",
+                "behavior": "cycle entry",
+                "half_max": 0,
+            },
+        ),
+        (
+            "configure_physiboss_settings",
+            {"cell_type": "tumour", "intracellular_dt": 0},
+        ),
+        (
+            "add_physiboss_input_link",
+            {
+                "cell_type": "tumour",
+                "physicell_signal": "oxygen",
+                "boolean_node": "HIF1",
+                "action": "invalid",
+            },
+        ),
+        (
+            "add_physiboss_output_link",
+            {
+                "cell_type": "tumour",
+                "boolean_node": "Apoptosis",
+                "physicell_behavior": "apoptosis",
+                "smoothing": -1,
+            },
+        ),
+        (
+            "apply_physiboss_mutation",
+            {
+                "cell_type": "tumour",
+                "node_name": "TP53",
+                "fixed_value": 2,
+            },
+        ),
+        ("export_xml_configuration", {"filename": ""}),
+    ],
+)
+def test_invalid_common_inputs_are_rejected_before_execution(
+    tool_name: str,
+    arguments: dict[str, Any],
+) -> None:
+    result = _run(_call_tool(tool_name, arguments))
+
+    assert result.is_error is True
+    assert "validation error" in result.content[0].text.lower()
 
 
 def test_workflow_status_accepts_session_and_matches_summary() -> None:
