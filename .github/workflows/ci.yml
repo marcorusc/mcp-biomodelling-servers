@@ -93,6 +93,7 @@ jobs:
             mcp_biomodelling_servers/structured_outputs.py \
             MaBoSS/scientific_outputs.py \
             MaBoSS/session_manager.py \
+            NeKo/src/history.py \
             NeKo/src/structured_outputs.py \
             NeKo/session_manager.py \
             PhysiCell/physicell_outputs.py \
@@ -121,6 +122,7 @@ jobs:
             mcp_biomodelling_servers/structured_outputs.py \
             MaBoSS/scientific_outputs.py \
             MaBoSS/session_manager.py \
+            NeKo/src/history.py \
             NeKo/src/structured_outputs.py \
             NeKo/session_manager.py \
             PhysiCell/physicell_outputs.py \

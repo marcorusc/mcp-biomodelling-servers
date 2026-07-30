@@ -1175,6 +1175,7 @@ def test_list_network_history_returns_branching_structured_output() -> None:
 
     assert result.is_error is False
     assert result.structured_content is not None
+    assert result.structured_content["server"] == "NeKo"
     assert result.structured_content["session_id"] == session_id
     assert result.structured_content["current_state_id"] == 4
     assert result.structured_content["root_state_id"] == 0
@@ -1203,6 +1204,7 @@ def test_navigate_network_history_moves_and_invalidates_cache() -> None:
     )
 
     assert result.is_error is False
+    assert result.structured_content["server"] == "NeKo"
     assert result.structured_content["previous_state_id"] == 4
     assert result.structured_content["current_state_id"] == 2
     assert result.structured_content["moved"] is True
@@ -1278,6 +1280,7 @@ def test_compare_network_states_is_deterministic_and_non_mutating() -> None:
     )
 
     assert result.is_error is False
+    assert result.structured_content["server"] == "NeKo"
     assert result.structured_content["added_nodes"] == ["AKT1", "MDM2"]
     assert result.structured_content["edge_columns"] == [
         "source",
@@ -1327,6 +1330,7 @@ def test_set_network_history_limit_prunes_and_can_restore_unbounded_policy() -> 
     )
 
     assert bounded.is_error is False
+    assert bounded.structured_content["server"] == "NeKo"
     assert bounded.structured_content["max_states"] == 2
     assert bounded.structured_content["pruned_state_ids"] == [2, 6]
     assert bounded.structured_content["retained_state_ids"] == [0, 4]

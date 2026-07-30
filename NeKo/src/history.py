@@ -4,20 +4,33 @@ from __future__ import annotations
 
 import json
 import math
-from typing import Any
+from typing import Annotated, Any, Literal
 
 import pandas as pd
-from pydantic import BaseModel, Field
+from pydantic import Field
+
+from mcp_biomodelling_servers.structured_outputs import StructuredOutputModel
+
+HistoryStateId = Annotated[int, Field(ge=0)]
+HistoryAction = Literal["undo", "redo", "checkout"]
 
 
-class HistoryStateSummary(BaseModel):
+class NeKoHistoryResult(StructuredOutputModel):
+    """Fields shared by NeKo network-history results."""
+
+    server: Literal["NeKo"]
+
+
+class HistoryStateSummary(StructuredOutputModel):
     """One state in NeKo's branching network history."""
 
-    state_id: int = Field(description="Stable NeKo history state ID.")
-    parent_state_ids: list[int] = Field(
+    state_id: HistoryStateId = Field(
+        description="Stable NeKo history state ID.",
+    )
+    parent_state_ids: list[HistoryStateId] = Field(
         description="Direct parent state IDs.",
     )
-    child_state_ids: list[int] = Field(
+    child_state_ids: list[HistoryStateId] = Field(
         description="Direct child state IDs.",
     )
     is_current: bool = Field(
@@ -31,39 +44,40 @@ class HistoryStateSummary(BaseModel):
     )
 
 
-class NetworkHistorySummary(BaseModel):
+class NetworkHistorySummary(NeKoHistoryResult):
     """Creation-ordered summary of a session's branching history."""
 
-    session_id: str
-    current_state_id: int | None
-    root_state_id: int | None
+    session_id: str = Field(min_length=1)
+    current_state_id: HistoryStateId | None
+    root_state_id: HistoryStateId | None
     max_states: int | None = Field(
+        ge=2,
         description="Retention limit; null means unbounded history.",
     )
-    state_count: int
+    state_count: int = Field(ge=0)
     states: list[HistoryStateSummary]
 
 
-class HistoryNavigationResult(BaseModel):
+class HistoryNavigationResult(NeKoHistoryResult):
     """Result of moving through NeKo network history."""
 
-    session_id: str
-    action: str
-    requested_state_id: int | None
-    previous_state_id: int | None
-    current_state_id: int | None
+    session_id: str = Field(min_length=1)
+    action: HistoryAction
+    requested_state_id: HistoryStateId | None
+    previous_state_id: HistoryStateId | None
+    current_state_id: HistoryStateId | None
     moved: bool
-    node_count: int
-    edge_count: int
-    message: str
+    node_count: int = Field(ge=0)
+    edge_count: int = Field(ge=0)
+    message: str = Field(min_length=1)
 
 
-class NetworkStateComparison(BaseModel):
+class NetworkStateComparison(NeKoHistoryResult):
     """Deterministic topology difference between two NeKo states."""
 
-    session_id: str
-    state_a: int
-    state_b: int
+    session_id: str = Field(min_length=1)
+    state_a: HistoryStateId
+    state_b: HistoryStateId
     edge_columns: list[str]
     added_nodes: list[str]
     removed_nodes: list[str]
@@ -71,17 +85,17 @@ class NetworkStateComparison(BaseModel):
     removed_edges: list[dict[str, Any]]
 
 
-class HistoryRetentionResult(BaseModel):
+class HistoryRetentionResult(NeKoHistoryResult):
     """Result of changing one session's history-retention policy."""
 
-    session_id: str
-    max_states: int | None
+    session_id: str = Field(min_length=1)
+    max_states: int | None = Field(ge=2)
     applies_to_current_network: bool
-    state_count_before: int
-    state_count_after: int
-    pruned_state_ids: list[int]
-    retained_state_ids: list[int]
-    message: str
+    state_count_before: int = Field(ge=0)
+    state_count_after: int = Field(ge=0)
+    pruned_state_ids: list[HistoryStateId]
+    retained_state_ids: list[HistoryStateId]
+    message: str = Field(min_length=1)
 
 
 def _json_safe(value: Any) -> Any:
@@ -146,6 +160,7 @@ def summarize_history(
         for state in listed_states
     ]
     return NetworkHistorySummary(
+        server="NeKo",
         session_id=session_id,
         current_state_id=current_state_id,
         root_state_id=root_state_id,
@@ -221,6 +236,7 @@ def compare_history_states(
     comparison = network.compare_states(state_a, state_b)
     edge_columns = [str(column) for column in network.edges.columns]
     return NetworkStateComparison(
+        server="NeKo",
         session_id=session_id,
         state_a=state_a,
         state_b=state_b,

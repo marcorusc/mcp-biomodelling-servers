@@ -1051,6 +1051,7 @@ def navigate_network_history(
         message = f"State {current_state_id} is already checked out."
 
     return HistoryNavigationResult(
+        server="NeKo",
         session_id=sess.session_id,
         action=action,
         requested_state_id=state_id,
@@ -1139,6 +1140,7 @@ def set_network_history_limit(
         )
 
     return HistoryRetentionResult(
+        server="NeKo",
         session_id=sess.session_id,
         max_states=max_states,
         applies_to_current_network=network is not None,
