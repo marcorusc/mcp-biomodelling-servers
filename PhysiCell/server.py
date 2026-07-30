@@ -11,6 +11,7 @@ Features lightweight session management and progress tracking.
 """
 
 import inspect
+import math
 import sys
 import time
 from functools import wraps
@@ -47,6 +48,23 @@ from mcp_biomodelling_servers.structured_outputs import (
     PhysiCellXmlExportResult,
     artifact_file_summary,
     structured_report,
+)
+from physicell_outputs import (
+    PhysiCellBehaviorListResult,
+    PhysiCellBehaviorRecord,
+    PhysiCellCellTypeRecord,
+    PhysiCellCycleModelListResult,
+    PhysiCellCycleModelRecord,
+    PhysiCellDomainRecord,
+    PhysiCellLoadedComponentsResult,
+    PhysiCellLoadedConfigurationResult,
+    PhysiCellMaBoSSContextRecord,
+    PhysiCellMaBoSSContextResult,
+    PhysiCellSignalListResult,
+    PhysiCellSignalRecord,
+    PhysiCellSubstrateRecord,
+    PhysiCellWorkflowStatusResult,
+    PhysiCellXmlValidationResult,
 )
 
 _SERVER_ROOT = current_dir
@@ -221,6 +239,185 @@ def _validate_export_filename(filename: str, expected_suffix: str) -> str:
             f"{filename!r}."
         )
     return filename
+
+
+def _optional_finite_float(value) -> float | None:
+    """Convert an accessible backend value into a finite float."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _requirements(value) -> list[str]:
+    """Normalize signal/behavior requirements into a string list."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value else []
+    try:
+        return [str(item) for item in value]
+    except TypeError:
+        return [str(value)]
+
+
+def _configuration_domain(config) -> PhysiCellDomainRecord | None:
+    """Read spatial dimensions without making unavailable fields fatal."""
+    try:
+        return PhysiCellDomainRecord(
+            x_size=float(config.domain.x_max - config.domain.x_min),
+            y_size=float(config.domain.y_max - config.domain.y_min),
+            z_size=float(config.domain.z_max - config.domain.z_min),
+        )
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def _loaded_substrate_records(
+    config,
+    names: list[str],
+) -> list[PhysiCellSubstrateRecord]:
+    """Read loaded substrate properties while retaining inaccessible entries."""
+    records = []
+    for name in names:
+        try:
+            substrate = config.substrates.get_substrate(name)
+        except Exception:  # noqa: BLE001
+            substrate = None
+        records.append(
+            PhysiCellSubstrateRecord(
+                name=name,
+                properties_accessible=substrate is not None,
+                diffusion_coefficient=(
+                    _optional_finite_float(substrate.diffusion_coefficient)
+                    if substrate is not None
+                    else None
+                ),
+                decay_rate=(
+                    _optional_finite_float(substrate.decay_rate)
+                    if substrate is not None
+                    else None
+                ),
+                initial_condition=(
+                    _optional_finite_float(substrate.initial_condition)
+                    if substrate is not None
+                    else None
+                ),
+            )
+        )
+    return records
+
+
+def _loaded_cell_type_records(
+    config,
+    names: list[str],
+) -> list[PhysiCellCellTypeRecord]:
+    """Read loaded cell properties while retaining inaccessible entries."""
+    records = []
+    for name in names:
+        try:
+            cell_type = config.cell_types.get_cell_type(name)
+            total_volume = _optional_finite_float(
+                cell_type.phenotype.volume.total
+            )
+            motility_speed = _optional_finite_float(
+                cell_type.phenotype.motility.speed
+            )
+            cycle_model = str(cell_type.cycle_model)
+            physiboss_enabled = bool(
+                getattr(cell_type.phenotype, "intracellular", None)
+            )
+            accessible = True
+        except Exception:  # noqa: BLE001
+            total_volume = None
+            motility_speed = None
+            cycle_model = None
+            physiboss_enabled = False
+            accessible = False
+        records.append(
+            PhysiCellCellTypeRecord(
+                name=name,
+                properties_accessible=accessible,
+                total_volume=total_volume,
+                motility_speed=motility_speed,
+                cycle_model=cycle_model,
+                physiboss_enabled=physiboss_enabled,
+            )
+        )
+    return records
+
+
+def _workflow_status_payload(
+    session: Optional[SessionState],
+) -> PhysiCellWorkflowStatusResult:
+    """Build the shared structured status used by both summary aliases."""
+    if session is None:
+        return PhysiCellWorkflowStatusResult(
+            server="PhysiCell",
+            session_id=None,
+            has_active_session=False,
+            has_configuration=False,
+            progress=0,
+            scenario_context=None,
+            substrates=[],
+            cell_types=[],
+            rules_count=0,
+            physiboss_models_count=0,
+            completed_steps=[],
+            next_steps=[],
+            ready_for_export=False,
+            loaded_from_xml=False,
+            original_xml_path=None,
+            xml_modification_count=0,
+        )
+
+    substrates = []
+    cell_types = []
+    rules_count = 0
+    if session.config is not None:
+        try:
+            substrates = list(
+                session.config.substrates.get_substrates().keys()
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            cell_types = list(
+                session.config.cell_types.get_cell_types().keys()
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            rules_count = len(session.config.cell_rules.get_rules())
+        except Exception:  # noqa: BLE001
+            pass
+
+    required_steps = {
+        WorkflowStep.DOMAIN_SETUP,
+        WorkflowStep.SUBSTRATES_ADDED,
+        WorkflowStep.CELL_TYPES_ADDED,
+    }
+    return PhysiCellWorkflowStatusResult(
+        server="PhysiCell",
+        session_id=session.session_id,
+        has_active_session=True,
+        has_configuration=session.config is not None,
+        progress=session.get_progress_percentage(),
+        scenario_context=session.scenario_context or None,
+        substrates=[str(name) for name in substrates],
+        cell_types=[str(name) for name in cell_types],
+        rules_count=rules_count,
+        physiboss_models_count=session.physiboss_models_count,
+        completed_steps=sorted(
+            step.value for step in session.completed_steps
+        ),
+        next_steps=session.get_next_recommended_steps(),
+        ready_for_export=required_steps.issubset(session.completed_steps),
+        loaded_from_xml=session.loaded_from_xml,
+        original_xml_path=session.original_xml_path,
+        xml_modification_count=session.xml_modification_count,
+    )
 
 
 # ============================================================================
@@ -400,7 +597,7 @@ def get_workflow_status(
         default=None,
         description="Session to query. Omit to use the active session.",
     ),
-) -> str:
+) -> Annotated[CallToolResult, PhysiCellWorkflowStatusResult]:
     """Return the current workflow status and recommended next steps.
 
     Alias for `get_simulation_summary()` — provides identical information.
@@ -409,7 +606,11 @@ def get_workflow_status(
     Returns:
         str: Progress summary with completed steps and next recommendations.
     """
-    return _format_simulation_summary(get_current_session(session_id))
+    session = get_current_session(session_id)
+    return structured_report(
+        _format_simulation_summary(session),
+        _workflow_status_payload(session),
+    )
 
 @mcp.tool(annotations=_DESTRUCTIVE_TOOL)
 def delete_session(
@@ -476,7 +677,7 @@ def set_maboss_context(
 @_session_locked
 def get_maboss_context(
     session_id: Optional[NonEmptyString] = Field(default=None, description="Session to query. Omit to use the active session."),
-) -> str:
+) -> Annotated[CallToolResult, PhysiCellMaBoSSContextResult]:
     """Return the stored MaBoSS context for the current session.
 
     Shows the linked boolean model name, file paths, available nodes, and
@@ -488,7 +689,16 @@ def get_maboss_context(
     session = _require_session(session_id)
     
     if not session.maboss_context:
-        return "No MaBoSS context available in current session."
+        payload = PhysiCellMaBoSSContextResult(
+            server="PhysiCell",
+            session_id=session.session_id,
+            has_context=False,
+            context=None,
+        )
+        return structured_report(
+            "No MaBoSS context available in current session.",
+            payload,
+        )
     
     ctx = session.maboss_context
     result = f"## MaBoSS Context\n\n"
@@ -516,7 +726,22 @@ def get_maboss_context(
     if ctx.biological_context:
         result += f"**Biological Context:**\n{ctx.biological_context}"
     
-    return result
+    payload = PhysiCellMaBoSSContextResult(
+        server="PhysiCell",
+        session_id=session.session_id,
+        has_context=True,
+        context=PhysiCellMaBoSSContextRecord(
+            model_name=ctx.model_name,
+            bnd_file_path=ctx.bnd_file_path,
+            cfg_file_path=ctx.cfg_file_path,
+            available_nodes=list(ctx.available_nodes),
+            output_nodes=list(ctx.output_nodes),
+            simulation_results=ctx.simulation_results or None,
+            target_cell_type=ctx.target_cell_type,
+            biological_context=ctx.biological_context or None,
+        ),
+    )
+    return structured_report(result, payload)
 
 # ============================================================================
 # XML CONFIGURATION LOADING
@@ -589,7 +814,7 @@ def load_xml_configuration(
 @mcp.tool(annotations=_READ_ONLY_TOOL)
 def validate_xml_file(
     filepath: Annotated[NonEmptyString, Field(description="Absolute path to the PhysiCell XML file to validate.")],
-) -> str:
+) -> Annotated[CallToolResult, PhysiCellXmlValidationResult]:
     """Validate a PhysiCell XML configuration file without loading it.
 
     Returns:
@@ -609,15 +834,25 @@ def validate_xml_file(
             f"Could not validate PhysiCell XML file '{filepath}': {exc}"
         ) from exc
 
-    if is_valid:
-        return f"Valid PhysiCell XML: {xml_path.name}"
-    return f"Invalid: {error_msg}"
+    text = (
+        f"Valid PhysiCell XML: {xml_path.name}"
+        if is_valid
+        else f"Invalid: {error_msg}"
+    )
+    payload = PhysiCellXmlValidationResult(
+        server="PhysiCell",
+        filepath=str(xml_path),
+        filename=xml_path.name,
+        valid=is_valid,
+        error_message=None if is_valid else str(error_msg),
+    )
+    return structured_report(text, payload)
 
 @mcp.tool(annotations=_IDEMPOTENT_TOOL)
 @_session_locked
 def analyze_loaded_configuration(
     session_id: Optional[NonEmptyString] = Field(default=None, description="Session to query. Omit to use the active session."),
-) -> str:
+) -> Annotated[CallToolResult, PhysiCellLoadedConfigurationResult]:
     """Show an overview of the loaded XML configuration with modification instructions.
 
     Returns:
@@ -658,14 +893,26 @@ def analyze_loaded_configuration(
     lines.append("Use list_loaded_components() for detailed properties")
     
     session.mark_step_complete(WorkflowStep.XML_ANALYZED)
-    return "\n".join(lines)
+    payload = PhysiCellLoadedConfigurationResult(
+        server="PhysiCell",
+        session_id=session.session_id,
+        source_path=session.original_xml_path,
+        modification_count=session.xml_modification_count,
+        domain=_configuration_domain(config),
+        substrates=list(session.loaded_substrates),
+        cell_types=list(session.loaded_cell_types),
+        physiboss_models=list(session.loaded_physiboss_models),
+        has_existing_rules=session.has_existing_rules,
+        marked_analyzed=True,
+    )
+    return structured_report("\n".join(lines), payload)
 
 @mcp.tool(annotations=_READ_ONLY_TOOL)
 @_session_locked
 def list_loaded_components(
     component_type: ComponentType = Field(default="all", description="Filter results: 'substrates', 'cell_types', 'physiboss', or 'all'."),
     session_id: Optional[NonEmptyString] = Field(default=None, description="Session to query. Omit to use the active session."),
-) -> str:
+) -> Annotated[CallToolResult, PhysiCellLoadedComponentsResult]:
     """List components from a loaded XML configuration with details and modification hints.
 
     Returns:
@@ -675,6 +922,21 @@ def list_loaded_components(
     
     config = session.config
     lines = []
+    substrate_records = (
+        _loaded_substrate_records(config, session.loaded_substrates)
+        if component_type in ["all", "substrates"]
+        else []
+    )
+    cell_type_records = (
+        _loaded_cell_type_records(config, session.loaded_cell_types)
+        if component_type in ["all", "cell_types"]
+        else []
+    )
+    physiboss_models = (
+        list(session.loaded_physiboss_models)
+        if component_type in ["all", "physiboss"]
+        else []
+    )
     
     if component_type in ["all", "substrates"] and session.loaded_substrates:
         lines.append("SUBSTRATES:")
@@ -719,10 +981,23 @@ def list_loaded_components(
         lines.append("  → Add links: add_physiboss_input_link() / add_physiboss_output_link()")
         lines.append("")
     
-    if not lines:
-        return f"No {component_type} components found in loaded configuration"
-    
-    return "\n".join(lines).strip()
+    text = (
+        "\n".join(lines).strip()
+        if lines
+        else f"No {component_type} components found in loaded configuration"
+    )
+    payload = PhysiCellLoadedComponentsResult(
+        server="PhysiCell",
+        session_id=session.session_id,
+        component_type=component_type,
+        substrate_count=len(substrate_records),
+        cell_type_count=len(cell_type_records),
+        physiboss_model_count=len(physiboss_models),
+        substrates=substrate_records,
+        cell_types=cell_type_records,
+        physiboss_models=physiboss_models,
+    )
+    return structured_report(text, payload)
 
 # ============================================================================
 # BIOLOGICAL SCENARIO ANALYSIS
@@ -1047,7 +1322,8 @@ def set_substrate_interaction(
 # ============================================================================
 
 @mcp.tool(annotations=_READ_ONLY_TOOL)
-def get_available_cycle_models() -> str:
+def get_available_cycle_models(
+) -> Annotated[CallToolResult, PhysiCellCycleModelListResult]:
     """List all available PhysiCell cell cycle models with their identifiers.
 
     Returns:
@@ -1065,7 +1341,19 @@ def get_available_cycle_models() -> str:
     result += "\n**Usage:** Use exact model names in add_single_cell_type() function.\n"
     result += "**Most common:** Ki67_basic, Ki67_advanced, live"
     
-    return result
+    models = [
+        PhysiCellCycleModelRecord(
+            key=str(model_key),
+            name=str(model_data.get("name", model_key)),
+        )
+        for model_key, model_data in cycle_models.items()
+    ]
+    payload = PhysiCellCycleModelListResult(
+        server="PhysiCell",
+        model_count=len(models),
+        models=models,
+    )
+    return structured_report(result, payload)
 
 # ============================================================================
 # SIGNAL AND BEHAVIOR DISCOVERY
@@ -1075,7 +1363,7 @@ def get_available_cycle_models() -> str:
 @_optional_session_locked
 def list_all_available_signals(
     session_id: Optional[NonEmptyString] = Field(default=None, description="Session to query. Omit to use the active session."),
-) -> str:
+) -> Annotated[CallToolResult, PhysiCellSignalListResult]:
     """List all PhysiCell signals that can be used in cell rules.
 
     Automatically expands to include substrate-specific and cell-type-specific signals
@@ -1133,13 +1421,31 @@ def list_all_available_signals(
     result += "**Note:** Use exact signal names in add_single_cell_rule() function.\n"
     result += "**Context:** Signals are automatically expanded based on current substrates and cell types."
     
-    return result
+    signals = [
+        PhysiCellSignalRecord(
+            name=str(signal_info.get("name", signal_name)),
+            signal_type=str(signal_info.get("type", "other")),
+            description=str(
+                signal_info.get("description", "No description")
+            ),
+            requires=_requirements(signal_info.get("requires", [])),
+        )
+        for signal_name, signal_info in signals_data.items()
+    ]
+    payload = PhysiCellSignalListResult(
+        server="PhysiCell",
+        session_id=session.session_id if session is not None else None,
+        scenario_context=scenario_context or None,
+        signal_count=len(signals),
+        signals=signals,
+    )
+    return structured_report(result, payload)
 
 @mcp.tool(annotations=_READ_ONLY_TOOL)
 @_optional_session_locked
 def list_all_available_behaviors(
     session_id: Optional[NonEmptyString] = Field(default=None, description="Session to query. Omit to use the active session."),
-) -> str:
+) -> Annotated[CallToolResult, PhysiCellBehaviorListResult]:
     """List all PhysiCell behaviours that can be controlled by cell rules.
 
     Automatically expands to include substrate-specific and cell-type-specific behaviours
@@ -1197,7 +1503,25 @@ def list_all_available_behaviors(
     result += "**Note:** Use exact behavior names in add_single_cell_rule() function.\n"
     result += "**Context:** Behaviors are automatically expanded based on current substrates and cell types."
     
-    return result
+    behaviors = [
+        PhysiCellBehaviorRecord(
+            name=str(behavior_info.get("name", behavior_name)),
+            behavior_type=str(behavior_info.get("type", "other")),
+            description=str(
+                behavior_info.get("description", "No description")
+            ),
+            requires=_requirements(behavior_info.get("requires", [])),
+        )
+        for behavior_name, behavior_info in behaviors_data.items()
+    ]
+    payload = PhysiCellBehaviorListResult(
+        server="PhysiCell",
+        session_id=session.session_id if session is not None else None,
+        scenario_context=scenario_context or None,
+        behavior_count=len(behaviors),
+        behaviors=behaviors,
+    )
+    return structured_report(result, payload)
 
 
 # ============================================================================
@@ -1544,7 +1868,7 @@ def apply_physiboss_mutation(
 @_optional_session_locked
 def get_simulation_summary(
     session_id: Optional[NonEmptyString] = Field(default=None, description="Session to query. Omit to use the active session."),
-) -> str:
+) -> Annotated[CallToolResult, PhysiCellWorkflowStatusResult]:
     """Return a comprehensive summary of the current simulation configuration.
 
     Shows session progress, configured components (substrates, cell types, rules,
@@ -1553,7 +1877,11 @@ def get_simulation_summary(
     Returns:
         str: Markdown summary of current simulation state.
     """
-    return _format_simulation_summary(get_current_session(session_id))
+    session = get_current_session(session_id)
+    return structured_report(
+        _format_simulation_summary(session),
+        _workflow_status_payload(session),
+    )
 
 
 def _format_simulation_summary(session: Optional[SessionState]) -> str:

@@ -258,6 +258,31 @@ def test_artifact_tools_publish_structured_output_schemas() -> None:
         assert "result" not in schema["properties"]
 
 
+def test_scientific_tools_publish_structured_output_schemas() -> None:
+    listed_tools = _run(_list_tools())
+    tools = {tool.name: tool for tool in listed_tools.tools}
+
+    expected_models = {
+        "get_workflow_status": "PhysiCellWorkflowStatusResult",
+        "get_maboss_context": "PhysiCellMaBoSSContextResult",
+        "validate_xml_file": "PhysiCellXmlValidationResult",
+        "analyze_loaded_configuration": (
+            "PhysiCellLoadedConfigurationResult"
+        ),
+        "list_loaded_components": "PhysiCellLoadedComponentsResult",
+        "get_available_cycle_models": "PhysiCellCycleModelListResult",
+        "list_all_available_signals": "PhysiCellSignalListResult",
+        "list_all_available_behaviors": "PhysiCellBehaviorListResult",
+        "get_simulation_summary": "PhysiCellWorkflowStatusResult",
+    }
+
+    for tool_name, expected_title in expected_models.items():
+        schema = tools[tool_name].output_schema
+        assert schema is not None
+        assert schema["title"] == expected_title
+        assert "result" not in schema["properties"]
+
+
 def test_unknown_default_session_is_tool_error() -> None:
     result = _run(
         _call_tool("set_default_session", {"session_id": "missing-session"})
@@ -301,6 +326,13 @@ def test_invalid_existing_xml_is_successful_validation_result(
 
     assert result.is_error is False
     assert "Invalid: missing PhysiCell_settings root" in result.content[0].text
+    assert result.structured_content == {
+        "server": "PhysiCell",
+        "filepath": str(invalid_path),
+        "filename": "invalid.xml",
+        "valid": False,
+        "error_message": "missing PhysiCell_settings root",
+    }
 
 
 def test_analysis_without_loaded_xml_is_tool_error() -> None:
@@ -668,6 +700,24 @@ def test_empty_status_results_remain_successful() -> None:
 
     assert summary.is_error is False
     assert "No active session" in summary.content[0].text
+    assert summary.structured_content == {
+        "server": "PhysiCell",
+        "session_id": None,
+        "has_active_session": False,
+        "has_configuration": False,
+        "progress": 0.0,
+        "scenario_context": None,
+        "substrates": [],
+        "cell_types": [],
+        "rules_count": 0,
+        "physiboss_models_count": 0,
+        "completed_steps": [],
+        "next_steps": [],
+        "ready_for_export": False,
+        "loaded_from_xml": False,
+        "original_xml_path": None,
+        "xml_modification_count": 0,
+    }
 
     session_id = _create_session()
     files = _run(
@@ -686,6 +736,275 @@ def test_empty_status_results_remain_successful() -> None:
     }
     assert context.is_error is False
     assert "No MaBoSS context available" in context.content[0].text
+    assert context.structured_content == {
+        "server": "PhysiCell",
+        "session_id": session_id,
+        "has_context": False,
+        "context": None,
+    }
+
+
+def test_workflow_summary_returns_complete_configuration_state() -> None:
+    config = SimpleNamespace(
+        substrates=SimpleNamespace(
+            get_substrates=lambda: {"oxygen": object(), "drug": object()}
+        ),
+        cell_types=SimpleNamespace(
+            get_cell_types=lambda: {"tumour": object()}
+        ),
+        cell_rules=SimpleNamespace(get_rules=lambda: [object(), object()]),
+    )
+    session_id = _create_session(config)
+    session = session_manager.get_session(session_id)
+    assert session is not None
+    session.scenario_context = "hypoxic treated tumour"
+    session.physiboss_models_count = 1
+    session.completed_steps.update(
+        {
+            physicell_server.WorkflowStep.DOMAIN_SETUP,
+            physicell_server.WorkflowStep.SUBSTRATES_ADDED,
+            physicell_server.WorkflowStep.CELL_TYPES_ADDED,
+        }
+    )
+
+    summary = _run(
+        _call_tool("get_simulation_summary", {"session_id": session_id})
+    )
+    status = _run(
+        _call_tool("get_workflow_status", {"session_id": session_id})
+    )
+
+    assert summary.is_error is False
+    assert summary.structured_content is not None
+    assert summary.structured_content["session_id"] == session_id
+    assert summary.structured_content["has_configuration"] is True
+    assert summary.structured_content["scenario_context"] == (
+        "hypoxic treated tumour"
+    )
+    assert summary.structured_content["substrates"] == ["oxygen", "drug"]
+    assert summary.structured_content["cell_types"] == ["tumour"]
+    assert summary.structured_content["rules_count"] == 2
+    assert summary.structured_content["physiboss_models_count"] == 1
+    assert summary.structured_content["ready_for_export"] is True
+    assert summary.structured_content["completed_steps"] == [
+        "cell_types_added",
+        "domain_setup",
+        "substrates_added",
+    ]
+    assert status.structured_content == summary.structured_content
+
+
+def test_maboss_context_returns_cross_server_handoff_fields() -> None:
+    session_id = _create_session()
+    store_result = _run(
+        _call_tool(
+            "set_maboss_context",
+            {
+                "session_id": session_id,
+                "model_name": "cell_fate",
+                "bnd_file_path": "/models/cell_fate.bnd",
+                "cfg_file_path": "/models/cell_fate.cfg",
+                "target_cell_type": "tumour",
+                "available_nodes": "Apoptosis, Proliferation",
+                "output_nodes": "Apoptosis",
+                "simulation_results": "Apoptosis reaches 0.7 probability.",
+                "biological_context": "drug response",
+            },
+        )
+    )
+    context_result = _run(
+        _call_tool("get_maboss_context", {"session_id": session_id})
+    )
+
+    assert store_result.is_error is False
+    assert context_result.structured_content == {
+        "server": "PhysiCell",
+        "session_id": session_id,
+        "has_context": True,
+        "context": {
+            "model_name": "cell_fate",
+            "bnd_file_path": "/models/cell_fate.bnd",
+            "cfg_file_path": "/models/cell_fate.cfg",
+            "available_nodes": ["Apoptosis", "Proliferation"],
+            "output_nodes": ["Apoptosis"],
+            "simulation_results": "Apoptosis reaches 0.7 probability.",
+            "target_cell_type": "tumour",
+            "biological_context": "drug response",
+        },
+    }
+
+
+def test_loaded_configuration_and_components_return_typed_properties() -> None:
+    oxygen = SimpleNamespace(
+        diffusion_coefficient=100000.0,
+        decay_rate=0.01,
+        initial_condition=38.0,
+    )
+    tumour = SimpleNamespace(
+        cycle_model="live",
+        phenotype=SimpleNamespace(
+            volume=SimpleNamespace(total=2494.0),
+            motility=SimpleNamespace(speed=1.2),
+            intracellular=object(),
+        ),
+    )
+    config = SimpleNamespace(
+        domain=SimpleNamespace(
+            x_min=-500.0,
+            x_max=500.0,
+            y_min=-250.0,
+            y_max=250.0,
+            z_min=-10.0,
+            z_max=10.0,
+        ),
+        substrates=SimpleNamespace(
+            get_substrate=lambda name: oxygen if name == "oxygen" else None,
+        ),
+        cell_types=SimpleNamespace(
+            get_cell_type=lambda name: tumour if name == "tumour" else None,
+        ),
+    )
+    session_id = _create_session(config)
+    session = session_manager.get_session(session_id)
+    assert session is not None
+    session.loaded_from_xml = True
+    session.original_xml_path = "/models/baseline.xml"
+    session.xml_modification_count = 3
+    session.loaded_substrates = ["oxygen", "inaccessible"]
+    session.loaded_cell_types = ["tumour", "missing"]
+    session.loaded_physiboss_models = ["tumour"]
+    session.has_existing_rules = True
+
+    analysis = _run(
+        _call_tool(
+            "analyze_loaded_configuration",
+            {"session_id": session_id},
+        )
+    )
+    components = _run(
+        _call_tool(
+            "list_loaded_components",
+            {"session_id": session_id, "component_type": "all"},
+        )
+    )
+
+    assert analysis.structured_content is not None
+    assert analysis.structured_content["source_path"] == "/models/baseline.xml"
+    assert analysis.structured_content["modification_count"] == 3
+    assert analysis.structured_content["domain"] == {
+        "x_size": 1000.0,
+        "y_size": 500.0,
+        "z_size": 20.0,
+    }
+    assert analysis.structured_content["substrates"] == [
+        "oxygen",
+        "inaccessible",
+    ]
+    assert analysis.structured_content["marked_analyzed"] is True
+    assert components.structured_content is not None
+    assert components.structured_content["component_type"] == "all"
+    assert components.structured_content["substrate_count"] == 2
+    assert components.structured_content["cell_type_count"] == 2
+    assert components.structured_content["physiboss_model_count"] == 1
+    assert components.structured_content["substrates"][0] == {
+        "name": "oxygen",
+        "properties_accessible": True,
+        "diffusion_coefficient": 100000.0,
+        "decay_rate": 0.01,
+        "initial_condition": 38.0,
+    }
+    assert components.structured_content["substrates"][1][
+        "properties_accessible"
+    ] is False
+    assert components.structured_content["cell_types"][0] == {
+        "name": "tumour",
+        "properties_accessible": True,
+        "total_volume": 2494.0,
+        "motility_speed": 1.2,
+        "cycle_model": "live",
+        "physiboss_enabled": True,
+    }
+    assert components.structured_content["cell_types"][1][
+        "properties_accessible"
+    ] is False
+
+
+def test_cycle_signal_and_behavior_discovery_return_exact_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        physicell_server,
+        "get_default_parameters",
+        lambda: {
+            "cell_cycle_models": {
+                "live": {"name": "Live cells"},
+                "Ki67_basic": {"name": "Ki67 basic"},
+            }
+        },
+    )
+    monkeypatch.setattr(
+        physicell_server,
+        "get_signals_behaviors",
+        lambda: {
+            "signals": {
+                "oxygen": {
+                    "name": "oxygen",
+                    "type": "substrate",
+                    "description": "Local oxygen concentration",
+                    "requires": ["oxygen substrate"],
+                }
+            },
+            "behaviors": {
+                "cycle entry": {
+                    "name": "cycle entry",
+                    "type": "cycle",
+                    "description": "Cell-cycle entry rate",
+                    "requires": [],
+                }
+            },
+        },
+    )
+
+    cycles = _run(_call_tool("get_available_cycle_models"))
+    signals = _run(_call_tool("list_all_available_signals"))
+    behaviors = _run(_call_tool("list_all_available_behaviors"))
+
+    assert cycles.structured_content == {
+        "server": "PhysiCell",
+        "model_count": 2,
+        "models": [
+            {"key": "live", "name": "Live cells"},
+            {"key": "Ki67_basic", "name": "Ki67 basic"},
+        ],
+    }
+    assert signals.structured_content == {
+        "server": "PhysiCell",
+        "session_id": None,
+        "scenario_context": None,
+        "signal_count": 1,
+        "signals": [
+            {
+                "name": "oxygen",
+                "signal_type": "substrate",
+                "description": "Local oxygen concentration",
+                "requires": ["oxygen substrate"],
+            }
+        ],
+    }
+    assert behaviors.structured_content == {
+        "server": "PhysiCell",
+        "session_id": None,
+        "scenario_context": None,
+        "behavior_count": 1,
+        "behaviors": [
+            {
+                "name": "cycle entry",
+                "behavior_type": "cycle",
+                "description": "Cell-cycle entry rate",
+                "requires": [],
+            }
+        ],
+    }
 
 
 @pytest.mark.parametrize(
@@ -1240,5 +1559,7 @@ def test_signal_context_is_isolated_between_sessions(
         second_result = second_future.result(timeout=2)
 
     assert second_updated.is_set()
-    assert "**first**" in first_result
-    assert "**second**" in second_result
+    assert "**first**" in first_result.content[0].text
+    assert "**second**" in second_result.content[0].text
+    assert first_result.structured_content["signals"][0]["name"] == "first"
+    assert second_result.structured_content["signals"][0]["name"] == "second"
