@@ -50,9 +50,13 @@ from mcp.server.mcpserver.exceptions import ResourceNotFoundError
 from mcp.types import CallToolResult, ToolAnnotations
 from mcp_biomodelling_servers.structured_outputs import (
     ArtifactSessionSummary,
+    NeKoArtifactCleanupResult,
+    NeKoArtifactFileListResult,
     NeKoArtifactSessionListResult,
+    NeKoNetworkExportResult,
     NeKoSessionListResult,
     NeKoSessionSummary,
+    artifact_file_summary,
     structured_report,
 )
 
@@ -552,7 +556,7 @@ def remove_interaction(
 def export_network(
         format: NormalizedExportFormat = Field("sif", description="Export format: 'sif' (Simple Interaction Format, tab-separated) or 'bnet' (Boolean network for MaBoSS). BNET requires a fully connected network."),
         session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session."),
-        verbosity: NormalizedVerbosity = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary', 'preview', or 'full'.")) -> str:
+        verbosity: NormalizedVerbosity = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary', 'preview', or 'full'.")) -> Annotated[CallToolResult, NeKoNetworkExportResult]:
     """Export the current network to SIF or BNET format.
 
     After BNET export, hand the file path to the MaBoSS server via bnet_to_bnd_and_cfg().
@@ -577,15 +581,31 @@ def export_network(
         except Exception as e:
             raise RuntimeError(f"Error exporting SIF: {e}") from e
         if verbosity == "summary":
-            return f"SIF exported: {out_path}. {SUMMARY_HINT}"
-        try:
-            df_prev = pd.read_csv(out_path, sep="\t", header=None,
-                                  names=["source", "interaction", "target"],
-                                  nrows=100, dtype=str).dropna(how="all")
-            preview_md = _short_table(df_prev, max_rows=100)[0]
-        except Exception:
-            preview_md = "_Preview unavailable._"
-        return f"SIF exported: `{out_path}`\n\nPreview (first 100 rows):\n{preview_md}"
+            text = f"SIF exported: {out_path}. {SUMMARY_HINT}"
+        else:
+            try:
+                df_prev = pd.read_csv(out_path, sep="\t", header=None,
+                                      names=["source", "interaction", "target"],
+                                      nrows=100, dtype=str).dropna(how="all")
+                preview_md = _short_table(df_prev, max_rows=100)[0]
+            except Exception:
+                preview_md = "_Preview unavailable._"
+            text = (
+                f"SIF exported: `{out_path}`\n\n"
+                f"Preview (first 100 rows):\n{preview_md}"
+            )
+        payload = NeKoNetworkExportResult(
+            server="NeKo",
+            session_id=sess.session_id,
+            format="sif",
+            file=artifact_file_summary(
+                out_path,
+                session_id=sess.session_id,
+            ),
+            renamed_nodes=[],
+            duplicate_rules_removed=[],
+        )
+        return structured_report(text, payload)
 
     # ── BNET export ───────────────────────────────────────────────────────────
     else:
@@ -607,30 +627,42 @@ def export_network(
             raise RuntimeError(f"Error sanitizing BNET: {e}") from e
 
         if verbosity == "summary":
-            return f"BNET exported: {out_path}. {SUMMARY_HINT}"
+            text = f"BNET exported: {out_path}. {SUMMARY_HINT}"
+        else:
+            try:
+                df_prev = pd.read_csv(out_path, sep=",", header=None,
+                                      names=["gene", "expression"],
+                                      nrows=100, dtype=str).dropna(how="all")
+                preview_md = _short_table(df_prev, max_rows=100)[0]
+            except Exception:
+                preview_md = "_Preview unavailable._"
 
-        try:
-            df_prev = pd.read_csv(out_path, sep=",", header=None,
-                                  names=["gene", "expression"],
-                                  nrows=100, dtype=str).dropna(how="all")
-            preview_md = _short_table(df_prev, max_rows=100)[0]
-        except Exception:
-            preview_md = "_Preview unavailable._"
-
-        md_lines = [
-            f"BNET exported: `{out_path}`",
-            f"Next: call `bnet_to_bnd_and_cfg('{out_path}')` in the MaBoSS server.",
-            "",
-            "Preview (first 100 rows):",
-            preview_md,
-        ]
-        if result["cleaned_names"]:
-            md_lines.append(f"\n**Note:** Renamed to remove special characters: "
-                            f"{', '.join(sorted(result['cleaned_names']))}")
-        if result["duplicates_removed"]:
-            md_lines.append(f"\n**Note:** Removed duplicate rules for (isoforms collapsed to first): "
-                            f"{', '.join(sorted(set(result['duplicates_removed'])))}")
-        return "\n".join(md_lines)
+            md_lines = [
+                f"BNET exported: `{out_path}`",
+                f"Next: call `bnet_to_bnd_and_cfg('{out_path}')` in the MaBoSS server.",
+                "",
+                "Preview (first 100 rows):",
+                preview_md,
+            ]
+            if result["cleaned_names"]:
+                md_lines.append(f"\n**Note:** Renamed to remove special characters: "
+                                f"{', '.join(sorted(result['cleaned_names']))}")
+            if result["duplicates_removed"]:
+                md_lines.append(f"\n**Note:** Removed duplicate rules for (isoforms collapsed to first): "
+                                f"{', '.join(sorted(set(result['duplicates_removed'])))}")
+            text = "\n".join(md_lines)
+        payload = NeKoNetworkExportResult(
+            server="NeKo",
+            session_id=sess.session_id,
+            format="bnet",
+            file=artifact_file_summary(
+                out_path,
+                session_id=sess.session_id,
+            ),
+            renamed_nodes=sorted(result["cleaned_names"]),
+            duplicate_rules_removed=sorted(set(result["duplicates_removed"])),
+        )
+        return structured_report(text, payload)
 
 @mcp.tool(annotations=_READ_ONLY_CLOSED)
 @session_locked
@@ -900,12 +932,18 @@ def set_network_history_limit(
 @mcp.tool(annotations=_DESTRUCTIVE_IDEMPOTENT_CLOSED)
 @session_locked
 def clean_generated_files(
-        session_id: Optional[NonEmptyString] = Field(None, description="Session ID whose artifact files (SIF, BNET, etc.) should be removed. Omit for the active/default session.")) -> str:
+        session_id: Optional[NonEmptyString] = Field(None, description="Session ID whose artifact files (SIF, BNET, etc.) should be removed. Omit for the active/default session.")) -> Annotated[CallToolResult, NeKoArtifactCleanupResult]:
     """Delete all exported artifact files (SIF, BNET) for the given session."""
     sess = ensure_session(session_id)
     try:
         count = clean_artifacts(_SERVER_ROOT, sess.session_id)
-        return f"Cleaned {count} artifact file(s) from session {sess.session_id}."
+        text = f"Cleaned {count} artifact file(s) from session {sess.session_id}."
+        payload = NeKoArtifactCleanupResult(
+            server="NeKo",
+            session_id=sess.session_id,
+            removed_count=count,
+        )
+        return structured_report(text, payload)
     except Exception as e:
         raise RuntimeError(f"Error during cleanup: {e}") from e
 
@@ -955,17 +993,32 @@ def remove_undefined_interactions(
 @mcp.tool(annotations=_READ_ONLY_CLOSED)
 @session_locked
 def list_bnet_files(
-        session_id: Optional[NonEmptyString] = Field(None, description="Session ID to query; omit to use the active/default session.")) -> str:
+        session_id: Optional[NonEmptyString] = Field(None, description="Session ID to query; omit to use the active/default session.")) -> Annotated[CallToolResult, NeKoArtifactFileListResult]:
     """List names of all .bnet files in the session artifact directory (newline-separated)."""
     sess = ensure_session(session_id)
     files = [
-        path.name
+        path
         for path in list_artifacts(_SERVER_ROOT, session_id=sess.session_id)
         if path.suffix == ".bnet"
     ]
     if not files:
-        return f"No .bnet files found in session {sess.session_id} artifact directory."
-    return "\n".join(files)
+        text = (
+            f"No .bnet files found in session {sess.session_id} "
+            "artifact directory."
+        )
+    else:
+        text = "\n".join(path.name for path in files)
+    payload = NeKoArtifactFileListResult(
+        server="NeKo",
+        scope="session",
+        session_id=sess.session_id,
+        count=len(files),
+        files=[
+            artifact_file_summary(path, session_id=sess.session_id)
+            for path in files
+        ],
+    )
+    return structured_report(text, payload)
 
 @mcp.tool(annotations=_READ_ONLY_CLOSED)
 @session_locked

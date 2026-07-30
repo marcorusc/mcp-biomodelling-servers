@@ -409,6 +409,109 @@ def test_list_artifact_sessions_returns_structured_metadata(
     }
 
 
+def test_artifact_tools_publish_structured_output_schemas() -> None:
+    listed_tools = _run(_list_tools())
+    tools = {tool.name: tool for tool in listed_tools.tools}
+
+    for tool_name, expected_title in {
+        "export_network": "NeKoNetworkExportResult",
+        "list_bnet_files": "NeKoArtifactFileListResult",
+        "clean_generated_files": "NeKoArtifactCleanupResult",
+    }.items():
+        schema = tools[tool_name].output_schema
+        assert schema is not None
+        assert schema["title"] == expected_title
+        assert "result" not in schema["properties"]
+
+
+def test_bnet_export_returns_structured_sanitization_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class RecordingExports:
+        def __init__(self, network: object) -> None:
+            del network
+
+        def export_bnet(self, prefix: str) -> None:
+            Path(f"{prefix}.bnet").write_text(
+                "# model in BoolNet format\n"
+                "targets, factors\n"
+                "A-1, A-1\n"
+                "A_1, A_1\n",
+                encoding="utf-8",
+            )
+
+    network = _network_stub()
+    session_id = _create_session(network)
+    artifact_dir = tmp_path / "artifacts" / session_id
+    artifact_dir.mkdir(parents=True)
+    monkeypatch.setattr(neko_server, "Exports", RecordingExports)
+    monkeypatch.setattr(neko_server, "is_connected", lambda _network: True)
+    monkeypatch.setattr(
+        neko_server,
+        "_export_dir",
+        lambda _session_id: artifact_dir,
+    )
+
+    result = _run(
+        _call_tool(
+            "export_network",
+            {
+                "format": "bnet",
+                "session_id": session_id,
+                "verbosity": "full",
+            },
+        )
+    )
+
+    output_path = artifact_dir / "Network.bnet"
+    assert result.is_error is False
+    assert f"BNET exported: `{output_path}`" in result.content[0].text
+    assert result.structured_content is not None
+    assert result.structured_content["server"] == "NeKo"
+    assert result.structured_content["session_id"] == session_id
+    assert result.structured_content["format"] == "bnet"
+    assert result.structured_content["renamed_nodes"] == ["A-1"]
+    assert result.structured_content["duplicate_rules_removed"] == ["A_1"]
+    assert result.structured_content["file"]["name"] == "Network.bnet"
+    assert result.structured_content["file"]["media_type"] == "text/plain"
+    assert result.structured_content["file"]["size_bytes"] == output_path.stat().st_size
+
+
+def test_neko_bnet_listing_and_cleanup_are_structured(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    session_id = _create_session()
+    monkeypatch.setattr(neko_server, "_SERVER_ROOT", tmp_path)
+    artifact_dir = tmp_path / "artifacts" / session_id
+    artifact_dir.mkdir(parents=True)
+    bnet_path = artifact_dir / "Network.bnet"
+    bnet_path.write_text("A, A\n", encoding="utf-8")
+    (artifact_dir / "Network.sif").write_text("A\t1\tA\n", encoding="utf-8")
+
+    listing_result = _run(
+        _call_tool("list_bnet_files", {"session_id": session_id})
+    )
+    cleanup_result = _run(
+        _call_tool("clean_generated_files", {"session_id": session_id})
+    )
+
+    assert listing_result.is_error is False
+    assert listing_result.content[0].text == "Network.bnet"
+    assert listing_result.structured_content is not None
+    assert listing_result.structured_content["scope"] == "session"
+    assert listing_result.structured_content["session_id"] == session_id
+    assert listing_result.structured_content["count"] == 1
+    assert listing_result.structured_content["files"][0]["path"] == str(bnet_path)
+    assert cleanup_result.structured_content == {
+        "session_id": session_id,
+        "removed_count": 2,
+        "server": "NeKo",
+    }
+    assert not artifact_dir.exists()
+
+
 def test_unknown_default_session_is_tool_error() -> None:
     result = _run(
         _call_tool("set_default_session", {"session_id": "missing-session"})
@@ -1181,6 +1284,11 @@ def test_case_insensitive_public_options_remain_compatible(
 
     assert export_result.is_error is False
     assert RecordingExports.paths == [str(tmp_path / "Network.sif")]
+    assert export_result.structured_content is not None
+    assert export_result.structured_content["session_id"] == session_id
+    assert export_result.structured_content["format"] == "sif"
+    assert export_result.structured_content["renamed_nodes"] == []
+    assert export_result.structured_content["duplicate_rules_removed"] == []
     assert listing_result.is_error is False
     assert connector_result.is_error is False
 
