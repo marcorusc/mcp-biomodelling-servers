@@ -1,5 +1,6 @@
 import inspect
 import logging
+import math
 import os
 import sys
 from functools import wraps
@@ -41,6 +42,23 @@ from mcp_biomodelling_servers.structured_outputs import (
     MaBoSSSessionSummary,
     artifact_file_summary,
     structured_report,
+)
+from scientific_outputs import (
+    MaBoSSInitialStateGroup,
+    MaBoSSInitialStateResult,
+    MaBoSSLogicalRuleRecord,
+    MaBoSSLogicalRulesResult,
+    MaBoSSMutationListResult,
+    MaBoSSMutationRecord,
+    MaBoSSMutationSimulationResult,
+    MaBoSSNodeListResult,
+    MaBoSSParameterRecord,
+    MaBoSSParameterResult,
+    MaBoSSScientificTable,
+    MaBoSSSimulationResult,
+    MaBoSSSimulationRunResult,
+    MaBoSSStateProbabilityRecord,
+    MaBoSSTrajectoryPlotResult,
 )
 
 logger = logging.getLogger(__name__)
@@ -108,6 +126,115 @@ class MaBoSSParameterUpdates(BaseModel):
     time_tick: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     discrete_time: Literal[0, 1] | None = None
     thread_count: int | None = Field(default=None, ge=1)
+
+
+def _scientific_scalar(value):
+    """Convert a dataframe/backend scalar into a strict JSON-safe value."""
+    if value is None:
+        return None
+    try:
+        if bool(pd.isna(value)):
+            return None
+    except (TypeError, ValueError):
+        pass
+    if hasattr(value, "item"):
+        try:
+            value = value.item()
+        except (TypeError, ValueError):
+            pass
+    if isinstance(value, (str, bool, int)):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else str(value)
+    return str(value)
+
+
+def _scientific_table(df: pd.DataFrame) -> MaBoSSScientificTable:
+    """Preserve dataframe values and index without embedding them in Markdown."""
+    return MaBoSSScientificTable(
+        columns=[str(column) for column in df.columns],
+        index_name=(
+            str(df.index.name)
+            if df.index.name is not None
+            else None
+        ),
+        index=[_scientific_scalar(value) for value in df.index.tolist()],
+        row_count=len(df),
+        column_count=len(df.columns),
+        rows=[
+            [_scientific_scalar(value) for value in row]
+            for row in df.itertuples(index=False, name=None)
+        ],
+    )
+
+
+def _initial_state_groups(initial_state) -> list[MaBoSSInitialStateGroup]:
+    """Normalize tuple-keyed pyMaBoSS initial states into JSON records."""
+    groups = []
+    for binding, distribution in initial_state.items():
+        nodes = (
+            [str(node) for node in binding]
+            if isinstance(binding, (list, tuple))
+            else [str(binding)]
+        )
+        probabilities = []
+        for state, probability in distribution.items():
+            state_values = (
+                [int(value) for value in state]
+                if isinstance(state, (list, tuple))
+                else [int(state)]
+            )
+            normalized_probability = _scientific_scalar(probability)
+            if isinstance(normalized_probability, bool):
+                probability_value = float(normalized_probability)
+            elif isinstance(normalized_probability, (int, float)):
+                probability_value = float(normalized_probability)
+            elif isinstance(normalized_probability, str):
+                probability_value = normalized_probability
+            else:
+                raise ValueError(
+                    "Initial-state probabilities cannot be missing."
+                )
+            probabilities.append(
+                MaBoSSStateProbabilityRecord(
+                    state=state_values,
+                    probability=probability_value,
+                )
+            )
+        groups.append(
+            MaBoSSInitialStateGroup(
+                nodes=nodes,
+                probabilities=probabilities,
+            )
+        )
+    return groups
+
+
+def _logical_rule_records(logical_rules) -> list[MaBoSSLogicalRuleRecord]:
+    """Normalize pyMaBoSS's logical-rule mapping."""
+    return [
+        MaBoSSLogicalRuleRecord(node=str(node), rule=str(rule))
+        for node, rule in logical_rules.items()
+    ]
+
+
+def _mutation_records(mutations) -> list[MaBoSSMutationRecord]:
+    """Normalize pyMaBoSS's mutation mapping."""
+    return [
+        MaBoSSMutationRecord(node=str(node), state=str(state))
+        for node, state in mutations.items()
+    ]
+
+
+def _parameter_records(parameters) -> list[MaBoSSParameterRecord]:
+    """Normalize current MaBoSS parameters while preserving scalar types."""
+    return [
+        MaBoSSParameterRecord(
+            name=str(name),
+            value=_scientific_scalar(value),
+        )
+        for name, value in parameters.items()
+    ]
 
 
 def _session_locked(handler):
@@ -607,7 +734,7 @@ async def run_simulation(
         default=None,
         description="Session to run. Omit to use the active default session.",
     ),
-) -> str:
+) -> Annotated[CallToolResult, MaBoSSSimulationRunResult]:
     """Execute the loaded MaBoSS simulation and store the result in the session.
 
     IMPORTANT: Call set_maboss_output_nodes() before this tool. Without it, MaBoSS becomes exponentially expensive. 
@@ -619,7 +746,7 @@ async def run_simulation(
     """
     await ctx.report_progress(0, 2)
 
-    def run_locked() -> None:
+    def run_locked():
         with session_manager.session_scope(session_id):
             sess = ensure_session(session_id)
             if sess.sim is None:
@@ -638,12 +765,18 @@ async def run_simulation(
             sess.set_result(run_result)
 
             # Persist the result table so list_generated_files shows it.
+            row_count = None
+            column_count = None
+            saved_csv_path = None
             try:
                 art_dir = get_artifact_dir(_SERVER_ROOT, sess.session_id)
                 csv_path = safe_artifact_path(art_dir, "result.csv")
                 df_result = run_result.get_last_states_probtraj()
+                row_count = len(df_result)
+                column_count = len(df_result.columns)
                 if not df_result.empty:
                     df_result.to_csv(csv_path, index=False)
+                    saved_csv_path = csv_path
                     logger.info("Result saved to %s", csv_path)
             except Exception as csv_err:
                 logger.warning(
@@ -651,15 +784,43 @@ async def run_simulation(
                     csv_err,
                     exc_info=True,
                 )
+            return (
+                sess.session_id,
+                row_count,
+                column_count,
+                saved_csv_path,
+            )
 
-    await anyio.to_thread.run_sync(run_locked)
+    resolved_session_id, row_count, column_count, csv_path = (
+        await anyio.to_thread.run_sync(run_locked)
+    )
     await ctx.report_progress(2, 2)
     logger.info("MaBoSS simulation completed successfully")
-    return (
+    text = (
         "MaBoSS simulation completed successfully.\n"
         "Call `get_simulation_result()` to read the state probability table.\n"
-        "The result is also saved to the session artifact directory as result.csv."
+        + (
+            "The result is also saved to the session artifact directory as result.csv."
+            if csv_path is not None
+            else "No non-empty result table was written to result.csv."
+        )
     )
+    payload = MaBoSSSimulationRunResult(
+        server="MaBoSS",
+        session_id=resolved_session_id,
+        result_available=True,
+        trajectory_row_count=row_count,
+        trajectory_column_count=column_count,
+        result_file=(
+            artifact_file_summary(
+                csv_path,
+                session_id=resolved_session_id,
+            )
+            if csv_path is not None
+            else None
+        ),
+    )
+    return structured_report(text, payload)
 
 @mcp.tool(annotations=_NON_IDEMPOTENT_TOOL)
 @_session_locked
@@ -770,7 +931,7 @@ def get_maboss_nodes(
         default=None,
         description="Session to query. Omit to use the active default session.",
     ),
-) -> str:
+) -> Annotated[CallToolResult, MaBoSSNodeListResult]:
     """Return the list of node names in the loaded MaBoSS network.
 
     Always call this after build_simulation() and before set_maboss_output_nodes()
@@ -782,9 +943,18 @@ def get_maboss_nodes(
             "No simulation loaded. Call bnet_to_bnd_and_cfg then build_simulation first."
         )
     nodes_list = list(sess.sim.network.keys())
-    if not nodes_list:
-        return "No nodes found in the MaBoSS network."
-    return "Network nodes:\n" + "\n".join(f"- {n}" for n in nodes_list)
+    text = (
+        "No nodes found in the MaBoSS network."
+        if not nodes_list
+        else "Network nodes:\n" + "\n".join(f"- {n}" for n in nodes_list)
+    )
+    payload = MaBoSSNodeListResult(
+        server="MaBoSS",
+        session_id=sess.session_id,
+        node_count=len(nodes_list),
+        nodes=[str(node) for node in nodes_list],
+    )
+    return structured_report(text, payload)
 
 
 @mcp.tool(annotations=_READ_ONLY_TOOL)
@@ -794,7 +964,7 @@ def get_maboss_initial_state(
         default=None,
         description="Session to query. Omit to use the active default session.",
     ),
-) -> str:
+) -> Annotated[CallToolResult, MaBoSSInitialStateResult]:
     """Return the current initial state probability configuration of the MaBoSS simulation.
 
     Use this to inspect the state before calling set_maboss_initial_state().
@@ -805,7 +975,15 @@ def get_maboss_initial_state(
             "No simulation loaded. Call bnet_to_bnd_and_cfg then build_simulation first."
         )
     try:
-        return f"Initial state:\n{sess.sim.network.get_istate()}"
+        initial_state = sess.sim.network.get_istate()
+        groups = _initial_state_groups(initial_state)
+        payload = MaBoSSInitialStateResult(
+            server="MaBoSS",
+            session_id=sess.session_id,
+            group_count=len(groups),
+            groups=groups,
+        )
+        return structured_report(f"Initial state:\n{initial_state}", payload)
     except Exception as e:
         raise RuntimeError(f"Error retrieving initial state: {e}") from e
 
@@ -816,7 +994,7 @@ def get_maboss_logical_rules(
         default=None,
         description="Session to query. Omit to use the active default session.",
     ),
-) -> str:
+) -> Annotated[CallToolResult, MaBoSSLogicalRulesResult]:
     """Return the Boolean logical rules of the loaded MaBoSS network."""
     sess = ensure_session(session_id)
     if sess.sim is None:
@@ -824,7 +1002,15 @@ def get_maboss_logical_rules(
             "No simulation loaded. Call bnet_to_bnd_and_cfg then build_simulation first."
         )
     try:
-        return str(sess.sim.get_logical_rules())
+        logical_rules = sess.sim.get_logical_rules()
+        rules = _logical_rule_records(logical_rules)
+        payload = MaBoSSLogicalRulesResult(
+            server="MaBoSS",
+            session_id=sess.session_id,
+            rule_count=len(rules),
+            rules=rules,
+        )
+        return structured_report(str(logical_rules), payload)
     except Exception as e:
         raise RuntimeError(f"Error retrieving logical rules: {e}") from e
 
@@ -937,7 +1123,7 @@ def get_maboss_mutations(
         default=None,
         description="Session to query. Omit to use the active default session.",
     ),
-) -> str:
+) -> Annotated[CallToolResult, MaBoSSMutationListResult]:
     """Return the mutation settings currently applied to the MaBoSS network."""
     sess = ensure_session(session_id)
     if sess.sim is None:
@@ -945,7 +1131,15 @@ def get_maboss_mutations(
             "No simulation loaded. Call bnet_to_bnd_and_cfg then build_simulation first."
         )
     try:
-        return str(sess.sim.get_mutations())
+        mutation_values = sess.sim.get_mutations()
+        mutations = _mutation_records(mutation_values)
+        payload = MaBoSSMutationListResult(
+            server="MaBoSS",
+            session_id=sess.session_id,
+            mutation_count=len(mutations),
+            mutations=mutations,
+        )
+        return structured_report(str(mutation_values), payload)
     except Exception as e:
         raise RuntimeError(f"Error retrieving mutations: {e}") from e
 
@@ -970,7 +1164,7 @@ def update_maboss_parameters(
         default=None,
         description="Session to update. Omit to use the active default session.",
     ),
-) -> str:
+) -> Annotated[CallToolResult, MaBoSSParameterResult]:
     """Update one or more MaBoSS simulation parameters, or list current values.
 
     Call with parameters=null (or omit it) to display all current parameter
@@ -993,11 +1187,21 @@ def update_maboss_parameters(
                 [[k, v] for k, v in sess.sim.param.items()],
                 columns=["parameter", "value"],
             )
-            return (
+            text = (
                 "Current MaBoSS parameters "
                 "(pass a parameters dict to update_maboss_parameters to modify):\n"
                 + df.to_markdown(index=False, tablefmt="plain")
             )
+            parameters_list = _parameter_records(sess.sim.param)
+            payload = MaBoSSParameterResult(
+                server="MaBoSS",
+                session_id=sess.session_id,
+                mode="inspect",
+                parameter_count=len(parameters_list),
+                parameters=parameters_list,
+                updated_parameters=[],
+            )
+            return structured_report(text, payload)
         allowed = set(sess.sim.param.keys())
         unknown = [k for k in parameter_updates if k not in allowed]
         if unknown:
@@ -1009,7 +1213,16 @@ def update_maboss_parameters(
             sess.sim.param[key] = value
         logger.info("MaBoSS parameters updated: %s", parameter_updates)
         summary = ", ".join(f"{k}={v}" for k, v in parameter_updates.items())
-        return f"Parameters updated: {summary}"
+        parameters_list = _parameter_records(sess.sim.param)
+        payload = MaBoSSParameterResult(
+            server="MaBoSS",
+            session_id=sess.session_id,
+            mode="update",
+            parameter_count=len(parameters_list),
+            parameters=parameters_list,
+            updated_parameters=list(parameter_updates),
+        )
+        return structured_report(f"Parameters updated: {summary}", payload)
     except ValueError:
         raise
     except Exception as e:
@@ -1155,7 +1368,7 @@ async def simulate_mutation(
         default=None,
         description="Session to use. Omit to use the active default session.",
     ),
-) -> str:
+) -> Annotated[CallToolResult, MaBoSSMutationSimulationResult]:
     """Run a one-off mutant simulation without modifying the session's base simulation.
 
     Creates an internal copy of the current simulation, applies the
@@ -1185,7 +1398,7 @@ async def simulate_mutation(
     await ctx.report_progress(0, 3)
     await ctx.report_progress(1, 3)
 
-    def run_mutation_locked() -> pd.DataFrame:
+    def run_mutation_locked():
         with session_manager.session_scope(session_id):
             sess = ensure_session(session_id)
             if sess.sim is None:
@@ -1208,7 +1421,10 @@ async def simulate_mutation(
                         mutation_state,
                     )
                 mutation_result = mutated_simulation.run()
-                return mutation_result.get_last_states_probtraj()
+                return (
+                    sess.session_id,
+                    mutation_result.get_last_states_probtraj(),
+                )
             except ValueError:
                 raise
             except Exception as e:
@@ -1217,22 +1433,48 @@ async def simulate_mutation(
                     f"Error running mutant simulation: {e}"
                 ) from e
 
-    df_prob = await anyio.to_thread.run_sync(run_mutation_locked)
+    resolved_session_id, df_prob = await anyio.to_thread.run_sync(
+        run_mutation_locked
+    )
     await ctx.report_progress(2, 3)
 
+    mutations = [
+        MaBoSSMutationRecord(node=node, state=mutation_state)
+        for node, mutation_state in zip(node_list, state_list, strict=True)
+    ]
+    trajectory = _scientific_table(df_prob)
     if df_prob.empty:
-        return "_Simulation completed but returned no trajectory data._"
+        await ctx.report_progress(3, 3)
+        payload = MaBoSSMutationSimulationResult(
+            server="MaBoSS",
+            session_id=resolved_session_id,
+            mutations=mutations,
+            has_trajectory_data=False,
+            trajectory=trajectory,
+        )
+        return structured_report(
+            "_Simulation completed but returned no trajectory data._",
+            payload,
+        )
 
-    df_prob = clean_for_markdown(df_prob)
-    md_table = df_prob.to_markdown(index=False, tablefmt="plain")
+    display_df = clean_for_markdown(df_prob)
+    md_table = display_df.to_markdown(index=False, tablefmt="plain")
     await ctx.report_progress(3, 3)
-    return "\n".join([
+    text = "\n".join([
         "**MaBoSS Mutant Simulation: State Probability Trajectory**",
         "",
         f"_Mutations applied: {dict(zip(node_list, state_list, strict=True))}_",
         "",
         md_table,
     ])
+    payload = MaBoSSMutationSimulationResult(
+        server="MaBoSS",
+        session_id=resolved_session_id,
+        mutations=mutations,
+        has_trajectory_data=True,
+        trajectory=trajectory,
+    )
+    return structured_report(text, payload)
 
 
 @mcp.tool(annotations=_IDEMPOTENT_TOOL)
@@ -1248,7 +1490,7 @@ def visualize_network_trajectories(
             "Omit to plot the full available trajectory."
         ),
     ),
-) -> CallToolResult:
+) -> Annotated[CallToolResult, MaBoSSTrajectoryPlotResult]:
     """Plot network state trajectories and return an uncropped PNG image."""
     logger.info("Visualizing network trajectories")
     sess = ensure_session(session_id)
@@ -1291,6 +1533,16 @@ def visualize_network_trajectories(
             if until is None
             else f"simulation time <= {until:g}"
         )
+        payload = MaBoSSTrajectoryPlotResult(
+            server="MaBoSS",
+            session_id=sess.session_id,
+            until=until,
+            time_window="full" if until is None else "bounded",
+            image_file=artifact_file_summary(
+                output_path,
+                session_id=sess.session_id,
+            ),
+        )
         return CallToolResult(
             content=[
                 TextContent(
@@ -1301,7 +1553,8 @@ def visualize_network_trajectories(
                     ),
                 ),
                 Image(data=png_data, format="png").to_image_content(),
-            ]
+            ],
+            structured_content=payload.model_dump(mode="json"),
         )
 
     except Exception as e:
@@ -1319,7 +1572,7 @@ def get_simulation_result(
         default=None,
         description="Session to query. Omit to use the active default session.",
     ),
-) -> str:
+) -> Annotated[CallToolResult, MaBoSSSimulationResult]:
     """Return the last simulation result as a Markdown table of state probabilities.
 
     Columns = distinct Boolean states (sets of ON nodes joined by '--').
@@ -1333,15 +1586,32 @@ def get_simulation_result(
         )
     try:
         df_prob = sess.result.get_last_states_probtraj()
+        trajectory = _scientific_table(df_prob)
         if df_prob.empty:
-            return "_Simulation completed but returned no trajectory data._"
-        df_prob = clean_for_markdown(df_prob)
-        md_table = df_prob.to_markdown(index=False, tablefmt="plain")
-        return "\n".join([
+            payload = MaBoSSSimulationResult(
+                server="MaBoSS",
+                session_id=sess.session_id,
+                has_trajectory_data=False,
+                trajectory=trajectory,
+            )
+            return structured_report(
+                "_Simulation completed but returned no trajectory data._",
+                payload,
+            )
+        display_df = clean_for_markdown(df_prob)
+        md_table = display_df.to_markdown(index=False, tablefmt="plain")
+        text = "\n".join([
             "**MaBoSS Simulation: State Probability Trajectory**",
             "",
             md_table,
         ])
+        payload = MaBoSSSimulationResult(
+            server="MaBoSS",
+            session_id=sess.session_id,
+            has_trajectory_data=True,
+            trajectory=trajectory,
+        )
+        return structured_report(text, payload)
     except Exception as e:
         raise RuntimeError(f"Error retrieving simulation result: {e}") from e
 

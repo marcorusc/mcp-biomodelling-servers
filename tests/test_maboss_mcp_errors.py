@@ -271,6 +271,223 @@ def test_artifact_tools_publish_structured_output_schemas() -> None:
         assert "result" not in schema["properties"]
 
 
+def test_scientific_tools_publish_structured_output_schemas() -> None:
+    listed_tools = _run(_list_tools())
+    tools = {tool.name: tool for tool in listed_tools.tools}
+
+    expected_models = {
+        "run_simulation": "MaBoSSSimulationRunResult",
+        "get_maboss_nodes": "MaBoSSNodeListResult",
+        "get_maboss_initial_state": "MaBoSSInitialStateResult",
+        "get_maboss_logical_rules": "MaBoSSLogicalRulesResult",
+        "get_maboss_mutations": "MaBoSSMutationListResult",
+        "update_maboss_parameters": "MaBoSSParameterResult",
+        "simulate_mutation": "MaBoSSMutationSimulationResult",
+        "get_simulation_result": "MaBoSSSimulationResult",
+        "visualize_network_trajectories": "MaBoSSTrajectoryPlotResult",
+    }
+
+    for tool_name, expected_title in expected_models.items():
+        schema = tools[tool_name].output_schema
+        assert schema is not None
+        assert schema["title"] == expected_title
+        assert "result" not in schema["properties"]
+
+
+def test_maboss_inspection_and_parameter_tools_return_scientific_data() -> None:
+    network = SimpleNamespace(
+        keys=lambda: ["A", "B", "C"],
+        get_istate=lambda: {
+            "A": {0: 0.25, 1: 0.75},
+            ("B", "C"): {
+                (0, 0): 0.4,
+                (1, 1): "$joint_probability",
+            },
+        },
+    )
+    simulation = SimpleNamespace(
+        network=network,
+        get_logical_rules=lambda: {"A": "B | C", "B": "!A"},
+        get_mutations=lambda: {"C": "OFF"},
+        param={"sample_count": 100, "max_time": 10.0},
+    )
+    session_id = _create_simulation_session(simulation)
+
+    nodes_result = _run(
+        _call_tool("get_maboss_nodes", {"session_id": session_id})
+    )
+    initial_state_result = _run(
+        _call_tool("get_maboss_initial_state", {"session_id": session_id})
+    )
+    rules_result = _run(
+        _call_tool("get_maboss_logical_rules", {"session_id": session_id})
+    )
+    mutations_result = _run(
+        _call_tool("get_maboss_mutations", {"session_id": session_id})
+    )
+    parameter_result = _run(
+        _call_tool("update_maboss_parameters", {"session_id": session_id})
+    )
+    update_result = _run(
+        _call_tool(
+            "update_maboss_parameters",
+            {
+                "session_id": session_id,
+                "parameters": {"sample_count": 250},
+            },
+        )
+    )
+
+    assert nodes_result.structured_content == {
+        "server": "MaBoSS",
+        "session_id": session_id,
+        "node_count": 3,
+        "nodes": ["A", "B", "C"],
+    }
+    assert initial_state_result.structured_content is not None
+    assert initial_state_result.structured_content["group_count"] == 2
+    assert initial_state_result.structured_content["groups"][1] == {
+        "nodes": ["B", "C"],
+        "probabilities": [
+            {"state": [0, 0], "probability": 0.4},
+            {"state": [1, 1], "probability": "$joint_probability"},
+        ],
+    }
+    assert rules_result.structured_content is not None
+    assert rules_result.structured_content["rules"] == [
+        {"node": "A", "rule": "B | C"},
+        {"node": "B", "rule": "!A"},
+    ]
+    assert mutations_result.structured_content is not None
+    assert mutations_result.structured_content["mutations"] == [
+        {"node": "C", "state": "OFF"}
+    ]
+    assert parameter_result.structured_content is not None
+    assert parameter_result.structured_content["mode"] == "inspect"
+    assert parameter_result.structured_content["parameters"] == [
+        {"name": "sample_count", "value": 100},
+        {"name": "max_time", "value": 10.0},
+    ]
+    assert update_result.structured_content is not None
+    assert update_result.structured_content["mode"] == "update"
+    assert update_result.structured_content["updated_parameters"] == [
+        "sample_count"
+    ]
+    assert update_result.structured_content["parameters"][0]["value"] == 250
+
+
+def test_run_and_read_simulation_preserve_numeric_trajectory_data(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    trajectory = pd.DataFrame(
+        {"<nil>": [0.1], "A": [0.9]},
+        index=pd.Index([10.0], name="Time"),
+    )
+    simulation_result = SimpleNamespace(
+        get_last_states_probtraj=lambda: trajectory,
+    )
+    simulation = SimpleNamespace(run=lambda: simulation_result)
+    session_id = _create_simulation_session(simulation)
+    monkeypatch.setattr(maboss_server, "_SERVER_ROOT", tmp_path)
+
+    run_result = _run(
+        _call_tool("run_simulation", {"session_id": session_id})
+    )
+    read_result = _run(
+        _call_tool("get_simulation_result", {"session_id": session_id})
+    )
+
+    csv_path = tmp_path / "artifacts" / session_id / "result.csv"
+    assert run_result.is_error is False
+    assert run_result.structured_content is not None
+    assert run_result.structured_content["result_available"] is True
+    assert run_result.structured_content["trajectory_row_count"] == 1
+    assert run_result.structured_content["trajectory_column_count"] == 2
+    assert run_result.structured_content["result_file"]["path"] == str(csv_path)
+    assert csv_path.exists()
+    assert read_result.structured_content is not None
+    assert read_result.structured_content["has_trajectory_data"] is True
+    assert read_result.structured_content["trajectory"] == {
+        "columns": ["<nil>", "A"],
+        "index_name": "Time",
+        "index": [10.0],
+        "row_count": 1,
+        "column_count": 2,
+        "rows": [[0.1, 0.9]],
+    }
+
+
+def test_mutant_simulation_returns_mutations_and_numeric_trajectory() -> None:
+    trajectory = pd.DataFrame(
+        {"A": [0.0], "B": [1.0]},
+        index=pd.Index([20.0], name="Time"),
+    )
+
+    class MutantSimulation:
+        def __init__(self) -> None:
+            self.applied: list[tuple[str, str]] = []
+
+        def mutate(self, node: str, state: str) -> None:
+            self.applied.append((node, state))
+
+        def run(self) -> object:
+            return SimpleNamespace(
+                get_last_states_probtraj=lambda: trajectory,
+            )
+
+    mutant = MutantSimulation()
+    simulation = SimpleNamespace(copy=lambda: mutant)
+    session_id = _create_simulation_session(simulation)
+
+    result = _run(
+        _call_tool(
+            "simulate_mutation",
+            {
+                "session_id": session_id,
+                "nodes": ["A", "B"],
+                "state": ["OFF", "ON"],
+            },
+        )
+    )
+
+    assert result.is_error is False
+    assert mutant.applied == [("A", "OFF"), ("B", "ON")]
+    assert result.structured_content is not None
+    assert result.structured_content["mutations"] == [
+        {"node": "A", "state": "OFF"},
+        {"node": "B", "state": "ON"},
+    ]
+    assert result.structured_content["has_trajectory_data"] is True
+    assert result.structured_content["trajectory"]["rows"] == [[0.0, 1.0]]
+
+
+def test_empty_simulation_result_remains_a_structured_success() -> None:
+    empty_result = SimpleNamespace(
+        get_last_states_probtraj=lambda: pd.DataFrame(columns=["A"]),
+    )
+    session_id = _create_result_session(empty_result)
+
+    result = _run(
+        _call_tool("get_simulation_result", {"session_id": session_id})
+    )
+
+    assert result.is_error is False
+    assert result.content[0].text == (
+        "_Simulation completed but returned no trajectory data._"
+    )
+    assert result.structured_content is not None
+    assert result.structured_content["has_trajectory_data"] is False
+    assert result.structured_content["trajectory"] == {
+        "columns": ["A"],
+        "index_name": None,
+        "index": [],
+        "row_count": 0,
+        "column_count": 1,
+        "rows": [],
+    }
+
+
 def test_bnet_conversion_returns_structured_artifact_metadata(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -450,7 +667,15 @@ def test_visualize_returns_uncropped_png_and_persists_same_bytes(
     )
 
     assert result.is_error is False
-    assert result.structured_content is None
+    assert result.structured_content is not None
+    assert result.structured_content["server"] == "MaBoSS"
+    assert result.structured_content["session_id"] == session_id
+    assert result.structured_content["until"] == 1.5
+    assert result.structured_content["time_window"] == "bounded"
+    assert result.structured_content["image_file"]["name"] == (
+        "network_trajectory.png"
+    )
+    assert result.structured_content["image_file"]["media_type"] == "image/png"
     assert len(result.content) == 2
     assert isinstance(result.content[0], TextContent)
     assert "simulation time <= 1.5" in result.content[0].text
