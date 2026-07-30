@@ -32,9 +32,14 @@ from artifact_manager import list_artifact_sessions as _list_artifact_sessions_o
 from mcp_biomodelling_servers import __version__
 from mcp_biomodelling_servers.structured_outputs import (
     ArtifactSessionSummary,
+    MaBoSSArtifactCleanupResult,
+    MaBoSSArtifactFileListResult,
     MaBoSSArtifactSessionListResult,
+    MaBoSSBnetConversionResult,
+    MaBoSSModelExportResult,
     MaBoSSSessionListResult,
     MaBoSSSessionSummary,
+    artifact_file_summary,
     structured_report,
 )
 
@@ -498,7 +503,7 @@ def bnet_to_bnd_and_cfg(
         default=None,
         description="Session to write the output files into. Omit to use the active default session.",
     ),
-) -> str:
+) -> Annotated[CallToolResult, MaBoSSBnetConversionResult]:
     """Convert a BNET file to MaBoSS BND and CFG files.
 
     Output files are written to the session artifact directory
@@ -524,12 +529,20 @@ def bnet_to_bnd_and_cfg(
             )
 
     logger.info("BND and CFG files created: %s, %s", bnd_out, cfg_out)
-    return (
+    text = (
         f"MaBoSS .bnd and .cfg files created successfully.\n"
         f"  BND: {bnd_out}\n"
         f"  CFG: {cfg_out}\n\n"
         f"Next: call build_simulation(session_id='{sess.session_id}') to load the simulation."
     )
+    payload = MaBoSSBnetConversionResult(
+        server="MaBoSS",
+        session_id=sess.session_id,
+        input_bnet_path=bnet_path,
+        bnd_file=artifact_file_summary(bnd_out, session_id=sess.session_id),
+        cfg_file=artifact_file_summary(cfg_out, session_id=sess.session_id),
+    )
+    return structured_report(text, payload)
 
 
 @mcp.tool(annotations=_IDEMPOTENT_TOOL)
@@ -666,7 +679,7 @@ def export_maboss_bnd_cfg(
         default=None,
         description="Session to export from. Omit to use the active default session.",
     ),
-) -> str:
+) -> Annotated[CallToolResult, MaBoSSModelExportResult]:
     """Export the current in-memory MaBoSS simulation to .bnd and .cfg files.
 
     Writes files to: <server>/artifacts/<session_id>/<prefix>.bnd and <prefix>.cfg
@@ -718,11 +731,26 @@ def export_maboss_bnd_cfg(
                 )
 
         logger.info("Export complete: %s, %s", bnd_out, cfg_out)
-        return (
+        text = (
             f"Exported current MaBoSS model successfully.\n"
             f"  BND: {bnd_out}\n"
             f"  CFG: {cfg_out}"
         )
+        payload = MaBoSSModelExportResult(
+            server="MaBoSS",
+            session_id=sess.session_id,
+            prefix=prefix,
+            overwrite=overwrite,
+            bnd_file=artifact_file_summary(
+                bnd_out,
+                session_id=sess.session_id,
+            ),
+            cfg_file=artifact_file_summary(
+                cfg_out,
+                session_id=sess.session_id,
+            ),
+        )
+        return structured_report(text, payload)
 
     except (ValueError, FileExistsError, FileNotFoundError):
         raise
@@ -1331,18 +1359,43 @@ def list_generated_files(
             "Omit for the active default session. Pass 'all' to list every session."
         ),
     ),
-) -> str:
+) -> Annotated[CallToolResult, MaBoSSArtifactFileListResult]:
     """List all artifact files (BND, CFG, PNG, …) for a session or across all sessions."""
     if session_id == "all":
         files = list_artifacts(_SERVER_ROOT, session_id=None)
+        resolved_session_id = None
+        scope = "all"
     else:
         with session_manager.session_scope(session_id):
             sess = ensure_session(session_id)
             files = list_artifacts(_SERVER_ROOT, session_id=sess.session_id)
+            resolved_session_id = sess.session_id
+            scope = "session"
 
     if not files:
-        return "No artifact files found."
-    return "## Generated artifact files\n\n" + "\n".join(f"- {f}" for f in files)
+        text = "No artifact files found."
+    else:
+        text = "## Generated artifact files\n\n" + "\n".join(
+            f"- {file_path}" for file_path in files
+        )
+    payload = MaBoSSArtifactFileListResult(
+        server="MaBoSS",
+        scope=scope,
+        session_id=resolved_session_id,
+        count=len(files),
+        files=[
+            artifact_file_summary(
+                file_path,
+                session_id=(
+                    resolved_session_id
+                    if resolved_session_id is not None
+                    else file_path.parent.name
+                ),
+            )
+            for file_path in files
+        ],
+    )
+    return structured_report(text, payload)
 
 
 @mcp.tool(annotations=_IDEMPOTENT_DESTRUCTIVE_TOOL)
@@ -1352,7 +1405,7 @@ def clean_generated_files(
         default=None,
         description="Session whose artifact files to remove. Omit to use the active default session.",
     ),
-) -> str:
+) -> Annotated[CallToolResult, MaBoSSArtifactCleanupResult]:
     """Remove all artifact files (BND, CFG, PNG, …) for the given session."""
     sess = ensure_session(session_id)
     try:
@@ -1362,7 +1415,13 @@ def clean_generated_files(
             count,
             sess.session_id,
         )
-        return f"Removed {count} artifact file(s) for session {sess.session_id}."
+        text = f"Removed {count} artifact file(s) for session {sess.session_id}."
+        payload = MaBoSSArtifactCleanupResult(
+            server="MaBoSS",
+            session_id=sess.session_id,
+            removed_count=count,
+        )
+        return structured_report(text, payload)
     except Exception as e:
         logger.exception("Error during cleanup")
         raise RuntimeError(f"Error during cleanup: {e}") from e

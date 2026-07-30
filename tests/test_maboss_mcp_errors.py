@@ -240,6 +240,144 @@ def test_list_artifact_sessions_returns_structured_metadata(
     }
 
 
+def test_artifact_tools_publish_structured_output_schemas() -> None:
+    listed_tools = _run(_list_tools())
+    tools = {tool.name: tool for tool in listed_tools.tools}
+
+    for tool_name, expected_title in {
+        "bnet_to_bnd_and_cfg": "MaBoSSBnetConversionResult",
+        "export_maboss_bnd_cfg": "MaBoSSModelExportResult",
+        "list_generated_files": "MaBoSSArtifactFileListResult",
+        "clean_generated_files": "MaBoSSArtifactCleanupResult",
+    }.items():
+        schema = tools[tool_name].output_schema
+        assert schema is not None
+        assert schema["title"] == expected_title
+        assert "result" not in schema["properties"]
+
+
+def test_bnet_conversion_returns_structured_artifact_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    session_id = session_manager.create_session()
+    monkeypatch.setattr(maboss_server, "_SERVER_ROOT", tmp_path)
+
+    def convert(_input: str, bnd_path: str, cfg_path: str) -> None:
+        Path(bnd_path).write_text("node A\n", encoding="utf-8")
+        Path(cfg_path).write_text("max_time = 10;\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        maboss_server.maboss,
+        "bnet_to_bnd_and_cfg",
+        convert,
+    )
+
+    result = _run(
+        _call_tool(
+            "bnet_to_bnd_and_cfg",
+            {
+                "bnet_path": "/models/network.bnet",
+                "session_id": session_id,
+            },
+        )
+    )
+
+    artifact_dir = tmp_path / "artifacts" / session_id
+    assert result.is_error is False
+    assert "MaBoSS .bnd and .cfg files created successfully" in result.content[0].text
+    assert result.structured_content is not None
+    assert result.structured_content["server"] == "MaBoSS"
+    assert result.structured_content["session_id"] == session_id
+    assert result.structured_content["input_bnet_path"] == "/models/network.bnet"
+    assert result.structured_content["bnd_file"] == {
+        "session_id": session_id,
+        "name": "output.bnd",
+        "path": str(artifact_dir / "output.bnd"),
+        "suffix": ".bnd",
+        "media_type": "text/plain",
+        "size_bytes": 7,
+    }
+    assert result.structured_content["cfg_file"]["name"] == "output.cfg"
+    assert result.structured_content["cfg_file"]["size_bytes"] == 15
+
+
+def test_maboss_export_returns_normalized_structured_artifacts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    simulation = SimpleNamespace(
+        print_bnd=lambda out: out.write("node A\n"),
+        print_cfg=lambda out: out.write("max_time = 10;\n"),
+    )
+    session_id = _create_simulation_session(simulation)
+    monkeypatch.setattr(maboss_server, "_SERVER_ROOT", tmp_path)
+
+    result = _run(
+        _call_tool(
+            "export_maboss_bnd_cfg",
+            {
+                "prefix": "run 2",
+                "overwrite": True,
+                "session_id": session_id,
+            },
+        )
+    )
+
+    assert result.is_error is False
+    assert "Exported current MaBoSS model successfully" in result.content[0].text
+    assert result.structured_content is not None
+    assert result.structured_content["session_id"] == session_id
+    assert result.structured_content["prefix"] == "run_2"
+    assert result.structured_content["overwrite"] is True
+    assert result.structured_content["bnd_file"]["name"] == "run_2.bnd"
+    assert result.structured_content["cfg_file"]["name"] == "run_2.cfg"
+
+
+def test_maboss_artifact_listing_and_cleanup_are_structured(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    first_id = session_manager.create_session()
+    second_id = session_manager.create_session()
+    monkeypatch.setattr(maboss_server, "_SERVER_ROOT", tmp_path)
+    first_dir = tmp_path / "artifacts" / first_id
+    second_dir = tmp_path / "artifacts" / second_id
+    first_dir.mkdir(parents=True)
+    second_dir.mkdir(parents=True)
+    (first_dir / "model.bnd").write_text("A\n", encoding="utf-8")
+    (second_dir / "result.csv").write_text("state,probability\n", encoding="utf-8")
+
+    session_result = _run(
+        _call_tool("list_generated_files", {"session_id": first_id})
+    )
+    all_result = _run(
+        _call_tool("list_generated_files", {"session_id": "all"})
+    )
+    cleanup_result = _run(
+        _call_tool("clean_generated_files", {"session_id": first_id})
+    )
+
+    assert session_result.is_error is False
+    assert session_result.structured_content is not None
+    assert session_result.structured_content["scope"] == "session"
+    assert session_result.structured_content["session_id"] == first_id
+    assert session_result.structured_content["count"] == 1
+    assert all_result.structured_content is not None
+    assert all_result.structured_content["scope"] == "all"
+    assert all_result.structured_content["session_id"] is None
+    assert {
+        file_record["session_id"]
+        for file_record in all_result.structured_content["files"]
+    } == {first_id, second_id}
+    assert cleanup_result.structured_content == {
+        "session_id": first_id,
+        "removed_count": 1,
+        "server": "MaBoSS",
+    }
+    assert not (first_dir / "model.bnd").exists()
+
+
 def test_unknown_default_session_is_tool_error() -> None:
     result = _run(_call_tool("set_default_session", {"session_id": "missing-session"}))
 
