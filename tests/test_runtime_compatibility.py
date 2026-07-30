@@ -105,12 +105,28 @@ def test_maboss_runtime_exposes_plotting_contract_and_compiled_engine() -> None:
         import cmaboss
         import maboss
         from maboss.results.baseresult import BaseResult
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
 
         assert cmaboss is not None
         assert maboss is not None
         parameters = inspect.signature(BaseResult.plot_trajectory).parameters
         assert "until" in parameters
         assert "axes" in parameters
+
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            bnet_path = root / "runtime.bnet"
+            bnd_path = root / "runtime.bnd"
+            cfg_path = root / "runtime.cfg"
+            bnet_path.write_text("A, B\\nB, A\\n", encoding="utf-8")
+            maboss.bnet_to_bnd_and_cfg(
+                str(bnet_path),
+                str(bnd_path),
+                str(cfg_path),
+            )
+            assert bnd_path.is_file() and bnd_path.stat().st_size > 0
+            assert cfg_path.is_file() and cfg_path.stat().st_size > 0
         """
     )
 

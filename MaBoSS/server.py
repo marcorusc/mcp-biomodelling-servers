@@ -3,7 +3,9 @@ import logging
 import math
 import os
 import sys
+import tempfile
 from functools import wraps
+from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -31,6 +33,23 @@ from artifact_manager import (
 )
 from artifact_manager import list_artifact_sessions as _list_artifact_sessions_on_disk
 from mcp_biomodelling_servers import __version__
+from mcp_biomodelling_servers.handoff import (
+    HandoffNetwork,
+    HandoffPackage,
+    HandoffProvenance,
+    MaBoSSHandoffExportResult,
+    MaBoSSHandoffImportResult,
+    MaBoSSSimulationHandoff,
+    MaBoSSToPhysiCellHandoffManifest,
+    NeKoToMaBoSSHandoffManifest,
+    PhysiCellTarget,
+    bnet_node_names,
+    handoff_artifact,
+    load_handoff_manifest,
+    verify_handoff_artifact,
+    verify_handoff_manifest,
+    write_handoff_manifest,
+)
 from mcp_biomodelling_servers.structured_outputs import (
     ArtifactSessionSummary,
     MaBoSSArtifactCleanupResult,
@@ -65,11 +84,13 @@ logger = logging.getLogger(__name__)
 
 MABOSS_SERVER_INSTRUCTIONS = (
     "Create a session before loading or simulating a Boolean model, and pass "
-    "`session_id` explicitly when working with multiple models. Inspect node "
-    "names before configuration and restrict output nodes to the smallest "
-    "biologically meaningful set before `run_simulation()` to control the "
-    "exponential state space. Read `docs://maboss/agent_manual` or use "
-    "`maboss_workflow_prompt` for the complete workflow."
+    "`session_id` explicitly when working with multiple models. Use "
+    "`import_neko_handoff` for a typed NeKo transfer, then inspect node names "
+    "and restrict output nodes to the smallest biologically meaningful set "
+    "before `run_simulation()` to control the exponential state space. Use "
+    "`export_maboss_handoff` for a provenance-preserving PhysiCell transfer. "
+    "Read `docs://maboss/agent_manual` or use `maboss_workflow_prompt` for the "
+    "complete workflow."
 )
 
 mcp = MCPServer(
@@ -93,6 +114,18 @@ NonEmptyString = Annotated[
     ),
 ]
 MutationState = Literal["ON", "OFF", "WT"]
+HandoffArtifactPrefix = Annotated[
+    str,
+    Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9_-])?$",
+        description=(
+            "Safe basename prefix for handoff artifacts. Directory components "
+            "and a trailing dot are forbidden."
+        ),
+    ),
+]
 
 _READ_ONLY_TOOL = ToolAnnotations(
     read_only_hint=True,
@@ -247,6 +280,92 @@ def _parameter_records(parameters) -> list[MaBoSSParameterRecord]:
     ]
 
 
+def _maboss_package_version() -> str:
+    """Return the installed pyMaBoSS distribution version for provenance."""
+    try:
+        return package_version("maboss")
+    except PackageNotFoundError as exc:
+        raise RuntimeError(
+            "Cannot export a handoff because the installed `maboss` package "
+            "version is unavailable."
+        ) from exc
+
+
+def _handoff_parameters(parameters) -> dict[str, bool | int | float | str | None]:
+    """Return exact portable scalar parameters for a handoff manifest."""
+    normalized = {}
+    for raw_name, raw_value in parameters.items():
+        name = str(raw_name).strip()
+        if not name:
+            raise ValueError(
+                "MaBoSS contains an empty parameter name that cannot be exported."
+            )
+        if name in normalized:
+            raise ValueError(
+                f"MaBoSS parameter names collapse to duplicate key {name!r}."
+            )
+
+        value = raw_value
+        if hasattr(value, "item"):
+            try:
+                value = value.item()
+            except (TypeError, ValueError):
+                pass
+        if value is None or isinstance(value, (bool, int, str)):
+            normalized[name] = value
+        elif isinstance(value, float):
+            if not math.isfinite(value):
+                raise ValueError(
+                    f"MaBoSS parameter {name!r} must be finite for handoff."
+                )
+            normalized[name] = value
+        else:
+            raise ValueError(
+                f"MaBoSS parameter {name!r} has unsupported non-scalar type "
+                f"{type(value).__name__!r}."
+            )
+    return normalized
+
+
+def _require_unused_artifact_paths(paths: list[Path]) -> None:
+    """Reject a handoff prefix when any destination already exists."""
+    existing = [path for path in paths if path.exists()]
+    if existing:
+        raise FileExistsError(
+            "Refusing to overwrite existing MaBoSS handoff artifacts: "
+            + ", ".join(str(path) for path in existing)
+            + ". Choose a different artifact_prefix."
+        )
+
+
+def _link_artifact_without_overwrite(source: Path, destination: Path) -> None:
+    """Atomically publish one complete temporary artifact if absent."""
+    if not source.is_file():
+        raise FileNotFoundError(
+            f"Expected temporary handoff artifact was not created: {source}"
+        )
+    try:
+        os.link(source, destination)
+    except FileExistsError as exc:
+        raise FileExistsError(
+            "Refusing to overwrite a MaBoSS handoff artifact created "
+            f"concurrently: {destination}"
+        ) from exc
+
+
+def _rollback_artifacts(paths: list[Path]) -> None:
+    """Best-effort cleanup for an incomplete multi-file handoff."""
+    for path in reversed(paths):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            logger.warning(
+                "Could not roll back incomplete handoff artifact %s",
+                path,
+                exc_info=True,
+            )
+
+
 def _session_locked(handler):
     """Run a synchronous handler under its session's exclusive lease."""
     signature = inspect.signature(handler)
@@ -269,17 +388,21 @@ MABOSS_AGENT_MANUAL = """
 
 ## 1. Recommended Workflow (in order)
 1. **Session:** `create_session()` — returns a session_id
-2. **Convert:** `bnet_to_bnd_and_cfg(bnet_path)` — BNET → BND + CFG
-3. **Load:** `build_simulation()` — loads BND/CFG into session
-4. **Inspect nodes (MANDATORY):** `get_maboss_nodes()` — list ALL valid node names; always do this before any configuration step to avoid referencing non-existent nodes
-5. **Inspect parameters:** `update_maboss_parameters()` (no args) — review current defaults
-6. **Tune:** `update_maboss_parameters({"sample_count": 1000, "thread_count": 4})`
-7. **Reduce output nodes (IMPORTANT):** `set_maboss_output_nodes(["Apoptosis", "Proliferation"])` — restricts the result to only the nodes you care about. Without this, MaBoSS enumerates ALL 2^N Boolean states, which becomes exponentially expensive for large networks (>20 nodes). Always set output nodes to the smallest biologically meaningful subset before running.
-8. **Configure (optional):** `get_maboss_initial_state()` to inspect current state, then `set_maboss_initial_state(...)` if non-default probabilities are needed. Only use node names returned by `get_maboss_nodes()`.
-9. **Run:** `run_simulation()` — executes the simulation and saves `result.csv` to the artifact directory
-10. **Analyse:** `get_simulation_result()` — returns the state probability table as a Markdown table
-11. **Visualise:** `visualize_network_trajectories()` — saves a PNG artifact
-12. **Mutate:** `simulate_mutation(nodes, state)` — runs a one-off mutant copy
+2. **Load a model:** Prefer `import_neko_handoff(manifest_path)` for a typed
+   NeKo transfer. For a standalone BNET, call
+   `bnet_to_bnd_and_cfg(bnet_path)` followed by `build_simulation()`.
+3. **Inspect nodes (MANDATORY):** `get_maboss_nodes()` — list ALL valid node names; always do this before any configuration step to avoid referencing non-existent nodes
+4. **Inspect parameters:** `update_maboss_parameters()` (no args) — review current defaults
+5. **Tune:** `update_maboss_parameters({"sample_count": 1000, "thread_count": 4})`
+6. **Reduce output nodes (IMPORTANT):** `set_maboss_output_nodes(["Apoptosis", "Proliferation"])` — restricts the result to only the nodes you care about. Without this, MaBoSS enumerates ALL 2^N Boolean states, which becomes exponentially expensive for large networks (>20 nodes). Always set output nodes to the smallest biologically meaningful subset before running.
+7. **Configure (optional):** `get_maboss_initial_state()` to inspect current state, then `set_maboss_initial_state(...)` if non-default probabilities are needed. Only use node names returned by `get_maboss_nodes()`.
+8. **Run:** `run_simulation()` — executes the simulation and saves `result.csv` to the artifact directory
+9. **Analyse:** `get_simulation_result()` — returns the state probability table as a Markdown table
+10. **Visualise:** `visualize_network_trajectories()` — saves a PNG artifact
+11. **Mutate:** `simulate_mutation(nodes, state)` — runs a one-off mutant copy
+12. **PhysiCell handoff:** `export_maboss_handoff(target_cell_type=...)`
+    snapshots the current model, parameters, outputs, optional result, and
+    complete NeKo lineage.
 
 > **State space warning:** A network with N nodes produces up to 2^N possible Boolean states.
 > Always call `set_maboss_output_nodes` to restrict outputs before `run_simulation`.
@@ -288,7 +411,8 @@ MABOSS_AGENT_MANUAL = """
 
 ## 2. Tool Categories
 * **Session management:** `create_session`, `list_sessions`, `set_default_session`, `delete_session`
-* **Pipeline:** `bnet_to_bnd_and_cfg`, `build_simulation`, `run_simulation`
+* **Pipeline:** `import_neko_handoff`, `bnet_to_bnd_and_cfg`, `build_simulation`, `run_simulation`
+* **Handoff:** `import_neko_handoff`, `export_maboss_handoff`
 * **Inspection (read, no side effects):** `get_maboss_nodes`, `get_maboss_initial_state`, `get_maboss_logical_rules`, `get_maboss_mutations`, `update_maboss_parameters` (no args)
 * **Configuration:** `update_maboss_parameters`, `set_maboss_output_nodes`, `set_maboss_initial_state`
 * **Analysis:** `get_simulation_result`, `simulate_mutation`, `visualize_network_trajectories`
@@ -309,6 +433,10 @@ MABOSS_AGENT_MANUAL = """
 * Pass `session_id` explicitly when running multiple simulations in parallel.
 * Call `update_maboss_parameters` with no args to list all valid keys.
 * Set `thread_count` early to speed up iteration.
+* Keep an imported NeKo manifest and its BNET artifact until the MaBoSS
+  handoff has been exported; integrity is rechecked before lineage is emitted.
+* `export_maboss_bnd_cfg` is a standalone file export. Use
+  `export_maboss_handoff` when PhysiCell needs typed provenance and context.
 """
 
 @mcp.prompt(name="maboss_workflow_prompt",
@@ -516,6 +644,9 @@ def list_sessions() -> Annotated[CallToolResult, MaBoSSSessionListResult]:
                 has_result=info["has_result"],
                 bnd_path=info["bnd_path"],
                 cfg_path=info["cfg_path"],
+                upstream_neko_manifest_path=info[
+                    "upstream_neko_manifest_path"
+                ],
             )
             for sid, info in sessions.items()
         ],
@@ -531,7 +662,10 @@ def list_sessions() -> Annotated[CallToolResult, MaBoSSSessionListResult]:
         has_sim = "✓" if info["has_simulation"] else "✗"
         has_res = "✓" if info["has_result"] else "✗"
         lines.append(
-            f"- **{sid}**{default_marker}: sim={has_sim}  result={has_res}  bnd={info['bnd_path'] or '—'}"
+            f"- **{sid}**{default_marker}: sim={has_sim}  result={has_res}  "
+            f"bnd={info['bnd_path'] or '—'}  "
+            "NeKo lineage="
+            f"{info['upstream_neko_manifest_path'] or '—'}"
         )
     return structured_report("\n".join(lines), payload)
 
@@ -628,6 +762,202 @@ def delete_session(
 # ---------------------------------------------------------------------------
 # Pipeline tools
 # ---------------------------------------------------------------------------
+
+@mcp.tool(annotations=_NON_IDEMPOTENT_TOOL)
+@_session_locked
+def import_neko_handoff(
+    manifest_path: Annotated[
+        NonEmptyString,
+        Field(
+            description=(
+                "Path to a NeKo `neko-to-maboss` handoff manifest. Its BNET "
+                "artifact and integrity metadata are verified before import."
+            )
+        ),
+    ],
+    artifact_prefix: HandoffArtifactPrefix = Field(
+        default="neko_import",
+        description=(
+            "Safe prefix for the imported MaBoSS BND and CFG artifacts. "
+            "Choose a new prefix for every retained import."
+        ),
+    ),
+    session_id: NonEmptyString | None = Field(
+        default=None,
+        description=(
+            "Session to replace only after a complete successful import. "
+            "Omit to use the active default session."
+        ),
+    ),
+) -> Annotated[CallToolResult, MaBoSSHandoffImportResult]:
+    """Verify, convert, and atomically load a typed NeKo handoff."""
+    sess = ensure_session(session_id)
+    loaded_manifest = load_handoff_manifest(
+        manifest_path,
+        expected_handoff_type="neko-to-maboss",
+        verify_artifacts=True,
+    )
+    if not isinstance(loaded_manifest, NeKoToMaBoSSHandoffManifest):
+        raise ValueError(
+            "The supplied handoff is not a NeKo-to-MaBoSS manifest."
+        )
+
+    source_manifest_path = Path(manifest_path).resolve()
+    source_manifest_file = handoff_artifact(
+        source_manifest_path,
+        server="NeKo",
+        session_id=loaded_manifest.source.session_id,
+        role="parent_manifest",
+    )
+    bnet_path = Path(loaded_manifest.bnet_file.path)
+    stored_nodes = bnet_node_names(bnet_path)
+    if stored_nodes != loaded_manifest.network.nodes:
+        raise ValueError(
+            "The BNET target order does not match the NeKo handoff manifest."
+        )
+
+    art_dir = get_artifact_dir(_SERVER_ROOT, sess.session_id)
+    bnd_path = safe_artifact_path(art_dir, f"{artifact_prefix}.bnd")
+    cfg_path = safe_artifact_path(art_dir, f"{artifact_prefix}.cfg")
+    _require_unused_artifact_paths([bnd_path, cfg_path])
+
+    created_paths: list[Path] = []
+    try:
+        with tempfile.TemporaryDirectory(
+            dir=art_dir,
+            prefix=".neko-handoff-import-",
+        ) as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            temporary_bnd = temporary_root / "model.bnd"
+            temporary_cfg = temporary_root / "model.cfg"
+            try:
+                maboss.bnet_to_bnd_and_cfg(
+                    str(bnet_path),
+                    str(temporary_bnd),
+                    str(temporary_cfg),
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Error converting the verified NeKo BNET: {exc}"
+                ) from exc
+
+            for path, label in (
+                (temporary_bnd, "BND"),
+                (temporary_cfg, "CFG"),
+            ):
+                if not path.is_file():
+                    raise FileNotFoundError(
+                        f"MaBoSS conversion did not create the {label} file."
+                    )
+
+            try:
+                candidate_simulation = maboss.load(
+                    str(temporary_bnd),
+                    str(temporary_cfg),
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Error loading the converted MaBoSS simulation: {exc}"
+                ) from exc
+            if not candidate_simulation:
+                raise RuntimeError(
+                    "maboss.load returned no simulation for the verified "
+                    "NeKo handoff."
+                )
+
+            loaded_nodes = [
+                str(node)
+                for node in candidate_simulation.network.keys()
+            ]
+            if (
+                len(loaded_nodes) != len(set(loaded_nodes))
+                or set(loaded_nodes) != set(stored_nodes)
+            ):
+                raise ValueError(
+                    "Converted MaBoSS nodes do not match the verified NeKo "
+                    "BNET nodes."
+                )
+
+            output_nodes = list(loaded_manifest.network.output_nodes)
+            try:
+                candidate_simulation.network.set_output(output_nodes)
+            except Exception as exc:
+                raise ValueError(
+                    "Could not apply the NeKo-declared MaBoSS output nodes: "
+                    f"{exc}"
+                ) from exc
+            applied_outputs = [
+                str(node)
+                for node in candidate_simulation.network.get_output()
+            ]
+            if (
+                len(applied_outputs) != len(set(applied_outputs))
+                or set(applied_outputs) != set(output_nodes)
+            ):
+                raise ValueError(
+                    "MaBoSS did not retain the output-node selection declared "
+                    "by the NeKo manifest."
+                )
+
+            verify_handoff_artifact(source_manifest_file)
+            verify_handoff_artifact(loaded_manifest.bnet_file)
+            _link_artifact_without_overwrite(temporary_bnd, bnd_path)
+            created_paths.append(bnd_path)
+            _link_artifact_without_overwrite(temporary_cfg, cfg_path)
+            created_paths.append(cfg_path)
+
+        bnd_file = handoff_artifact(
+            bnd_path,
+            server="MaBoSS",
+            session_id=sess.session_id,
+            role="maboss_bnd",
+        )
+        cfg_file = handoff_artifact(
+            cfg_path,
+            server="MaBoSS",
+            session_id=sess.session_id,
+            role="maboss_cfg",
+        )
+        payload = MaBoSSHandoffImportResult(
+            server="MaBoSS",
+            session_id=sess.session_id,
+            source_manifest_file=source_manifest_file,
+            source_manifest=loaded_manifest,
+            bnd_file=bnd_file,
+            cfg_file=cfg_file,
+            nodes=stored_nodes,
+            output_nodes=output_nodes,
+            requires_output_selection=not output_nodes,
+        )
+    except Exception:
+        _rollback_artifacts(created_paths)
+        raise
+
+    sess.set_simulation(
+        candidate_simulation,
+        str(bnd_path),
+        str(cfg_path),
+        upstream_neko_manifest_path=str(source_manifest_path),
+    )
+    output_guidance = (
+        "Applied outputs: " + ", ".join(output_nodes)
+        if output_nodes
+        else (
+            "No outputs were declared. All nodes were marked internal; call "
+            "set_maboss_output_nodes() before run_simulation()."
+        )
+    )
+    text = (
+        "NeKo handoff imported into MaBoSS successfully.\n"
+        f"  Session: {sess.session_id}\n"
+        f"  Source manifest: {source_manifest_path}\n"
+        f"  BND: {bnd_path}\n"
+        f"  CFG: {cfg_path}\n"
+        f"  Boolean nodes: {len(stored_nodes)}\n"
+        f"  {output_guidance}"
+    )
+    return structured_report(text, payload)
+
 
 @mcp.tool(annotations=_IDEMPOTENT_TOOL)
 @_session_locked
@@ -763,6 +1093,14 @@ async def run_simulation(
                 raise RuntimeError(
                     "No MaBoSS simulation has been built yet. "
                     "Call bnet_to_bnd_and_cfg then build_simulation first."
+                )
+            simulation_network = getattr(sess.sim, "network", None)
+            get_output = getattr(simulation_network, "get_output", None)
+            if callable(get_output) and not list(get_output()):
+                raise RuntimeError(
+                    "No MaBoSS output nodes are selected. Call "
+                    "set_maboss_output_nodes() with a small biologically "
+                    "meaningful set before run_simulation()."
                 )
             try:
                 logger.info("Running MaBoSS simulation")
@@ -928,6 +1266,316 @@ def export_maboss_bnd_cfg(
     except Exception as e:
         logger.exception("Error exporting MaBoSS model")
         raise RuntimeError(f"Error exporting MaBoSS model: {e}") from e
+
+
+@mcp.tool(annotations=_NON_IDEMPOTENT_TOOL)
+@_session_locked
+def export_maboss_handoff(
+    target_cell_type: Annotated[
+        NonEmptyString,
+        Field(
+            description=(
+                "PhysiCell cell type intended to receive this Boolean model."
+            )
+        ),
+    ],
+    biological_context: NonEmptyString | None = Field(
+        default=None,
+        description=(
+            "Biological context for PhysiCell integration. Omit to inherit "
+            "the context of an imported NeKo handoff; required for standalone "
+            "MaBoSS models."
+        ),
+    ),
+    simulation_summary: NonEmptyString | None = Field(
+        default=None,
+        description=(
+            "Optional scientific interpretation of the MaBoSS result. When "
+            "omitted, a concise table-availability summary is generated."
+        ),
+    ),
+    include_result: bool = Field(
+        default=True,
+        description=(
+            "Snapshot the stored state-probability table as a CSV artifact "
+            "when non-empty simulation results are available."
+        ),
+    ),
+    artifact_prefix: HandoffArtifactPrefix = Field(
+        default="maboss_to_physicell",
+        description=(
+            "Safe prefix for the BND, CFG, optional result CSV, and manifest. "
+            "Choose a new prefix for every retained handoff."
+        ),
+    ),
+    session_id: NonEmptyString | None = Field(
+        default=None,
+        description="Session to export; omit to use the active default session.",
+    ),
+) -> Annotated[CallToolResult, MaBoSSHandoffExportResult]:
+    """Export an integrity-protected MaBoSS-to-PhysiCell handoff."""
+    sess = ensure_session(session_id)
+    if sess.sim is None:
+        raise RuntimeError(
+            "No MaBoSS simulation has been built yet. Import a NeKo handoff "
+            "or call build_simulation first."
+        )
+
+    nodes = [str(node) for node in sess.sim.network.keys()]
+    if not nodes or len(nodes) != len(set(nodes)):
+        raise ValueError(
+            "The loaded MaBoSS simulation must contain unique Boolean nodes."
+        )
+    output_nodes = [
+        str(node)
+        for node in sess.sim.network.get_output()
+    ]
+    if not output_nodes:
+        raise RuntimeError(
+            "No MaBoSS output nodes are selected. Call "
+            "set_maboss_output_nodes() with a small biologically meaningful "
+            "set before exporting a PhysiCell handoff."
+        )
+    if len(output_nodes) != len(set(output_nodes)):
+        raise ValueError("MaBoSS output nodes contain duplicate names.")
+    unknown_outputs = sorted(set(output_nodes) - set(nodes))
+    if unknown_outputs:
+        raise ValueError(
+            "MaBoSS output nodes are absent from the loaded network: "
+            + ", ".join(unknown_outputs)
+        )
+
+    parent_manifest = None
+    parent_manifest_file = None
+    lineage = []
+    inherited_context = None
+    renamed_nodes: list[str] = []
+    node_renames: dict[str, str] = {}
+    duplicate_rules_removed: list[str] = []
+    if sess.upstream_neko_manifest_path is not None:
+        loaded_parent = load_handoff_manifest(
+            sess.upstream_neko_manifest_path,
+            expected_handoff_type="neko-to-maboss",
+            verify_artifacts=True,
+        )
+        if not isinstance(loaded_parent, NeKoToMaBoSSHandoffManifest):
+            raise ValueError(
+                "The session's upstream handoff is not a NeKo manifest."
+            )
+        parent_manifest = loaded_parent
+        parent_manifest_file = handoff_artifact(
+            sess.upstream_neko_manifest_path,
+            server="NeKo",
+            session_id=loaded_parent.source.session_id,
+            role="parent_manifest",
+        )
+        lineage = [loaded_parent.source]
+        inherited_context = loaded_parent.biological_context
+        renamed_nodes = list(loaded_parent.network.renamed_nodes)
+        node_renames = dict(loaded_parent.network.node_renames)
+        duplicate_rules_removed = list(
+            loaded_parent.network.duplicate_rules_removed
+        )
+
+    context = (
+        biological_context.strip()
+        if biological_context is not None
+        else inherited_context
+    )
+    if not context:
+        raise ValueError(
+            "biological_context is required for a standalone MaBoSS model "
+            "because no NeKo context is available to inherit."
+        )
+
+    parameters = _handoff_parameters(sess.sim.param)
+    result_table = None
+    result_row_count = 0
+    result_column_count = 0
+    if sess.result is not None:
+        try:
+            result_table = sess.result.get_last_states_probtraj()
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not read the stored MaBoSS simulation result: {exc}"
+            ) from exc
+        if not isinstance(result_table, pd.DataFrame):
+            raise ValueError(
+                "The stored MaBoSS result did not return a pandas DataFrame."
+            )
+        result_row_count = len(result_table)
+        result_column_count = len(result_table.columns)
+
+    summary = (
+        simulation_summary.strip()
+        if simulation_summary is not None
+        else (
+            "Stored state-probability table contains "
+            f"{result_row_count} row(s) and {result_column_count} column(s)."
+            if result_table is not None
+            else "No MaBoSS simulation result was stored at export time."
+        )
+    )
+
+    art_dir = get_artifact_dir(_SERVER_ROOT, sess.session_id)
+    bnd_path = safe_artifact_path(art_dir, f"{artifact_prefix}.bnd")
+    cfg_path = safe_artifact_path(art_dir, f"{artifact_prefix}.cfg")
+    result_path = safe_artifact_path(
+        art_dir,
+        f"{artifact_prefix}.result.csv",
+    )
+    manifest_path = safe_artifact_path(
+        art_dir,
+        f"{artifact_prefix}.handoff.json",
+    )
+    include_result_artifact = bool(
+        include_result
+        and result_table is not None
+        and not result_table.empty
+    )
+    destinations = [bnd_path, cfg_path, manifest_path]
+    if include_result_artifact:
+        destinations.append(result_path)
+    _require_unused_artifact_paths(destinations)
+
+    created_paths: list[Path] = []
+    try:
+        with tempfile.TemporaryDirectory(
+            dir=art_dir,
+            prefix=".maboss-handoff-export-",
+        ) as temporary_directory:
+            temporary_root = Path(temporary_directory)
+            temporary_bnd = temporary_root / "model.bnd"
+            temporary_cfg = temporary_root / "model.cfg"
+            temporary_result = temporary_root / "result.csv"
+            try:
+                with temporary_bnd.open("w", encoding="utf-8") as bnd_file:
+                    sess.sim.print_bnd(out=bnd_file)
+                with temporary_cfg.open("w", encoding="utf-8") as cfg_file:
+                    sess.sim.print_cfg(out=cfg_file)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Could not snapshot the current MaBoSS model: {exc}"
+                ) from exc
+
+            if include_result_artifact:
+                try:
+                    result_table.to_csv(temporary_result, index=False)
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"Could not snapshot the MaBoSS result table: {exc}"
+                    ) from exc
+
+            _link_artifact_without_overwrite(temporary_bnd, bnd_path)
+            created_paths.append(bnd_path)
+            _link_artifact_without_overwrite(temporary_cfg, cfg_path)
+            created_paths.append(cfg_path)
+            if include_result_artifact:
+                _link_artifact_without_overwrite(
+                    temporary_result,
+                    result_path,
+                )
+                created_paths.append(result_path)
+
+        bnd_file = handoff_artifact(
+            bnd_path,
+            server="MaBoSS",
+            session_id=sess.session_id,
+            role="maboss_bnd",
+        )
+        cfg_file = handoff_artifact(
+            cfg_path,
+            server="MaBoSS",
+            session_id=sess.session_id,
+            role="maboss_cfg",
+        )
+        result_file = (
+            handoff_artifact(
+                result_path,
+                server="MaBoSS",
+                session_id=sess.session_id,
+                role="maboss_result",
+            )
+            if include_result_artifact
+            else None
+        )
+        manifest = MaBoSSToPhysiCellHandoffManifest(
+            source=HandoffProvenance(
+                server="MaBoSS",
+                session_id=sess.session_id,
+                mcp_package=HandoffPackage(
+                    name="mcp-biomodelling-servers",
+                    version=__version__,
+                ),
+                modelling_package=HandoffPackage(
+                    name="maboss",
+                    version=_maboss_package_version(),
+                ),
+                operation="export_maboss_handoff",
+            ),
+            lineage=lineage,
+            biological_context=context,
+            network=HandoffNetwork(
+                nodes=nodes,
+                output_nodes=output_nodes,
+                renamed_nodes=renamed_nodes,
+                node_renames=node_renames,
+                duplicate_rules_removed=duplicate_rules_removed,
+            ),
+            bnd_file=bnd_file,
+            cfg_file=cfg_file,
+            parent_manifest=parent_manifest_file,
+            simulation=MaBoSSSimulationHandoff(
+                parameters=parameters,
+                simulation_summary=summary,
+                result_file=result_file,
+            ),
+            target=PhysiCellTarget(cell_type=target_cell_type),
+        )
+        if parent_manifest is not None:
+            verify_handoff_artifact(parent_manifest_file)
+            verify_handoff_manifest(parent_manifest)
+        write_handoff_manifest(manifest_path, manifest)
+        created_paths.append(manifest_path)
+        manifest_file = handoff_artifact(
+            manifest_path,
+            server="MaBoSS",
+            session_id=sess.session_id,
+            role="parent_manifest",
+        )
+        payload = MaBoSSHandoffExportResult(
+            server="MaBoSS",
+            session_id=sess.session_id,
+            manifest_file=manifest_file,
+            manifest=manifest,
+        )
+    except Exception:
+        _rollback_artifacts(created_paths)
+        raise
+
+    lineage_text = (
+        f"NeKo session {parent_manifest.source.session_id}"
+        if parent_manifest is not None
+        else "standalone MaBoSS model"
+    )
+    result_text = (
+        str(result_path)
+        if include_result_artifact
+        else "not included"
+    )
+    text = (
+        "MaBoSS-to-PhysiCell handoff exported successfully.\n"
+        f"  Manifest: {manifest_path}\n"
+        f"  BND: {bnd_path}\n"
+        f"  CFG: {cfg_path}\n"
+        f"  Result CSV: {result_text}\n"
+        f"  Boolean nodes: {len(nodes)}\n"
+        f"  Output nodes: {', '.join(output_nodes)}\n"
+        f"  Target cell type: {target_cell_type}\n"
+        f"  Lineage: {lineage_text}\n\n"
+        "Next: pass the manifest path to the PhysiCell handoff import tool."
+    )
+    return structured_report(text, payload)
 
 
 # ---------------------------------------------------------------------------

@@ -18,6 +18,8 @@ from mcp_biomodelling_servers.handoff import (
     HandoffNetwork,
     HandoffPackage,
     HandoffProvenance,
+    MaBoSSHandoffExportResult,
+    MaBoSSHandoffImportResult,
     MaBoSSSimulationHandoff,
     MaBoSSToPhysiCellHandoffManifest,
     NeKoHandoffExportResult,
@@ -283,6 +285,79 @@ def test_neko_handoff_export_result_aligns_manifest_and_file(
     )
 
     assert result.manifest.history_state_id == 4
+    assert result.manifest_file.sha256 == sha256_file(manifest_path)
+
+
+def test_maboss_handoff_import_result_aligns_parent_and_generated_pair(
+    tmp_path: Path,
+) -> None:
+    source_manifest = _neko_manifest(tmp_path)
+    source_path = write_handoff_manifest(
+        tmp_path / "neko.handoff.json",
+        source_manifest,
+    )
+    source_file = handoff_artifact(
+        source_path,
+        server="NeKo",
+        session_id=source_manifest.source.session_id,
+        role="parent_manifest",
+    )
+    bnd_file = handoff_artifact(
+        _write(tmp_path / "imported.bnd", "node A { logic = B; }\n"),
+        server="MaBoSS",
+        session_id="maboss-session",
+        role="maboss_bnd",
+    )
+    cfg_file = handoff_artifact(
+        _write(tmp_path / "imported.cfg", "max_time = 100;\n"),
+        server="MaBoSS",
+        session_id="maboss-session",
+        role="maboss_cfg",
+    )
+
+    result = MaBoSSHandoffImportResult(
+        server="MaBoSS",
+        session_id="maboss-session",
+        source_manifest_file=source_file,
+        source_manifest=source_manifest,
+        bnd_file=bnd_file,
+        cfg_file=cfg_file,
+        nodes=["A", "B"],
+        output_nodes=["B"],
+        requires_output_selection=False,
+    )
+    assert result.source_manifest.handoff_type == "neko-to-maboss"
+
+    with pytest.raises(ValidationError, match="output nodes were declared"):
+        MaBoSSHandoffImportResult(
+            **result.model_dump(exclude={"requires_output_selection"}),
+            requires_output_selection=True,
+        )
+
+
+def test_maboss_handoff_export_result_aligns_manifest_and_file(
+    tmp_path: Path,
+) -> None:
+    manifest = _maboss_manifest(tmp_path, with_neko_parent=True)
+    manifest_path = write_handoff_manifest(
+        tmp_path / "maboss.handoff.json",
+        manifest,
+    )
+    manifest_file = handoff_artifact(
+        manifest_path,
+        server="MaBoSS",
+        session_id=manifest.source.session_id,
+        role="parent_manifest",
+    )
+
+    result = MaBoSSHandoffExportResult(
+        server="MaBoSS",
+        session_id=manifest.source.session_id,
+        manifest_file=manifest_file,
+        manifest=manifest,
+    )
+
+    assert result.manifest.target.cell_type == "epithelial"
     assert result.manifest_file.sha256 == sha256_file(manifest_path)
 
 

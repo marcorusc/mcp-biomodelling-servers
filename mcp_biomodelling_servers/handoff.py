@@ -361,6 +361,72 @@ class NeKoHandoffExportResult(StructuredOutputModel):
         return self
 
 
+class MaBoSSHandoffImportResult(StructuredOutputModel):
+    """Structured result returned by MaBoSS ``import_neko_handoff``."""
+
+    server: Literal["MaBoSS"]
+    session_id: NonEmptyString
+    source_manifest_file: HandoffArtifact
+    source_manifest: NeKoToMaBoSSHandoffManifest
+    bnd_file: HandoffArtifact
+    cfg_file: HandoffArtifact
+    nodes: list[NonEmptyString] = Field(min_length=1)
+    output_nodes: list[NonEmptyString] = Field(default_factory=list)
+    requires_output_selection: bool
+
+    @field_validator("nodes", "output_nodes")
+    @classmethod
+    def validate_unique_names(
+        cls,
+        value: list[str],
+        info: ValidationInfo,
+    ) -> list[str]:
+        """Keep imported node collections unambiguous."""
+        return _require_unique(value, info.field_name or "collection")
+
+    @model_validator(mode="after")
+    def validate_import_result(self) -> MaBoSSHandoffImportResult:
+        """Align the verified NeKo parent and generated MaBoSS artifacts."""
+        source_session = self.source_manifest.source.session_id
+        if (
+            self.source_manifest_file.server != "NeKo"
+            or self.source_manifest_file.role != "parent_manifest"
+        ):
+            raise ValueError(
+                "The source manifest file must be a NeKo parent manifest."
+            )
+        if self.source_manifest_file.session_id != source_session:
+            raise ValueError(
+                "The source manifest file session does not match NeKo provenance."
+            )
+        for artifact, role in (
+            (self.bnd_file, "maboss_bnd"),
+            (self.cfg_file, "maboss_cfg"),
+        ):
+            if artifact.server != "MaBoSS" or artifact.role != role:
+                raise ValueError(
+                    f"The imported {role} artifact must be owned by MaBoSS."
+                )
+            if artifact.session_id != self.session_id:
+                raise ValueError(
+                    f"The imported {role} session does not match the result."
+                )
+        if self.nodes != self.source_manifest.network.nodes:
+            raise ValueError(
+                "Imported MaBoSS nodes do not match the NeKo manifest."
+            )
+        if self.output_nodes != self.source_manifest.network.output_nodes:
+            raise ValueError(
+                "Applied MaBoSS outputs do not match the NeKo manifest."
+            )
+        if self.requires_output_selection is bool(self.output_nodes):
+            raise ValueError(
+                "requires_output_selection must be true exactly when no "
+                "output nodes were declared."
+            )
+        return self
+
+
 class MaBoSSToPhysiCellHandoffManifest(HandoffManifestBase):
     """Manifest produced from a MaBoSS model for PhysiCell integration."""
 
@@ -428,6 +494,35 @@ class MaBoSSToPhysiCellHandoffManifest(HandoffManifestBase):
                 raise ValueError(
                     "The parent manifest session does not match NeKo lineage."
                 )
+        return self
+
+
+class MaBoSSHandoffExportResult(StructuredOutputModel):
+    """Structured result returned by MaBoSS ``export_maboss_handoff``."""
+
+    server: Literal["MaBoSS"]
+    session_id: NonEmptyString
+    manifest_file: HandoffArtifact
+    manifest: MaBoSSToPhysiCellHandoffManifest
+
+    @model_validator(mode="after")
+    def validate_export_result(self) -> MaBoSSHandoffExportResult:
+        """Keep the returned manifest artifact and source session aligned."""
+        if (
+            self.manifest_file.server != "MaBoSS"
+            or self.manifest_file.role != "parent_manifest"
+        ):
+            raise ValueError(
+                "The handoff manifest file must be a MaBoSS parent manifest."
+            )
+        if self.manifest_file.session_id != self.session_id:
+            raise ValueError(
+                "The handoff manifest file session does not match the result."
+            )
+        if self.manifest.source.session_id != self.session_id:
+            raise ValueError(
+                "The MaBoSS manifest source session does not match the result."
+            )
         return self
 
 

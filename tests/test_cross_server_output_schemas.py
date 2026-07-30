@@ -10,9 +10,11 @@ EXPECTED_NAMED_OUTPUTS = {
     "MaBoSS": {
         "list_sessions": "MaBoSSSessionListResult",
         "list_artifact_sessions": "MaBoSSArtifactSessionListResult",
+        "import_neko_handoff": "MaBoSSHandoffImportResult",
         "bnet_to_bnd_and_cfg": "MaBoSSBnetConversionResult",
         "run_simulation": "MaBoSSSimulationRunResult",
         "export_maboss_bnd_cfg": "MaBoSSModelExportResult",
+        "export_maboss_handoff": "MaBoSSHandoffExportResult",
         "get_maboss_nodes": "MaBoSSNodeListResult",
         "get_maboss_initial_state": "MaBoSSInitialStateResult",
         "get_maboss_logical_rules": "MaBoSSLogicalRulesResult",
@@ -66,7 +68,7 @@ EXPECTED_NAMED_OUTPUTS = {
 }
 
 EXPECTED_TOOL_COUNTS = {
-    "MaBoSS": 22,
+    "MaBoSS": 24,
     "NeKo": 33,
     "PhysiCell": 33,
 }

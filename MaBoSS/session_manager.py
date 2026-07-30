@@ -9,6 +9,7 @@ Each session stores:
   - The loaded MaBoSS simulation object (``sim``)
   - The last simulation result (``result``)
   - Paths to the generated .bnd and .cfg files
+  - Optional upstream NeKo handoff lineage
   - Timestamps for LRU eviction
 """
 
@@ -36,6 +37,7 @@ class MaBoSSSession:
     result: object | None = None  # result of the last sim.run()
     bnd_path: str | None = None  # absolute path to .bnd file used to load sim
     cfg_path: str | None = None  # absolute path to .cfg file used to load sim
+    upstream_neko_manifest_path: str | None = None
     created_at: float = field(default_factory=time.time)
     last_accessed: float = field(default_factory=time.time)
     _operation_lock: RLock = field(
@@ -55,12 +57,20 @@ class MaBoSSSession:
     def _touch_unlocked(self) -> None:
         self.last_accessed = time.time()
 
-    def set_simulation(self, sim_obj: object, bnd_path: str, cfg_path: str) -> None:
+    def set_simulation(
+        self,
+        sim_obj: object,
+        bnd_path: str,
+        cfg_path: str,
+        *,
+        upstream_neko_manifest_path: str | None = None,
+    ) -> None:
         with self._operation_lock:
             self.sim = sim_obj
             self.result = None  # reset result when simulation is rebuilt
             self.bnd_path = bnd_path
             self.cfg_path = cfg_path
+            self.upstream_neko_manifest_path = upstream_neko_manifest_path
             self._touch_unlocked()
 
     def set_result(self, result_obj: object) -> None:
@@ -75,6 +85,7 @@ class MaBoSSSession:
             self.result = None
             self.bnd_path = None
             self.cfg_path = None
+            self.upstream_neko_manifest_path = None
             self._touch_unlocked()
 
     def snapshot(self, *, is_default: bool) -> dict:
@@ -85,6 +96,9 @@ class MaBoSSSession:
                 "has_result": self.result is not None,
                 "bnd_path": self.bnd_path,
                 "cfg_path": self.cfg_path,
+                "upstream_neko_manifest_path": (
+                    self.upstream_neko_manifest_path
+                ),
                 "created_at": self.created_at,
                 "last_accessed": self.last_accessed,
                 "is_default": is_default,

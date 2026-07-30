@@ -42,6 +42,7 @@ class MaBoSSSessionSummary(ActiveSessionSummary):
     has_result: bool
     bnd_path: str | None = None
     cfg_path: str | None = None
+    upstream_neko_manifest_path: str | None = None
 
 
 class NeKoSessionSummary(ActiveSessionSummary):

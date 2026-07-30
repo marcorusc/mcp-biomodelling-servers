@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import inspect
+import json
 import sys
 from collections.abc import Coroutine
 from pathlib import Path
@@ -18,6 +19,15 @@ from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from mcp import Client, MCPError
 from mcp.types import ImageContent, TextContent
+
+from mcp_biomodelling_servers.handoff import (
+    HandoffNetwork,
+    HandoffPackage,
+    HandoffProvenance,
+    NeKoToMaBoSSHandoffManifest,
+    handoff_artifact,
+    write_handoff_manifest,
+)
 
 MABOSS_DIR = Path(__file__).parent.parent / "MaBoSS"
 sys.path.insert(0, str(MABOSS_DIR))
@@ -86,6 +96,70 @@ class BlockingSimulationResult:
         return pd.DataFrame()
 
 
+class HandoffNetworkStub:
+    """Minimal mutable pyMaBoSS network contract for handoff tests."""
+
+    def __init__(
+        self,
+        nodes: list[str] | None = None,
+        outputs: list[str] | None = None,
+    ) -> None:
+        self._nodes = nodes or ["A", "B"]
+        self._outputs = (
+            list(self._nodes)
+            if outputs is None
+            else list(outputs)
+        )
+
+    def keys(self) -> list[str]:
+        return list(self._nodes)
+
+    def set_output(self, outputs: list[str]) -> None:
+        unknown = set(outputs) - set(self._nodes)
+        if unknown:
+            raise ValueError(f"Unknown outputs: {sorted(unknown)}")
+        self._outputs = [
+            node
+            for node in self._nodes
+            if node in outputs
+        ]
+
+    def get_output(self) -> list[str]:
+        return list(self._outputs)
+
+
+class HandoffSimulationStub:
+    """Serializable in-memory MaBoSS model used at both handoff boundaries."""
+
+    def __init__(
+        self,
+        *,
+        nodes: list[str] | None = None,
+        outputs: list[str] | None = None,
+        parameters: dict[str, object] | None = None,
+    ) -> None:
+        self.network = HandoffNetworkStub(nodes, outputs)
+        self.param = parameters or {
+            "max_time": 100.0,
+            "sample_count": 1000,
+        }
+
+    def print_bnd(self, out: object) -> None:
+        out.write("node A { logic = B; }\nnode B { logic = A; }\n")
+
+    def print_cfg(self, out: object) -> None:
+        out.write("max_time = 100;\nsample_count = 1000;\n")
+
+
+class HandoffResultStub:
+    """Stored MaBoSS result with a stable final probability table."""
+
+    def get_last_states_probtraj(self) -> pd.DataFrame:
+        return pd.DataFrame(
+            [{"A": 0.25, "B": 0.75}],
+        )
+
+
 def _run(coroutine: Coroutine[Any, Any, Any]) -> Any:
     return asyncio.run(coroutine)
 
@@ -143,6 +217,52 @@ def _create_simulation_session(simulation: object) -> str:
     assert session is not None
     session.set_simulation(simulation, "/model.bnd", "/model.cfg")
     return session_id
+
+
+def _create_neko_handoff(
+    tmp_path: Path,
+    *,
+    output_nodes: list[str] | None = None,
+) -> tuple[Path, NeKoToMaBoSSHandoffManifest]:
+    source_dir = tmp_path / "neko-source"
+    source_dir.mkdir(parents=True, exist_ok=True)
+    bnet_path = source_dir / "network.bnet"
+    bnet_path.write_text("A, B\nB, A\n", encoding="utf-8")
+    manifest = NeKoToMaBoSSHandoffManifest(
+        source=HandoffProvenance(
+            server="NeKo",
+            session_id="neko-session",
+            mcp_package=HandoffPackage(
+                name="mcp-biomodelling-servers",
+                version="1.0.0",
+            ),
+            modelling_package=HandoffPackage(
+                name="nekomata",
+                version="2.0.0",
+            ),
+            operation="export_neko_handoff",
+        ),
+        biological_context="Investigate reciprocal A/B signalling.",
+        network=HandoffNetwork(
+            nodes=["A", "B"],
+            output_nodes=(
+                ["B"]
+                if output_nodes is None
+                else output_nodes
+            ),
+        ),
+        bnet_file=handoff_artifact(
+            bnet_path,
+            server="NeKo",
+            session_id="neko-session",
+            role="neko_bnet",
+        ),
+    )
+    manifest_path = write_handoff_manifest(
+        source_dir / "network.handoff.json",
+        manifest,
+    )
+    return manifest_path, manifest
 
 
 def _wait_for_lease_count(session_id: str, expected: int) -> bool:
@@ -215,8 +335,25 @@ def test_list_sessions_returns_structured_maboss_state() -> None:
     assert structured_session["has_result"] is False
     assert structured_session["bnd_path"] == "/model.bnd"
     assert structured_session["cfg_path"] == "/model.cfg"
+    assert structured_session["upstream_neko_manifest_path"] is None
     assert result.structured_content["server"] == "MaBoSS"
     assert result.structured_content["count"] == 1
+
+
+def test_loading_standalone_simulation_clears_upstream_neko_lineage() -> None:
+    session_id = session_manager.create_session()
+    session = session_manager.get_session(session_id)
+    assert session is not None
+    session.set_simulation(
+        object(),
+        "/imported.bnd",
+        "/imported.cfg",
+        upstream_neko_manifest_path="/neko.handoff.json",
+    )
+
+    session.set_simulation(object(), "/standalone.bnd", "/standalone.cfg")
+
+    assert session.upstream_neko_manifest_path is None
 
 
 def test_list_artifact_sessions_returns_structured_metadata(
@@ -260,8 +397,10 @@ def test_artifact_tools_publish_structured_output_schemas() -> None:
     tools = {tool.name: tool for tool in listed_tools.tools}
 
     for tool_name, expected_title in {
+        "import_neko_handoff": "MaBoSSHandoffImportResult",
         "bnet_to_bnd_and_cfg": "MaBoSSBnetConversionResult",
         "export_maboss_bnd_cfg": "MaBoSSModelExportResult",
+        "export_maboss_handoff": "MaBoSSHandoffExportResult",
         "list_generated_files": "MaBoSSArtifactFileListResult",
         "clean_generated_files": "MaBoSSArtifactCleanupResult",
     }.items():
@@ -534,6 +673,226 @@ def test_bnet_conversion_returns_structured_artifact_metadata(
     assert result.structured_content["cfg_file"]["size_bytes"] == 15
 
 
+def test_import_neko_handoff_loads_verified_model_and_lineage(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manifest_path, source_manifest = _create_neko_handoff(
+        tmp_path,
+        output_nodes=["A", "B"],
+    )
+    previous_simulation = object()
+    session_id = _create_simulation_session(previous_simulation)
+    candidate = HandoffSimulationStub(nodes=["B", "A"], outputs=[])
+    monkeypatch.setattr(maboss_server, "_SERVER_ROOT", tmp_path)
+
+    def convert(_input: str, bnd_path: str, cfg_path: str) -> None:
+        Path(bnd_path).write_text("node A\nnode B\n", encoding="utf-8")
+        Path(cfg_path).write_text("max_time = 100;\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        maboss_server.maboss,
+        "bnet_to_bnd_and_cfg",
+        convert,
+    )
+    monkeypatch.setattr(
+        maboss_server.maboss,
+        "load",
+        lambda _bnd, _cfg: candidate,
+    )
+
+    result = _run(
+        _call_tool(
+            "import_neko_handoff",
+            {
+                "manifest_path": str(manifest_path),
+                "artifact_prefix": "imported_ab",
+                "session_id": session_id,
+            },
+        )
+    )
+
+    artifact_dir = tmp_path / "artifacts" / session_id
+    session = session_manager.get_session(session_id)
+    assert session is not None
+    assert result.is_error is False
+    assert session.sim is candidate
+    assert session.upstream_neko_manifest_path == str(manifest_path)
+    assert candidate.network.get_output() == ["B", "A"]
+    assert result.structured_content is not None
+    assert result.structured_content["server"] == "MaBoSS"
+    assert result.structured_content["session_id"] == session_id
+    assert result.structured_content["nodes"] == ["A", "B"]
+    assert result.structured_content["output_nodes"] == ["A", "B"]
+    assert result.structured_content["requires_output_selection"] is False
+    assert result.structured_content["source_manifest"] == json.loads(
+        manifest_path.read_text(encoding="utf-8")
+    )
+    assert result.structured_content["source_manifest_file"]["sha256"]
+    assert result.structured_content["bnd_file"]["path"] == str(
+        artifact_dir / "imported_ab.bnd"
+    )
+    assert result.structured_content["cfg_file"]["path"] == str(
+        artifact_dir / "imported_ab.cfg"
+    )
+    assert source_manifest.network.output_nodes == ["A", "B"]
+
+
+def test_import_neko_handoff_requires_later_output_selection_when_omitted(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manifest_path, _manifest = _create_neko_handoff(
+        tmp_path,
+        output_nodes=[],
+    )
+    session_id = session_manager.create_session()
+    candidate = HandoffSimulationStub()
+    monkeypatch.setattr(maboss_server, "_SERVER_ROOT", tmp_path)
+
+    def convert(_input: str, bnd_path: str, cfg_path: str) -> None:
+        Path(bnd_path).write_text("node A\nnode B\n", encoding="utf-8")
+        Path(cfg_path).write_text("max_time = 100;\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        maboss_server.maboss,
+        "bnet_to_bnd_and_cfg",
+        convert,
+    )
+    monkeypatch.setattr(
+        maboss_server.maboss,
+        "load",
+        lambda _bnd, _cfg: candidate,
+    )
+
+    result = _run(
+        _call_tool(
+            "import_neko_handoff",
+            {
+                "manifest_path": str(manifest_path),
+                "session_id": session_id,
+            },
+        )
+    )
+
+    assert result.is_error is False
+    assert candidate.network.get_output() == []
+    assert result.structured_content["requires_output_selection"] is True
+    assert "All nodes were marked internal" in result.content[0].text
+    assert "set_maboss_output_nodes" in result.content[0].text
+
+
+def test_import_neko_handoff_failure_preserves_previous_session_and_files(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manifest_path, _manifest = _create_neko_handoff(tmp_path)
+    previous_simulation = object()
+    session_id = _create_simulation_session(previous_simulation)
+    monkeypatch.setattr(maboss_server, "_SERVER_ROOT", tmp_path)
+
+    def convert(_input: str, bnd_path: str, cfg_path: str) -> None:
+        Path(bnd_path).write_text("node A\nnode B\n", encoding="utf-8")
+        Path(cfg_path).write_text("max_time = 100;\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        maboss_server.maboss,
+        "bnet_to_bnd_and_cfg",
+        convert,
+    )
+    monkeypatch.setattr(
+        maboss_server.maboss,
+        "load",
+        lambda _bnd, _cfg: (_ for _ in ()).throw(
+            RuntimeError("load failed")
+        ),
+    )
+
+    result = _run(
+        _call_tool(
+            "import_neko_handoff",
+            {
+                "manifest_path": str(manifest_path),
+                "artifact_prefix": "failed",
+                "session_id": session_id,
+            },
+        )
+    )
+
+    session = session_manager.get_session(session_id)
+    artifact_dir = tmp_path / "artifacts" / session_id
+    assert session is not None
+    assert result.is_error is True
+    assert "load failed" in result.content[0].text
+    assert session.sim is previous_simulation
+    assert session.upstream_neko_manifest_path is None
+    assert list(artifact_dir.iterdir()) == []
+
+
+def test_import_neko_handoff_rejects_modified_bnet_before_session_change(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manifest_path, source_manifest = _create_neko_handoff(tmp_path)
+    Path(source_manifest.bnet_file.path).write_text(
+        "A, A\nB, B\n",
+        encoding="utf-8",
+    )
+    previous_simulation = object()
+    session_id = _create_simulation_session(previous_simulation)
+    monkeypatch.setattr(maboss_server, "_SERVER_ROOT", tmp_path)
+
+    result = _run(
+        _call_tool(
+            "import_neko_handoff",
+            {
+                "manifest_path": str(manifest_path),
+                "session_id": session_id,
+            },
+        )
+    )
+
+    session = session_manager.get_session(session_id)
+    assert session is not None
+    assert result.is_error is True
+    assert "changed" in result.content[0].text
+    assert session.sim is previous_simulation
+    assert not (tmp_path / "artifacts" / session_id).exists()
+
+
+def test_import_neko_handoff_refuses_existing_artifact(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manifest_path, _manifest = _create_neko_handoff(tmp_path)
+    previous_simulation = object()
+    session_id = _create_simulation_session(previous_simulation)
+    artifact_dir = tmp_path / "artifacts" / session_id
+    artifact_dir.mkdir(parents=True)
+    existing_cfg = artifact_dir / "retained.cfg"
+    existing_cfg.write_text("original\n", encoding="utf-8")
+    monkeypatch.setattr(maboss_server, "_SERVER_ROOT", tmp_path)
+
+    result = _run(
+        _call_tool(
+            "import_neko_handoff",
+            {
+                "manifest_path": str(manifest_path),
+                "artifact_prefix": "retained",
+                "session_id": session_id,
+            },
+        )
+    )
+
+    session = session_manager.get_session(session_id)
+    assert session is not None
+    assert result.is_error is True
+    assert "Refusing to overwrite" in result.content[0].text
+    assert session.sim is previous_simulation
+    assert existing_cfg.read_text(encoding="utf-8") == "original\n"
+    assert list(artifact_dir.iterdir()) == [existing_cfg]
+
+
 def test_maboss_export_returns_normalized_structured_artifacts(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -564,6 +923,281 @@ def test_maboss_export_returns_normalized_structured_artifacts(
     assert result.structured_content["overwrite"] is True
     assert result.structured_content["bnd_file"]["name"] == "run_2.bnd"
     assert result.structured_content["cfg_file"]["name"] == "run_2.cfg"
+
+
+def test_export_maboss_handoff_preserves_neko_lineage_and_result(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manifest_path, parent_manifest = _create_neko_handoff(tmp_path)
+    simulation = HandoffSimulationStub(outputs=["B"])
+    session_id = session_manager.create_session()
+    session = session_manager.get_session(session_id)
+    assert session is not None
+    session.set_simulation(
+        simulation,
+        "/source/model.bnd",
+        "/source/model.cfg",
+        upstream_neko_manifest_path=str(manifest_path),
+    )
+    session.set_result(HandoffResultStub())
+    monkeypatch.setattr(maboss_server, "_SERVER_ROOT", tmp_path)
+    monkeypatch.setattr(
+        maboss_server,
+        "_maboss_package_version",
+        lambda: "0.8.15",
+    )
+
+    result = _run(
+        _call_tool(
+            "export_maboss_handoff",
+            {
+                "target_cell_type": "epithelial",
+                "simulation_summary": "B remains active in the final state.",
+                "artifact_prefix": "ab_physicell",
+                "session_id": session_id,
+            },
+        )
+    )
+
+    artifact_dir = tmp_path / "artifacts" / session_id
+    handoff_path = artifact_dir / "ab_physicell.handoff.json"
+    assert result.is_error is False
+    assert handoff_path.is_file()
+    assert (artifact_dir / "ab_physicell.bnd").is_file()
+    assert (artifact_dir / "ab_physicell.cfg").is_file()
+    assert (artifact_dir / "ab_physicell.result.csv").is_file()
+    assert result.structured_content is not None
+    manifest = result.structured_content["manifest"]
+    assert manifest["handoff_type"] == "maboss-to-physicell"
+    assert manifest["source"]["session_id"] == session_id
+    assert manifest["source"]["modelling_package"] == {
+        "name": "maboss",
+        "version": "0.8.15",
+    }
+    assert manifest["lineage"] == [
+        parent_manifest.source.model_dump(mode="json")
+    ]
+    assert manifest["parent_manifest"]["path"] == str(manifest_path)
+    assert manifest["biological_context"] == (
+        "Investigate reciprocal A/B signalling."
+    )
+    assert manifest["network"] == {
+        "nodes": ["A", "B"],
+        "output_nodes": ["B"],
+        "renamed_nodes": [],
+        "node_renames": {},
+        "duplicate_rules_removed": [],
+    }
+    assert manifest["simulation"]["parameters"] == {
+        "max_time": 100.0,
+        "sample_count": 1000,
+    }
+    assert manifest["simulation"]["simulation_summary"] == (
+        "B remains active in the final state."
+    )
+    assert manifest["simulation"]["result_file"]["role"] == "maboss_result"
+    assert manifest["target"]["cell_type"] == "epithelial"
+    assert json.loads(handoff_path.read_text(encoding="utf-8")) == manifest
+    assert len(result.structured_content["manifest_file"]["sha256"]) == 64
+
+
+def test_export_maboss_handoff_supports_standalone_model_without_result(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    session_id = _create_simulation_session(
+        HandoffSimulationStub(outputs=["A"])
+    )
+    monkeypatch.setattr(maboss_server, "_SERVER_ROOT", tmp_path)
+    monkeypatch.setattr(
+        maboss_server,
+        "_maboss_package_version",
+        lambda: "0.8.15",
+    )
+
+    result = _run(
+        _call_tool(
+            "export_maboss_handoff",
+            {
+                "target_cell_type": "immune",
+                "biological_context": "Standalone immune activation model.",
+                "include_result": False,
+                "artifact_prefix": "standalone",
+                "session_id": session_id,
+            },
+        )
+    )
+
+    assert result.is_error is False
+    manifest = result.structured_content["manifest"]
+    assert manifest["lineage"] == []
+    assert manifest["parent_manifest"] is None
+    assert manifest["simulation"]["result_file"] is None
+    assert manifest["simulation"]["simulation_summary"] == (
+        "No MaBoSS simulation result was stored at export time."
+    )
+    assert not (
+        tmp_path
+        / "artifacts"
+        / session_id
+        / "standalone.result.csv"
+    ).exists()
+
+
+@pytest.mark.parametrize(
+    ("simulation", "context", "message"),
+    [
+        (
+            HandoffSimulationStub(outputs=[]),
+            "Context.",
+            "No MaBoSS output nodes",
+        ),
+        (
+            HandoffSimulationStub(
+                outputs=["A"],
+                parameters={"max_time": float("inf")},
+            ),
+            "Context.",
+            "must be finite",
+        ),
+        (
+            HandoffSimulationStub(outputs=["A"]),
+            None,
+            "biological_context is required",
+        ),
+    ],
+)
+def test_export_maboss_handoff_rejects_incomplete_scientific_context(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    simulation: HandoffSimulationStub,
+    context: str | None,
+    message: str,
+) -> None:
+    session_id = _create_simulation_session(simulation)
+    monkeypatch.setattr(maboss_server, "_SERVER_ROOT", tmp_path)
+    arguments: dict[str, object] = {
+        "target_cell_type": "epithelial",
+        "artifact_prefix": "invalid",
+        "session_id": session_id,
+    }
+    if context is not None:
+        arguments["biological_context"] = context
+
+    result = _run(_call_tool("export_maboss_handoff", arguments))
+
+    assert result.is_error is True
+    assert message in result.content[0].text
+    artifact_dir = tmp_path / "artifacts" / session_id
+    if artifact_dir.exists():
+        assert list(artifact_dir.iterdir()) == []
+
+
+def test_export_maboss_handoff_refuses_existing_artifact(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    session_id = _create_simulation_session(
+        HandoffSimulationStub(outputs=["A"])
+    )
+    artifact_dir = tmp_path / "artifacts" / session_id
+    artifact_dir.mkdir(parents=True)
+    existing_bnd = artifact_dir / "retained.bnd"
+    existing_bnd.write_text("original\n", encoding="utf-8")
+    monkeypatch.setattr(maboss_server, "_SERVER_ROOT", tmp_path)
+
+    result = _run(
+        _call_tool(
+            "export_maboss_handoff",
+            {
+                "target_cell_type": "epithelial",
+                "biological_context": "Context.",
+                "artifact_prefix": "retained",
+                "session_id": session_id,
+            },
+        )
+    )
+
+    assert result.is_error is True
+    assert "Refusing to overwrite" in result.content[0].text
+    assert existing_bnd.read_text(encoding="utf-8") == "original\n"
+    assert list(artifact_dir.iterdir()) == [existing_bnd]
+
+
+def test_export_maboss_handoff_rejects_stale_neko_lineage(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manifest_path, parent_manifest = _create_neko_handoff(tmp_path)
+    Path(parent_manifest.bnet_file.path).write_text(
+        "A, A\nB, B\n",
+        encoding="utf-8",
+    )
+    session_id = session_manager.create_session()
+    session = session_manager.get_session(session_id)
+    assert session is not None
+    session.set_simulation(
+        HandoffSimulationStub(outputs=["B"]),
+        "/source/model.bnd",
+        "/source/model.cfg",
+        upstream_neko_manifest_path=str(manifest_path),
+    )
+    monkeypatch.setattr(maboss_server, "_SERVER_ROOT", tmp_path)
+
+    result = _run(
+        _call_tool(
+            "export_maboss_handoff",
+            {
+                "target_cell_type": "epithelial",
+                "artifact_prefix": "stale",
+                "session_id": session_id,
+            },
+        )
+    )
+
+    assert result.is_error is True
+    assert "changed" in result.content[0].text
+    assert not (tmp_path / "artifacts" / session_id).exists()
+
+
+def test_export_maboss_handoff_rolls_back_partial_artifact_pair(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    session_id = _create_simulation_session(
+        HandoffSimulationStub(outputs=["A"])
+    )
+    monkeypatch.setattr(maboss_server, "_SERVER_ROOT", tmp_path)
+    real_link = maboss_server._link_artifact_without_overwrite
+
+    def fail_cfg_link(source: Path, destination: Path) -> None:
+        if destination.suffix == ".cfg":
+            raise RuntimeError("simulated CFG finalization failure")
+        real_link(source, destination)
+
+    monkeypatch.setattr(
+        maboss_server,
+        "_link_artifact_without_overwrite",
+        fail_cfg_link,
+    )
+
+    result = _run(
+        _call_tool(
+            "export_maboss_handoff",
+            {
+                "target_cell_type": "epithelial",
+                "biological_context": "Context.",
+                "artifact_prefix": "partial",
+                "session_id": session_id,
+            },
+        )
+    )
+
+    artifact_dir = tmp_path / "artifacts" / session_id
+    assert result.is_error is True
+    assert "CFG finalization failure" in result.content[0].text
+    assert list(artifact_dir.iterdir()) == []
 
 
 def test_maboss_artifact_listing_and_cleanup_are_structured(
@@ -622,6 +1256,20 @@ def test_run_without_simulation_is_tool_error() -> None:
 
     assert result.is_error is True
     assert "No MaBoSS simulation has been built yet" in result.content[0].text
+
+
+def test_run_requires_at_least_one_selected_output_node() -> None:
+    session_id = _create_simulation_session(
+        HandoffSimulationStub(outputs=[])
+    )
+
+    result = _run(
+        _call_tool("run_simulation", {"session_id": session_id})
+    )
+
+    assert result.is_error is True
+    assert "No MaBoSS output nodes are selected" in result.content[0].text
+    assert "set_maboss_output_nodes" in result.content[0].text
 
 
 def test_visualize_without_result_is_tool_error() -> None:
@@ -746,9 +1394,11 @@ def test_pymaboss_plot_contract_supports_until_and_axes() -> None:
 @pytest.mark.parametrize(
     "handler_name",
     [
+        "import_neko_handoff",
         "bnet_to_bnd_and_cfg",
         "build_simulation",
         "export_maboss_bnd_cfg",
+        "export_maboss_handoff",
         "change_maboss_rule",
         "update_maboss_parameters",
         "set_maboss_output_nodes",
@@ -777,10 +1427,12 @@ def test_session_locking_preserves_public_tool_schemas() -> None:
     listed_tools = _run(_list_tools())
     tools = {tool.name: tool for tool in listed_tools.tools}
     session_backed_tools = {
+        "import_neko_handoff",
         "bnet_to_bnd_and_cfg",
         "build_simulation",
         "run_simulation",
         "export_maboss_bnd_cfg",
+        "export_maboss_handoff",
         "change_maboss_rule",
         "update_maboss_parameters",
         "set_maboss_output_nodes",
@@ -829,8 +1481,10 @@ def test_all_maboss_tools_publish_safety_annotations() -> None:
     }
     non_idempotent = {
         "create_session",
+        "import_neko_handoff",
         "run_simulation",
         "export_maboss_bnd_cfg",
+        "export_maboss_handoff",
     }
     destructive = {"delete_session"}
     idempotent_destructive = {"clean_generated_files"}
@@ -872,6 +1526,18 @@ def test_maboss_tool_schemas_constrain_common_inputs() -> None:
     assert output_schema["minItems"] == 1
     assert output_schema["items"]["minLength"] == 1
 
+    for tool_name in ("import_neko_handoff", "export_maboss_handoff"):
+        prefix_schema = tools[tool_name].input_schema["properties"][
+            "artifact_prefix"
+        ]
+        assert prefix_schema["minLength"] == 1
+        assert prefix_schema["maxLength"] == 128
+        assert prefix_schema["pattern"].startswith("^")
+    import_schema = tools["import_neko_handoff"].input_schema
+    assert import_schema["required"] == ["manifest_path"]
+    export_schema = tools["export_maboss_handoff"].input_schema
+    assert export_schema["required"] == ["target_cell_type"]
+
     parameter_schema = tools["update_maboss_parameters"].input_schema
     parameter_definition = parameter_schema["$defs"]["MaBoSSParameterUpdates"]
     assert parameter_definition["additionalProperties"] is True
@@ -897,7 +1563,15 @@ def test_maboss_tool_schemas_constrain_common_inputs() -> None:
     [
         ("set_default_session", {"session_id": ""}),
         ("set_default_session", {"session_id": "   "}),
+        (
+            "import_neko_handoff",
+            {"manifest_path": "/tmp/model.json", "artifact_prefix": "../bad"},
+        ),
         ("bnet_to_bnd_and_cfg", {"bnet_path": ""}),
+        (
+            "export_maboss_handoff",
+            {"target_cell_type": "cell", "artifact_prefix": "bad name"},
+        ),
         ("change_maboss_rule", {"node": "", "new_rule": "A"}),
         ("change_maboss_rule", {"node": "A", "new_rule": ""}),
         ("set_maboss_output_nodes", {"output_nodes": []}),
