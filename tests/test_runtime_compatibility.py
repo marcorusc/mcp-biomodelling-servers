@@ -146,11 +146,96 @@ def test_physicell_settings_runtime_exposes_server_contract() -> None:
             get_signals_behaviors,
             update_signals_behaviors_context_from_config,
         )
+        from copy import deepcopy
 
         config = PhysiCellConfig()
         assert callable(config.generate_xml)
         assert callable(config.load_xml)
+        config.substrates.add_substrate("oxygen")
         config.cell_types.add_cell_type("tumour")
+        config.cell_types.set_volume_parameters(
+            "tumour",
+            total=3000,
+            nuclear=700,
+            fluid_fraction=0.6,
+        )
+        config.cell_types.set_motility(
+            "tumour",
+            speed=2,
+            persistence_time=9,
+            enabled=False,
+        )
+        config.cell_types.set_death_rate("tumour", "apoptosis", 0.001)
+        config.cell_types.set_death_rate("tumour", "necrosis", 0.002)
+        config.cell_types.add_secretion(
+            "tumour",
+            "oxygen",
+            secretion_rate=2,
+            secretion_target=3,
+            uptake_rate=4,
+            net_export_rate=5,
+        )
+        patch_candidate = deepcopy(config)
+        patch_candidate.cell_types.set_volume_parameters(
+            "tumour",
+            total=None,
+            nuclear=800,
+            fluid_fraction=None,
+        )
+        patch_candidate.cell_types.set_motility(
+            "tumour",
+            speed=3,
+            persistence_time=None,
+            enabled=None,
+        )
+        patched_phenotype = patch_candidate.cell_types.get_cell_types()[
+            "tumour"
+        ]["phenotype"]
+        assert patched_phenotype["volume"]["total"] == 3000
+        assert patched_phenotype["volume"]["nuclear"] == 800
+        assert patched_phenotype["volume"]["fluid_fraction"] == 0.6
+        assert patched_phenotype["motility"]["speed"] == 3
+        assert patched_phenotype["motility"]["persistence_time"] == 9
+        assert patched_phenotype["motility"]["enabled"] is False
+        assert patched_phenotype["death"]["apoptosis"]["default_rate"] == 0.001
+        assert patched_phenotype["death"]["necrosis"]["default_rate"] == 0.002
+        assert patched_phenotype["secretion"]["oxygen"] == {
+            "secretion_rate": 2,
+            "secretion_target": 3,
+            "uptake_rate": 4,
+            "net_export_rate": 5,
+        }
+        from PhysiCell import server as physicell_server
+
+        session_id = physicell_server.session_manager.create_session()
+        session = physicell_server.session_manager.get_session(session_id)
+        assert session is not None
+        session.config = deepcopy(config)
+        physicell_server.configure_cell_parameters(
+            cell_type="tumour",
+            volume_total=None,
+            volume_nuclear=None,
+            fluid_fraction=None,
+            motility_speed=None,
+            persistence_time=None,
+            motility_enabled=None,
+            apoptosis_rate=0.003,
+            necrosis_rate=None,
+            session_id=session_id,
+        )
+        server_phenotype = session.config.cell_types.get_cell_types()[
+            "tumour"
+        ]["phenotype"]
+        assert server_phenotype["volume"]["total"] == 3000
+        assert server_phenotype["motility"]["enabled"] is False
+        assert (
+            server_phenotype["death"]["apoptosis"]["default_rate"]
+            == 0.003
+        )
+        assert (
+            server_phenotype["death"]["necrosis"]["default_rate"]
+            == 0.002
+        )
         candidate = config.copy()
         candidate.physiboss.add_intracellular_model(
             cell_type_name="tumour",
@@ -165,6 +250,32 @@ def test_physicell_settings_runtime_exposes_server_contract() -> None:
         assert intracellular["type"] == "maboss"
         assert intracellular["bnd_filename"] == "/tmp/runtime.bnd"
         assert intracellular["cfg_filename"] == "/tmp/runtime.cfg"
+        candidate.physiboss.set_intracellular_settings(
+            cell_type_name="tumour",
+            intracellular_dt=6,
+            time_stochasticity=2,
+            scaling=1.5,
+            start_time=4,
+            inheritance_global=True,
+        )
+        candidate.physiboss.set_intracellular_settings(
+            cell_type_name="tumour",
+            intracellular_dt=12,
+            time_stochasticity=None,
+            scaling=None,
+            start_time=None,
+            inheritance_global=None,
+        )
+        settings = candidate.cell_types.get_cell_types()["tumour"][
+            "phenotype"
+        ]["intracellular"]["settings"]
+        assert settings == {
+            "intracellular_dt": 12,
+            "time_stochasticity": 2,
+            "scaling": 1.5,
+            "start_time": 4,
+            "inheritance": {"global": True},
+        }
         assert callable(get_default_parameters)
         assert callable(get_signals_behaviors)
         assert callable(get_signal_by_name)

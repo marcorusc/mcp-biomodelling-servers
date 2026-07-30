@@ -59,8 +59,8 @@ PhysiCell:  add_physiboss_model() → link genes to behaviors → simulate
 
 #### Cell Population Definition
 - `add_single_cell_type()` - Define cancer, immune, stromal cell populations
-- `configure_cell_parameters()` - Set size, motility, death rates
-- `set_substrate_interaction()` - Define consumption and secretion
+- `configure_cell_parameters()` - Patch size, motility, or death rates while preserving omitted values
+- `set_substrate_interaction()` - Patch consumption or secretion for one cell/substrate pair
 
 #### Behavioral Programming
 - `add_single_cell_rule()` - Create environmental sensing and response
@@ -69,6 +69,7 @@ PhysiCell:  add_physiboss_model() → link genes to behaviors → simulate
 
 #### PhysiBoSS Multiscale Integration
 - `add_physiboss_model()` - Integrate Boolean networks into cell behavior
+- `configure_physiboss_settings()` - Patch intracellular timing, scaling, and inheritance settings
 - `add_physiboss_input_link()` - Connect environment to gene regulation
 - `add_physiboss_output_link()` - Connect gene states to cell phenotypes
 - `apply_physiboss_mutation()` - Simulate genetic perturbations

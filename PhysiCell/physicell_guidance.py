@@ -39,10 +39,19 @@ multiple configurations are active.
 - PhysiBoSS input links, output links, and mutations can each be called
   repeatedly for the same intracellular model.
 
-When revising an existing configuration, inspect the current values first.
-`configure_cell_parameters()` and `set_substrate_interaction()` currently use
-defaults for omitted arguments, so explicitly provide every value that must be
-preserved during an update.
+These configuration tools use patch semantics:
+
+- `configure_cell_parameters()` preserves every omitted volume, motility, and
+  death parameter. Motility is enabled or disabled only when
+  `motility_enabled` is supplied explicitly.
+- `set_substrate_interaction()` preserves omitted secretion and uptake rates,
+  as well as the existing secretion target and net export rate.
+- `configure_physiboss_settings()` preserves every omitted intracellular
+  timing, stochasticity, scaling, start-time, and inheritance setting.
+
+Provide only the values that should change. Each patch requires at least one
+value, and the same tool can be called again after discussion or simulation
+analysis to revise one cell type or cell-type/substrate pair.
 
 ## 3. PhysiBoSS integration
 

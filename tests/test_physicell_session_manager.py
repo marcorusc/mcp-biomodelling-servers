@@ -73,6 +73,56 @@ class TestSessionState:
         s.mark_xml_modification()
         assert s.xml_modification_count == 2
 
+    def test_publish_config_update_is_atomic_and_tracks_real_changes(self):
+        original = object()
+        updated = object()
+        s = SessionState(
+            session_id="s1",
+            config=original,
+            loaded_from_xml=True,
+        )
+
+        s.publish_config_update(
+            config=updated,
+            completed_step=WorkflowStep.CELL_PARAMETERS_CONFIGURED,
+            configuration_changed=True,
+        )
+
+        assert s.config is updated
+        assert s.xml_modification_count == 1
+        assert s.is_step_complete(
+            WorkflowStep.CELL_PARAMETERS_CONFIGURED
+        )
+
+        ignored_candidate = object()
+        s.publish_config_update(
+            config=ignored_candidate,
+            completed_step=WorkflowStep.CELL_PARAMETERS_CONFIGURED,
+            configuration_changed=False,
+        )
+
+        assert s.config is updated
+        assert s.xml_modification_count == 1
+
+    def test_publish_config_update_reconciles_physiboss_tracking(self):
+        config = object()
+        s = SessionState(session_id="s1")
+
+        s.publish_config_update(
+            config=config,
+            completed_step=WorkflowStep.PHYSIBOSS_SETTINGS_CONFIGURED,
+            configuration_changed=True,
+            physiboss_tracking=(["tumour", "immune"], 2, 3, 4, 5),
+        )
+
+        assert s.config is config
+        assert s.loaded_physiboss_models == ["tumour", "immune"]
+        assert s.physiboss_models_count == 2
+        assert s.physiboss_settings_count == 2
+        assert s.physiboss_input_links_count == 3
+        assert s.physiboss_output_links_count == 4
+        assert s.physiboss_mutations_count == 5
+
     def test_get_progress_percentage_zero_when_no_steps(self):
         s = SessionState(session_id="s1")
         pct = s.get_progress_percentage()
@@ -291,4 +341,3 @@ class TestModuleLevelHelpers:
         fresh_mgr = SessionManager()
         monkeypatch.setattr(_sm, "session_manager", fresh_mgr)
         assert _sm.get_current_session() is None
-

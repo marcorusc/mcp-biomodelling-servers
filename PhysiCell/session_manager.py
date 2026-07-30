@@ -169,6 +169,48 @@ class SessionState:
             if self.loaded_from_xml:
                 self.xml_modification_count += 1
             self._touch_unlocked()
+
+    def publish_config_update(
+        self,
+        *,
+        config: object,
+        completed_step: WorkflowStep,
+        configuration_changed: bool,
+        physiboss_tracking: tuple[
+            list[str],
+            int,
+            int,
+            int,
+            int,
+        ] | None = None,
+    ) -> None:
+        """Atomically publish one validated configuration patch.
+
+        A patch that explicitly confirms already-current values still
+        completes its workflow step, but it does not replace the active
+        configuration or inflate XML modification tracking.
+        """
+        with self._operation_lock:
+            if configuration_changed:
+                self.config = config
+            self.completed_steps.add(completed_step)
+            if physiboss_tracking is not None:
+                (
+                    model_names,
+                    settings_count,
+                    input_links_count,
+                    output_links_count,
+                    mutations_count,
+                ) = physiboss_tracking
+                self.loaded_physiboss_models = list(model_names)
+                self.physiboss_models_count = len(model_names)
+                self.physiboss_settings_count = settings_count
+                self.physiboss_input_links_count = input_links_count
+                self.physiboss_output_links_count = output_links_count
+                self.physiboss_mutations_count = mutations_count
+            if configuration_changed and self.loaded_from_xml:
+                self.xml_modification_count += 1
+            self._touch_unlocked()
     
     def mark_step_complete(self, step: WorkflowStep) -> None:
         """Mark a workflow step as completed."""

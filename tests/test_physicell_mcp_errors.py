@@ -322,6 +322,218 @@ class HandoffConfigStub:
         )
 
 
+class PatchCellTypesStub:
+    """Copy-backed cell-type surface for atomic partial-update tests."""
+
+    def __init__(self, config: PatchConfigStub) -> None:
+        self._config = config
+
+    def _phenotype(self, cell_type: str) -> dict[str, Any]:
+        if cell_type not in self._config.cell_type_data:
+            raise LookupError(f"unknown cell type {cell_type}")
+        return self._config.cell_type_data[cell_type]["phenotype"]
+
+    def get_cell_types(self) -> dict[str, dict[str, Any]]:
+        return self._config.cell_type_data
+
+    def set_volume_parameters(
+        self,
+        cell_type: str,
+        *,
+        total: float | None,
+        nuclear: float | None,
+        fluid_fraction: float | None,
+    ) -> None:
+        volume = self._phenotype(cell_type)["volume"]
+        if total is not None:
+            volume["total"] = total
+        if nuclear is not None:
+            volume["nuclear"] = nuclear
+        if fluid_fraction is not None:
+            volume["fluid_fraction"] = fluid_fraction
+
+    def set_motility(
+        self,
+        cell_type: str,
+        *,
+        speed: float | None,
+        persistence_time: float | None,
+        enabled: bool | None,
+    ) -> None:
+        motility = self._phenotype(cell_type)["motility"]
+        if speed is not None:
+            motility["speed"] = speed
+        if persistence_time is not None:
+            motility["persistence_time"] = persistence_time
+        if enabled is not None:
+            motility["enabled"] = enabled
+
+    def set_death_rate(
+        self,
+        cell_type: str,
+        death_type: str,
+        rate: float,
+    ) -> None:
+        if self._config.fail_operation == "death":
+            raise LookupError("candidate death update failed")
+        self._phenotype(cell_type)["death"][death_type][
+            "default_rate"
+        ] = rate
+
+    def add_secretion(
+        self,
+        cell_type: str,
+        substrate: str,
+        *,
+        secretion_rate: float,
+        secretion_target: float,
+        uptake_rate: float,
+        net_export_rate: float,
+    ) -> None:
+        if self._config.fail_operation == "secretion":
+            raise LookupError("candidate secretion update failed")
+        secretion = self._phenotype(cell_type)["secretion"]
+        secretion[substrate] = {
+            "secretion_rate": secretion_rate,
+            "secretion_target": secretion_target,
+            "uptake_rate": uptake_rate,
+            "net_export_rate": net_export_rate,
+        }
+
+
+class PatchPhysiBoSSStub:
+    """Optional-setting PhysiBoSS surface matching physicell-settings."""
+
+    def __init__(self, config: PatchConfigStub) -> None:
+        self._config = config
+
+    def set_intracellular_settings(
+        self,
+        *,
+        cell_type_name: str,
+        intracellular_dt: float | None,
+        time_stochasticity: int | None,
+        scaling: float | None,
+        start_time: float | None,
+        inheritance_global: bool | None,
+    ) -> None:
+        if self._config.fail_operation == "physiboss":
+            raise LookupError("candidate PhysiBoSS update failed")
+        intracellular = self._config.cell_type_data[cell_type_name][
+            "phenotype"
+        ]["intracellular"]
+        settings = intracellular["settings"]
+        if intracellular_dt is not None:
+            settings["intracellular_dt"] = intracellular_dt
+        if time_stochasticity is not None:
+            settings["time_stochasticity"] = time_stochasticity
+        if scaling is not None:
+            settings["scaling"] = scaling
+        if start_time is not None:
+            settings["start_time"] = start_time
+        if inheritance_global is not None:
+            settings.setdefault("inheritance", {})[
+                "global"
+            ] = inheritance_global
+
+
+class PatchConfigStub:
+    """Copyable configuration with representative existing phenotype values."""
+
+    def __init__(
+        self,
+        cell_type_data: dict[str, dict[str, Any]],
+        *,
+        fail_operation: str | None = None,
+    ) -> None:
+        self.cell_type_data = copy.deepcopy(cell_type_data)
+        self.fail_operation = fail_operation
+        self.cell_types = PatchCellTypesStub(self)
+        self.substrates = SimpleNamespace(
+            get_substrates=lambda: {
+                "oxygen": {},
+                "glucose": {},
+            }
+        )
+        self.physiboss = PatchPhysiBoSSStub(self)
+
+    def copy(self) -> PatchConfigStub:
+        return PatchConfigStub(
+            self.cell_type_data,
+            fail_operation=self.fail_operation,
+        )
+
+
+def _patch_config(
+    *,
+    fail_operation: str | None = None,
+) -> PatchConfigStub:
+    """Return two isolated cell types with non-default existing values."""
+    def cell_data(
+        *,
+        total: float,
+        secretion_rate: float,
+        uptake_rate: float,
+        intracellular_dt: float,
+    ) -> dict[str, Any]:
+        return {
+            "phenotype": {
+                "volume": {
+                    "total": total,
+                    "nuclear": 700.0,
+                    "fluid_fraction": 0.6,
+                },
+                "motility": {
+                    "speed": 2.0,
+                    "persistence_time": 9.0,
+                    "enabled": False,
+                },
+                "death": {
+                    "apoptosis": {"default_rate": 0.001},
+                    "necrosis": {"default_rate": 0.002},
+                },
+                "secretion": {
+                    "oxygen": {
+                        "secretion_rate": secretion_rate,
+                        "secretion_target": 3.0,
+                        "uptake_rate": uptake_rate,
+                        "net_export_rate": 5.0,
+                    }
+                },
+                "intracellular": {
+                    "type": "maboss",
+                    "settings": {
+                        "intracellular_dt": intracellular_dt,
+                        "time_stochasticity": 2,
+                        "scaling": 1.5,
+                        "start_time": 4.0,
+                        "inheritance": {"global": True},
+                    },
+                    "mapping": {"inputs": [], "outputs": []},
+                    "initial_values": [],
+                },
+            }
+        }
+
+    return PatchConfigStub(
+        {
+            "tumour": cell_data(
+                total=3000.0,
+                secretion_rate=2.0,
+                uptake_rate=4.0,
+                intracellular_dt=6.0,
+            ),
+            "immune": cell_data(
+                total=1800.0,
+                secretion_rate=7.0,
+                uptake_rate=8.0,
+                intracellular_dt=3.0,
+            ),
+        },
+        fail_operation=fail_operation,
+    )
+
+
 def _handoff_config(
     *cell_types: str,
     existing_target: str | None = None,
@@ -963,27 +1175,411 @@ def test_missing_configuration_prerequisite_is_tool_error() -> None:
 
 
 def test_backend_configuration_failure_is_tool_error() -> None:
-    def fail_volume_configuration(*args: Any, **kwargs: Any) -> None:
-        del args, kwargs
-        raise LookupError("unknown cell type")
-
-    config = SimpleNamespace(
-        cell_types=SimpleNamespace(
-            set_volume_parameters=fail_volume_configuration,
-        )
-    )
+    config = _patch_config(fail_operation="death")
     session_id = _create_session(config)
 
     result = _run(
         _call_tool(
             "configure_cell_parameters",
-            {"cell_type": "missing", "session_id": session_id},
+            {
+                "cell_type": "tumour",
+                "volume_total": 3500,
+                "apoptosis_rate": 0.004,
+                "session_id": session_id,
+            },
         )
     )
 
     assert result.is_error is True
-    assert "Could not configure cell type 'missing'" in result.content[0].text
-    assert "unknown cell type" in result.content[0].text
+    assert "Could not configure cell type 'tumour'" in result.content[0].text
+    assert "candidate death update failed" in result.content[0].text
+    session = session_manager.get_session(session_id)
+    assert session is not None
+    assert session.config is config
+    assert config.cell_type_data["tumour"]["phenotype"]["volume"][
+        "total"
+    ] == 3000.0
+
+
+def test_cell_parameter_patch_preserves_omitted_values_and_other_cells() -> None:
+    original = _patch_config()
+    immune_before = copy.deepcopy(original.cell_type_data["immune"])
+    session_id = _create_session(original)
+    session = session_manager.get_session(session_id)
+    assert session is not None
+    session.loaded_from_xml = True
+
+    result = _run(
+        _call_tool(
+            "configure_cell_parameters",
+            {
+                "cell_type": "tumour",
+                "apoptosis_rate": 0.004,
+                "session_id": session_id,
+            },
+        )
+    )
+
+    assert result.is_error is False
+    assert "All omitted cell parameters were preserved" in result.content[0].text
+    assert session.config is not original
+    phenotype = session.config.cell_type_data["tumour"]["phenotype"]
+    assert phenotype["volume"] == {
+        "total": 3000.0,
+        "nuclear": 700.0,
+        "fluid_fraction": 0.6,
+    }
+    assert phenotype["motility"] == {
+        "speed": 2.0,
+        "persistence_time": 9.0,
+        "enabled": False,
+    }
+    assert phenotype["death"]["apoptosis"]["default_rate"] == 0.004
+    assert phenotype["death"]["necrosis"]["default_rate"] == 0.002
+    assert session.config.cell_type_data["immune"] == immune_before
+    assert session.is_step_complete(
+        physicell_server.WorkflowStep.CELL_PARAMETERS_CONFIGURED
+    )
+    assert session.xml_modification_count == 1
+
+
+def test_motility_patch_requires_explicit_enablement() -> None:
+    config = _patch_config()
+    session_id = _create_session(config)
+
+    speed_result = _run(
+        _call_tool(
+            "configure_cell_parameters",
+            {
+                "cell_type": "tumour",
+                "motility_speed": 3.5,
+                "session_id": session_id,
+            },
+        )
+    )
+    session = session_manager.get_session(session_id)
+    assert session is not None
+    motility = session.config.cell_type_data["tumour"]["phenotype"][
+        "motility"
+    ]
+
+    assert speed_result.is_error is False
+    assert motility["speed"] == 3.5
+    assert motility["enabled"] is False
+
+    enable_result = _run(
+        _call_tool(
+            "configure_cell_parameters",
+            {
+                "cell_type": "tumour",
+                "motility_enabled": True,
+                "session_id": session_id,
+            },
+        )
+    )
+
+    assert enable_result.is_error is False
+    assert session.config.cell_type_data["tumour"]["phenotype"]["motility"][
+        "enabled"
+    ] is True
+
+
+def test_legacy_full_positional_cell_call_keeps_session_position() -> None:
+    config = _patch_config()
+    session_id = _create_session(config)
+
+    result = physicell_server.configure_cell_parameters(
+        "tumour",
+        3100.0,
+        650.0,
+        0.7,
+        1.5,
+        6.0,
+        0.003,
+        0.004,
+        session_id,
+    )
+
+    assert "Cell parameters patched" in result
+    session = session_manager.get_session(session_id)
+    assert session is not None
+    phenotype = session.config.cell_type_data["tumour"]["phenotype"]
+    assert phenotype["volume"]["total"] == 3100.0
+    assert phenotype["death"]["apoptosis"]["default_rate"] == 0.003
+    assert phenotype["death"]["necrosis"]["default_rate"] == 0.004
+    assert phenotype["motility"]["enabled"] is False
+
+
+def test_identical_cell_patch_does_not_inflate_xml_tracking() -> None:
+    config = _patch_config()
+    session_id = _create_session(config)
+    session = session_manager.get_session(session_id)
+    assert session is not None
+    session.loaded_from_xml = True
+
+    result = _run(
+        _call_tool(
+            "configure_cell_parameters",
+            {
+                "cell_type": "tumour",
+                "volume_total": 3000.0,
+                "session_id": session_id,
+            },
+        )
+    )
+
+    assert result.is_error is False
+    assert "already matched" in result.content[0].text
+    assert session.config is config
+    assert session.xml_modification_count == 0
+
+
+def test_empty_cell_patch_is_rejected_without_mutation() -> None:
+    config = _patch_config()
+    session_id = _create_session(config)
+
+    result = _run(
+        _call_tool(
+            "configure_cell_parameters",
+            {"cell_type": "tumour", "session_id": session_id},
+        )
+    )
+
+    assert result.is_error is True
+    assert "At least one cell parameter" in result.content[0].text
+    session = session_manager.get_session(session_id)
+    assert session is not None
+    assert session.config is config
+
+
+def test_substrate_patch_preserves_all_omitted_interaction_values() -> None:
+    original = _patch_config()
+    immune_before = copy.deepcopy(original.cell_type_data["immune"])
+    session_id = _create_session(original)
+    session = session_manager.get_session(session_id)
+    assert session is not None
+    session.loaded_from_xml = True
+
+    result = _run(
+        _call_tool(
+            "set_substrate_interaction",
+            {
+                "cell_type": "tumour",
+                "substrate": "oxygen",
+                "uptake_rate": 10.0,
+                "session_id": session_id,
+            },
+        )
+    )
+
+    assert result.is_error is False
+    interaction = session.config.cell_type_data["tumour"]["phenotype"][
+        "secretion"
+    ]["oxygen"]
+    assert interaction == {
+        "secretion_rate": 2.0,
+        "secretion_target": 3.0,
+        "uptake_rate": 10.0,
+        "net_export_rate": 5.0,
+    }
+    assert session.config.cell_type_data["immune"] == immune_before
+    assert session.is_step_complete(
+        physicell_server.WorkflowStep.SUBSTRATE_INTERACTIONS_SET
+    )
+    assert session.xml_modification_count == 1
+
+    revision = _run(
+        _call_tool(
+            "set_substrate_interaction",
+            {
+                "cell_type": "tumour",
+                "substrate": "oxygen",
+                "secretion_rate": 9.0,
+                "session_id": session_id,
+            },
+        )
+    )
+    revised = session.config.cell_type_data["tumour"]["phenotype"][
+        "secretion"
+    ]["oxygen"]
+
+    assert revision.is_error is False
+    assert revised["secretion_rate"] == 9.0
+    assert revised["uptake_rate"] == 10.0
+    assert revised["secretion_target"] == 3.0
+    assert revised["net_export_rate"] == 5.0
+    assert session.xml_modification_count == 2
+
+
+def test_new_substrate_pair_uses_backend_baseline_for_omitted_values() -> None:
+    config = _patch_config()
+    session_id = _create_session(config)
+
+    result = _run(
+        _call_tool(
+            "set_substrate_interaction",
+            {
+                "cell_type": "tumour",
+                "substrate": "glucose",
+                "uptake_rate": 6.0,
+                "session_id": session_id,
+            },
+        )
+    )
+
+    assert result.is_error is False
+    session = session_manager.get_session(session_id)
+    assert session is not None
+    assert session.config.cell_type_data["tumour"]["phenotype"][
+        "secretion"
+    ]["glucose"] == {
+        "secretion_rate": 0.0,
+        "secretion_target": 1.0,
+        "uptake_rate": 6.0,
+        "net_export_rate": 0.0,
+    }
+
+
+def test_empty_substrate_patch_is_rejected_without_mutation() -> None:
+    config = _patch_config()
+    session_id = _create_session(config)
+
+    result = _run(
+        _call_tool(
+            "set_substrate_interaction",
+            {
+                "cell_type": "tumour",
+                "substrate": "oxygen",
+                "session_id": session_id,
+            },
+        )
+    )
+
+    assert result.is_error is True
+    assert "At least one of secretion_rate or uptake_rate" in (
+        result.content[0].text
+    )
+    session = session_manager.get_session(session_id)
+    assert session is not None
+    assert session.config is config
+
+
+def test_failed_substrate_patch_preserves_active_configuration() -> None:
+    config = _patch_config(fail_operation="secretion")
+    session_id = _create_session(config)
+
+    result = _run(
+        _call_tool(
+            "set_substrate_interaction",
+            {
+                "cell_type": "tumour",
+                "substrate": "oxygen",
+                "uptake_rate": 10.0,
+                "session_id": session_id,
+            },
+        )
+    )
+
+    assert result.is_error is True
+    assert "candidate secretion update failed" in result.content[0].text
+    session = session_manager.get_session(session_id)
+    assert session is not None
+    assert session.config is config
+    assert config.cell_type_data["tumour"]["phenotype"]["secretion"][
+        "oxygen"
+    ]["uptake_rate"] == 4.0
+
+
+def test_physiboss_patch_preserves_omitted_settings_and_reconciles_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(physicell_server, "PHYSIBOSS_AVAILABLE", True)
+    original = _patch_config()
+    immune_before = copy.deepcopy(original.cell_type_data["immune"])
+    session_id = _create_session(original)
+    session = session_manager.get_session(session_id)
+    assert session is not None
+    session.loaded_from_xml = True
+    session.physiboss_settings_count = 99
+
+    result = _run(
+        _call_tool(
+            "configure_physiboss_settings",
+            {
+                "cell_type": "tumour",
+                "intracellular_dt": 12.0,
+                "session_id": session_id,
+            },
+        )
+    )
+
+    assert result.is_error is False
+    settings = session.config.cell_type_data["tumour"]["phenotype"][
+        "intracellular"
+    ]["settings"]
+    assert settings == {
+        "intracellular_dt": 12.0,
+        "time_stochasticity": 2,
+        "scaling": 1.5,
+        "start_time": 4.0,
+        "inheritance": {"global": True},
+    }
+    assert session.config.cell_type_data["immune"] == immune_before
+    assert session.physiboss_settings_count == 2
+    assert session.is_step_complete(
+        physicell_server.WorkflowStep.PHYSIBOSS_SETTINGS_CONFIGURED
+    )
+    assert session.xml_modification_count == 1
+
+
+def test_empty_physiboss_patch_is_rejected_without_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(physicell_server, "PHYSIBOSS_AVAILABLE", True)
+    config = _patch_config()
+    session_id = _create_session(config)
+
+    result = _run(
+        _call_tool(
+            "configure_physiboss_settings",
+            {"cell_type": "tumour", "session_id": session_id},
+        )
+    )
+
+    assert result.is_error is True
+    assert "At least one PhysiBoSS setting" in result.content[0].text
+    session = session_manager.get_session(session_id)
+    assert session is not None
+    assert session.config is config
+
+
+def test_failed_physiboss_patch_preserves_active_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(physicell_server, "PHYSIBOSS_AVAILABLE", True)
+    config = _patch_config(fail_operation="physiboss")
+    session_id = _create_session(config)
+
+    result = _run(
+        _call_tool(
+            "configure_physiboss_settings",
+            {
+                "cell_type": "tumour",
+                "intracellular_dt": 12.0,
+                "session_id": session_id,
+            },
+        )
+    )
+
+    assert result.is_error is True
+    assert "candidate PhysiBoSS update failed" in result.content[0].text
+    session = session_manager.get_session(session_id)
+    assert session is not None
+    assert session.config is config
+    settings = config.cell_type_data["tumour"]["phenotype"][
+        "intracellular"
+    ]["settings"]
+    assert settings["intracellular_dt"] == 6.0
 
 
 def test_unavailable_physiboss_support_is_tool_error(
@@ -2157,6 +2753,13 @@ def test_physicell_tool_schemas_publish_stable_enums_and_bounds() -> None:
     listed_tools = _run(_list_tools())
     tools = {tool.name: tool for tool in listed_tools.tools}
 
+    def non_null(schema: dict[str, Any]) -> dict[str, Any]:
+        return next(
+            option
+            for option in schema["anyOf"]
+            if option.get("type") != "null"
+        )
+
     component_schema = tools[
         "list_loaded_components"
     ].input_schema["properties"]["component_type"]
@@ -2188,20 +2791,42 @@ def test_physicell_tool_schemas_publish_stable_enums_and_bounds() -> None:
         "configure_cell_parameters"
     ].input_schema["properties"]
     assert cell_schema["cell_type"]["minLength"] == 1
-    assert cell_schema["volume_total"]["exclusiveMinimum"] == 0
-    assert cell_schema["volume_nuclear"]["exclusiveMinimum"] == 0
-    assert cell_schema["fluid_fraction"]["minimum"] == 0
-    assert cell_schema["fluid_fraction"]["maximum"] == 1
-    assert cell_schema["motility_speed"]["minimum"] == 0
-    assert cell_schema["persistence_time"]["minimum"] == 0
-    assert cell_schema["apoptosis_rate"]["minimum"] == 0
-    assert cell_schema["necrosis_rate"]["minimum"] == 0
+    assert non_null(cell_schema["volume_total"])["exclusiveMinimum"] == 0
+    assert non_null(cell_schema["volume_nuclear"])["exclusiveMinimum"] == 0
+    assert non_null(cell_schema["fluid_fraction"])["minimum"] == 0
+    assert non_null(cell_schema["fluid_fraction"])["maximum"] == 1
+    assert non_null(cell_schema["motility_speed"])["minimum"] == 0
+    assert non_null(cell_schema["persistence_time"])["minimum"] == 0
+    assert non_null(cell_schema["apoptosis_rate"])["minimum"] == 0
+    assert non_null(cell_schema["necrosis_rate"])["minimum"] == 0
+    assert non_null(cell_schema["motility_enabled"])["type"] == "boolean"
+    assert all(
+        cell_schema[name]["default"] is None
+        for name in (
+            "volume_total",
+            "volume_nuclear",
+            "fluid_fraction",
+            "motility_speed",
+            "persistence_time",
+            "motility_enabled",
+            "apoptosis_rate",
+            "necrosis_rate",
+        )
+    )
+    assert tools[
+        "configure_cell_parameters"
+    ].input_schema["required"] == ["cell_type"]
 
     interaction_schema = tools[
         "set_substrate_interaction"
     ].input_schema["properties"]
-    assert interaction_schema["secretion_rate"]["minimum"] == 0
-    assert interaction_schema["uptake_rate"]["minimum"] == 0
+    assert non_null(interaction_schema["secretion_rate"])["minimum"] == 0
+    assert non_null(interaction_schema["uptake_rate"])["minimum"] == 0
+    assert interaction_schema["secretion_rate"]["default"] is None
+    assert interaction_schema["uptake_rate"]["default"] is None
+    assert tools[
+        "set_substrate_interaction"
+    ].input_schema["required"] == ["cell_type", "substrate"]
 
     rule_schema = tools[
         "add_single_cell_rule"
@@ -2218,10 +2843,27 @@ def test_physicell_tool_schemas_publish_stable_enums_and_bounds() -> None:
     settings_schema = tools[
         "configure_physiboss_settings"
     ].input_schema["properties"]
-    assert settings_schema["intracellular_dt"]["exclusiveMinimum"] == 0
-    assert settings_schema["time_stochasticity"]["minimum"] == 0
-    assert settings_schema["scaling"]["exclusiveMinimum"] == 0
-    assert settings_schema["start_time"]["minimum"] == 0
+    assert non_null(
+        settings_schema["intracellular_dt"]
+    )["exclusiveMinimum"] == 0
+    assert non_null(
+        settings_schema["time_stochasticity"]
+    )["minimum"] == 0
+    assert non_null(settings_schema["scaling"])["exclusiveMinimum"] == 0
+    assert non_null(settings_schema["start_time"])["minimum"] == 0
+    assert all(
+        settings_schema[name]["default"] is None
+        for name in (
+            "intracellular_dt",
+            "time_stochasticity",
+            "scaling",
+            "start_time",
+            "inheritance_global",
+        )
+    )
+    assert tools[
+        "configure_physiboss_settings"
+    ].input_schema["required"] == ["cell_type"]
 
     input_schema = tools[
         "add_physiboss_input_link"

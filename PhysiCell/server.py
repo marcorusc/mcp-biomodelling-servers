@@ -19,6 +19,7 @@ import tempfile
 import time
 from collections.abc import Mapping
 from contextlib import ExitStack
+from copy import deepcopy
 from functools import wraps
 from pathlib import Path
 from threading import RLock
@@ -119,9 +120,10 @@ PHYSICELL_SERVER_INSTRUCTIONS = (
     "when multiple configurations are active. For a new model, create the "
     "domain before adding substrates and cell types; for existing XML, "
     "validate, load, and analyze it before editing. When revising "
-    "`configure_cell_parameters()` or `set_substrate_interaction()`, provide "
-    "every value that must be preserved because omitted arguments currently "
-    "use defaults. Prefer `import_maboss_handoff()` for an integrity-checked "
+    "`configure_cell_parameters()`, `set_substrate_interaction()`, or "
+    "`configure_physiboss_settings()`, provide only the values that should "
+    "change; omitted configuration values are preserved. Prefer "
+    "`import_maboss_handoff()` for an integrity-checked "
     "PhysiBoSS model transfer, then configure its timing and biologically "
     "justified signal/node mappings. Inspect session resources or "
     "`get_simulation_summary()` before export. Read "
@@ -690,6 +692,69 @@ def _mapping_at(value: object, *keys: str) -> Mapping[str, Any]:
             return {}
         current = current.get(key)
     return current if isinstance(current, Mapping) else {}
+
+
+def _configuration_cell_type(
+    config: object,
+    cell_type: str,
+) -> Mapping[str, Any]:
+    """Return one configured cell type or raise an actionable error."""
+    try:
+        cell_types = config.cell_types.get_cell_types()
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not inspect PhysiCell cell types: {exc}"
+        ) from exc
+    if not isinstance(cell_types, Mapping):
+        raise TypeError(
+            "PhysiCell cell_types.get_cell_types() did not return a mapping."
+        )
+    if cell_type not in cell_types:
+        available = ", ".join(str(name) for name in cell_types) or "none"
+        raise ValueError(
+            f"Cell type {cell_type!r} is not configured. "
+            f"Available cell types: {available}."
+        )
+    cell_data = cell_types[cell_type]
+    if not isinstance(cell_data, Mapping):
+        raise TypeError(
+            f"PhysiCell cell type {cell_type!r} did not return a mapping."
+        )
+    return cell_data
+
+
+def _configuration_substrates(config: object) -> Mapping[str, Any]:
+    """Return configured substrates or raise when the backend is malformed."""
+    try:
+        substrates = config.substrates.get_substrates()
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not inspect PhysiCell substrates: {exc}"
+        ) from exc
+    if not isinstance(substrates, Mapping):
+        raise TypeError(
+            "PhysiCell substrates.get_substrates() did not return a mapping."
+        )
+    return substrates
+
+
+def _preserved_interaction_value(
+    interaction: Mapping[str, Any],
+    key: str,
+    default: float,
+) -> float:
+    """Read one existing secretion value without accepting malformed data."""
+    value = interaction.get(key, default)
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+    ):
+        raise ValueError(
+            f"Existing substrate interaction field {key!r} must be a finite "
+            "number."
+        )
+    return float(value)
 
 
 def _display_value(value: object) -> str:
@@ -2348,48 +2413,114 @@ def add_single_cell_type(
 @_session_locked
 def configure_cell_parameters(
     cell_type: Annotated[NonEmptyString, Field(description="Name of an existing cell type to configure.")],
-    volume_total: float = Field(default=2500.0, gt=0, allow_inf_nan=False, description="Total cell volume in μm³."),
-    volume_nuclear: float = Field(default=500.0, gt=0, allow_inf_nan=False, description="Nuclear volume in μm³."),
-    fluid_fraction: float = Field(default=0.75, ge=0, le=1, allow_inf_nan=False, description="Cytoplasmic fluid fraction (0–1)."),
-    motility_speed: float = Field(default=0.5, ge=0, allow_inf_nan=False, description="Cell migration speed in μm/min."),
-    persistence_time: float = Field(default=5.0, ge=0, allow_inf_nan=False, description="Directional persistence time in minutes."),
-    apoptosis_rate: float = Field(default=0.0001, ge=0, allow_inf_nan=False, description="Spontaneous apoptosis rate in 1/min."),
-    necrosis_rate: float = Field(default=0.0001, ge=0, allow_inf_nan=False, description="Spontaneous necrosis rate in 1/min."),
+    volume_total: Annotated[Optional[float], Field(gt=0, allow_inf_nan=False, description="New total cell volume in μm³. Omit to preserve the current value.")] = None,
+    volume_nuclear: Annotated[Optional[float], Field(gt=0, allow_inf_nan=False, description="New nuclear volume in μm³. Omit to preserve the current value.")] = None,
+    fluid_fraction: Annotated[Optional[float], Field(ge=0, le=1, allow_inf_nan=False, description="New cytoplasmic fluid fraction (0–1). Omit to preserve the current value.")] = None,
+    motility_speed: Annotated[Optional[float], Field(ge=0, allow_inf_nan=False, description="New cell migration speed in μm/min. Omit to preserve the current value.")] = None,
+    persistence_time: Annotated[Optional[float], Field(ge=0, allow_inf_nan=False, description="New directional persistence time in minutes. Omit to preserve the current value.")] = None,
+    apoptosis_rate: Annotated[Optional[float], Field(ge=0, allow_inf_nan=False, description="New spontaneous apoptosis rate in 1/min. Omit to preserve the current value.")] = None,
+    necrosis_rate: Annotated[Optional[float], Field(ge=0, allow_inf_nan=False, description="New spontaneous necrosis rate in 1/min. Omit to preserve the current value.")] = None,
     session_id: Optional[NonEmptyString] = Field(default=None, description="Session to use. Omit to use the active session."),
+    motility_enabled: Annotated[Optional[bool], Field(description="Enable or disable cell motility. Omit to preserve the current state.")] = None,
 ) -> str:
-    """Modify volume, motility, and death-rate parameters for an existing cell type.
+    """Patch volume, motility, and death parameters for an existing cell type.
 
     The cell type must already exist (created by `add_single_cell_type()`).
-    Call repeatedly to configure multiple cell types.
+    Omitted values preserve their current settings. At least one value must be
+    supplied. Call repeatedly to configure or revise multiple cell types.
 
     Returns:
-        str: Confirmation with the configured parameter values.
+        str: Confirmation listing only the requested parameter updates.
     """
     session = _require_configuration(session_id)
-    
+    requested_updates = {
+        "total volume": volume_total,
+        "nuclear volume": volume_nuclear,
+        "fluid fraction": fluid_fraction,
+        "motility speed": motility_speed,
+        "persistence time": persistence_time,
+        "motility enabled": motility_enabled,
+        "apoptosis rate": apoptosis_rate,
+        "necrosis rate": necrosis_rate,
+    }
+    if all(value is None for value in requested_updates.values()):
+        raise ValueError(
+            "At least one cell parameter must be provided. Omitted values "
+            "preserve their current settings."
+        )
+
     try:
-        # Set volume parameters
-        session.config.cell_types.set_volume_parameters(cell_type, total=volume_total,
-                                                        nuclear=volume_nuclear, fluid_fraction=fluid_fraction)
+        current_cell = _configuration_cell_type(session.config, cell_type)
+        current_phenotype = _mapping_at(current_cell, "phenotype")
+        before = deepcopy({
+            "volume": current_phenotype.get("volume"),
+            "motility": current_phenotype.get("motility"),
+            "death": current_phenotype.get("death"),
+        })
+        candidate_config = deepcopy(session.config)
 
-        # Set motility parameters
-        session.config.cell_types.set_motility(cell_type, speed=motility_speed,
-                                               persistence_time=persistence_time, enabled=True)
+        if any(
+            value is not None
+            for value in (volume_total, volume_nuclear, fluid_fraction)
+        ):
+            candidate_config.cell_types.set_volume_parameters(
+                cell_type,
+                total=volume_total,
+                nuclear=volume_nuclear,
+                fluid_fraction=fluid_fraction,
+            )
+        if any(
+            value is not None
+            for value in (
+                motility_speed,
+                persistence_time,
+                motility_enabled,
+            )
+        ):
+            candidate_config.cell_types.set_motility(
+                cell_type,
+                speed=motility_speed,
+                persistence_time=persistence_time,
+                enabled=motility_enabled,
+            )
+        if apoptosis_rate is not None:
+            candidate_config.cell_types.set_death_rate(
+                cell_type,
+                "apoptosis",
+                apoptosis_rate,
+            )
+        if necrosis_rate is not None:
+            candidate_config.cell_types.set_death_rate(
+                cell_type,
+                "necrosis",
+                necrosis_rate,
+            )
 
-        # Set death rates
-        session.config.cell_types.set_death_rate(cell_type, 'apoptosis', apoptosis_rate)
-        session.config.cell_types.set_death_rate(cell_type, 'necrosis', necrosis_rate)
+        updated_cell = _configuration_cell_type(
+            candidate_config,
+            cell_type,
+        )
+        updated_phenotype = _mapping_at(updated_cell, "phenotype")
+        after = deepcopy({
+            "volume": updated_phenotype.get("volume"),
+            "motility": updated_phenotype.get("motility"),
+            "death": updated_phenotype.get("death"),
+        })
+        configuration_changed = before != after
+        session.publish_config_update(
+            config=candidate_config,
+            completed_step=WorkflowStep.CELL_PARAMETERS_CONFIGURED,
+            configuration_changed=configuration_changed,
+        )
 
-        # Track modification if loaded from XML
-        if session.loaded_from_xml:
-            session.mark_xml_modification()
-
-        result = f"**Configured parameters for {cell_type}:**\n"
-        result += f"- **Volume:** {volume_total:g} μm³ (nuclear: {volume_nuclear:g} μm³)\n"
-        result += f"- **Motility:** {motility_speed:g} μm/min (persistence: {persistence_time:g} min)\n"
-        result += f"- **Death rates:** apoptosis {apoptosis_rate:g}, necrosis {necrosis_rate:g} min⁻¹"
-        
-        return result
+        lines = [f"**Cell parameters patched for {cell_type}:**"]
+        for name, value in requested_updates.items():
+            if value is not None:
+                lines.append(f"- {name}: {_display_value(value)}")
+        if not configuration_changed:
+            lines.append("- The requested values already matched the configuration.")
+        lines.append("- All omitted cell parameters were preserved.")
+        return "\n".join(lines)
     except Exception as exc:
         raise RuntimeError(
             f"Could not configure cell type '{cell_type}': {exc}"
@@ -2400,30 +2531,108 @@ def configure_cell_parameters(
 def set_substrate_interaction(
     cell_type: Annotated[NonEmptyString, Field(description="Name of an existing cell type.")],
     substrate: Annotated[NonEmptyString, Field(description="Name of an existing substrate (must match a name passed to add_single_substrate()).")],
-    secretion_rate: float = Field(default=0.0, ge=0, allow_inf_nan=False, description="Rate at which the cell secretes the substrate (1/min)."),
-    uptake_rate: float = Field(default=0.0, ge=0, allow_inf_nan=False, description="Rate at which the cell consumes the substrate (1/min). Typical oxygen uptake: 10."),
+    secretion_rate: Annotated[Optional[float], Field(ge=0, allow_inf_nan=False, description="New secretion rate in 1/min. Omit to preserve the current value.")] = None,
+    uptake_rate: Annotated[Optional[float], Field(ge=0, allow_inf_nan=False, description="New substrate uptake rate in 1/min. Omit to preserve the current value. Typical oxygen uptake: 10.")] = None,
     session_id: Optional[NonEmptyString] = Field(default=None, description="Session to use. Omit to use the active session."),
 ) -> str:
-    """Define how a cell type interacts with a substrate via secretion and uptake rates.
+    """Patch a cell type's secretion and uptake rates for one substrate.
 
     Both cell type and substrate must already exist in the current session.
-    Call repeatedly to configure multiple cell-substrate pairs.
+    Omitted values preserve the current interaction. At least one rate must be
+    supplied. Call repeatedly to configure multiple cell-substrate pairs or
+    revise one pair after inspecting a simulation result.
 
     Returns:
-        str: Confirmation with the configured rates.
+        str: Confirmation listing only the requested rate updates.
     """
     session = _require_configuration(session_id)
+    if secretion_rate is None and uptake_rate is None:
+        raise ValueError(
+            "At least one of secretion_rate or uptake_rate must be provided. "
+            "Omitted interaction values preserve their current settings."
+        )
 
     try:
-        session.config.cell_types.add_secretion(cell_type, substrate,
-                                                secretion_rate=secretion_rate,
-                                                uptake_rate=uptake_rate)
+        current_cell = _configuration_cell_type(session.config, cell_type)
+        substrates = _configuration_substrates(session.config)
+        if substrate not in substrates:
+            available = ", ".join(str(name) for name in substrates) or "none"
+            raise ValueError(
+                f"Substrate {substrate!r} is not configured. "
+                f"Available substrates: {available}."
+            )
+        current_interaction = _mapping_at(
+            current_cell,
+            "phenotype",
+            "secretion",
+            substrate,
+        )
+        effective_secretion = (
+            secretion_rate
+            if secretion_rate is not None
+            else _preserved_interaction_value(
+                current_interaction,
+                "secretion_rate",
+                0.0,
+            )
+        )
+        effective_uptake = (
+            uptake_rate
+            if uptake_rate is not None
+            else _preserved_interaction_value(
+                current_interaction,
+                "uptake_rate",
+                0.0,
+            )
+        )
+        secretion_target = _preserved_interaction_value(
+            current_interaction,
+            "secretion_target",
+            1.0,
+        )
+        net_export_rate = _preserved_interaction_value(
+            current_interaction,
+            "net_export_rate",
+            0.0,
+        )
+        before = deepcopy(current_interaction)
+        candidate_config = deepcopy(session.config)
+        candidate_config.cell_types.add_secretion(
+            cell_type,
+            substrate,
+            secretion_rate=effective_secretion,
+            secretion_target=secretion_target,
+            uptake_rate=effective_uptake,
+            net_export_rate=net_export_rate,
+        )
+        updated_cell = _configuration_cell_type(
+            candidate_config,
+            cell_type,
+        )
+        after = deepcopy(_mapping_at(
+            updated_cell,
+            "phenotype",
+            "secretion",
+            substrate,
+        ))
+        configuration_changed = before != after
+        session.publish_config_update(
+            config=candidate_config,
+            completed_step=WorkflowStep.SUBSTRATE_INTERACTIONS_SET,
+            configuration_changed=configuration_changed,
+        )
 
-        # Track modification if loaded from XML
-        if session.loaded_from_xml:
-            session.mark_xml_modification()
-        
-        return f"**Substrate interaction set:** {cell_type} ↔ {substrate} (secretion: {secretion_rate:g}, uptake: {uptake_rate:g} min⁻¹)"
+        lines = [
+            f"**Substrate interaction patched:** {cell_type} ↔ {substrate}"
+        ]
+        if secretion_rate is not None:
+            lines.append(f"- secretion rate: {secretion_rate:g} min⁻¹")
+        if uptake_rate is not None:
+            lines.append(f"- uptake rate: {uptake_rate:g} min⁻¹")
+        if not configuration_changed:
+            lines.append("- The requested values already matched the configuration.")
+        lines.append("- All omitted interaction values were preserved.")
+        return "\n".join(lines)
     except Exception as exc:
         raise RuntimeError(
             f"Could not set the substrate interaction: {exc}"
@@ -2785,47 +2994,100 @@ def add_physiboss_model(
 @_session_locked
 def configure_physiboss_settings(
     cell_type: Annotated[NonEmptyString, Field(description="Name of an existing cell type with a PhysiBoSS model attached.")],
-    intracellular_dt: float = Field(default=6.0, gt=0, allow_inf_nan=False, description="PhysiBoSS update interval in minutes. Should be a multiple of the phenotype time step."),
-    time_stochasticity: int = Field(default=0, ge=0, description="Time stochasticity level (0 = deterministic)."),
-    scaling: float = Field(default=1.0, gt=0, allow_inf_nan=False, description="Scaling factor applied to the intracellular dynamics."),
-    start_time: float = Field(default=0.0, ge=0, allow_inf_nan=False, description="Simulation time in minutes at which the boolean network starts running."),
-    inheritance_global: bool = Field(default=False, description="If True, daughter cells inherit the parent's boolean node states globally."),
+    intracellular_dt: Annotated[Optional[float], Field(gt=0, allow_inf_nan=False, description="New PhysiBoSS update interval in minutes. It should be a multiple of the phenotype time step. Omit to preserve the current value.")] = None,
+    time_stochasticity: Annotated[Optional[int], Field(ge=0, description="New time stochasticity level (0 = deterministic). Omit to preserve the current value.")] = None,
+    scaling: Annotated[Optional[float], Field(gt=0, allow_inf_nan=False, description="New scaling factor for intracellular dynamics. Omit to preserve the current value.")] = None,
+    start_time: Annotated[Optional[float], Field(ge=0, allow_inf_nan=False, description="New simulation start time for the Boolean network in minutes. Omit to preserve the current value.")] = None,
+    inheritance_global: Annotated[Optional[bool], Field(description="Whether daughter cells inherit the parent's Boolean states globally. Omit to preserve the current value.")] = None,
     session_id: Optional[NonEmptyString] = Field(default=None, description="Session to use. Omit to use the active session."),
 ) -> str:
-    """Configure timing, stochasticity, and inheritance parameters for a PhysiBoSS model.
-    Must be called after `add_physiboss_model()`. Repeat for each cell type.
-    Checked with `list_all_available_signals()` and `list_all_available_behaviors()` the available signals and behaviors to use in `add_physiboss_input_link()` and `add_physiboss_output_link()`.
+    """Patch timing, stochasticity, and inheritance for a PhysiBoSS model.
+
+    Must be called after `add_physiboss_model()`. Omitted values preserve their
+    current settings, and at least one value must be supplied. Repeat for each
+    cell type. Check `list_all_available_signals()` and
+    `list_all_available_behaviors()` before configuring input/output links.
+
     Returns:
-        str: Confirmation with the configured settings and next step.
+        str: Confirmation listing only the requested setting updates.
     """
     session = _require_configuration(session_id)
     _require_physiboss()
-    
+    requested_updates = {
+        "intracellular time step": intracellular_dt,
+        "time stochasticity": time_stochasticity,
+        "scaling": scaling,
+        "start time": start_time,
+        "global inheritance": inheritance_global,
+    }
+    if all(value is None for value in requested_updates.values()):
+        raise ValueError(
+            "At least one PhysiBoSS setting must be provided. Omitted values "
+            "preserve their current settings."
+        )
+
     try:
-        # Use direct config.physiboss API (simpler and more reliable)
-        session.config.physiboss.set_intracellular_settings(
+        current_cell = _configuration_cell_type(session.config, cell_type)
+        current_intracellular = _mapping_at(
+            current_cell,
+            "phenotype",
+            "intracellular",
+        )
+        if (
+            not current_intracellular
+            or current_intracellular.get("type") != "maboss"
+        ):
+            raise ValueError(
+                f"Cell type {cell_type!r} does not have a PhysiBoSS MaBoSS "
+                "model attached. Call add_physiboss_model() or "
+                "import_maboss_handoff() first."
+            )
+        before = deepcopy(
+            _mapping_at(current_intracellular, "settings")
+        )
+        candidate_config = deepcopy(session.config)
+        candidate_config.physiboss.set_intracellular_settings(
             cell_type_name=cell_type,
             intracellular_dt=intracellular_dt,
             time_stochasticity=time_stochasticity,
             scaling=scaling,
             start_time=start_time,
-            inheritance_global=inheritance_global
+            inheritance_global=inheritance_global,
         )
-        
-        # Update session tracking
-        session.physiboss_settings_count += 1
-        session.mark_step_complete(WorkflowStep.PHYSIBOSS_SETTINGS_CONFIGURED)
-        
-        result = f"**PhysiBoSS settings configured for {cell_type}:**\n"
-        result += f"- Time step: {intracellular_dt} min\n"
-        result += f"- Stochasticity: {time_stochasticity}\n"
-        result += f"- Scaling: {scaling}\n"
-        result += f"- Start time: {start_time} min\n"
-        result += f"- Global inheritance: {inheritance_global}\n"
-        result += f"- Progress: {session.get_progress_percentage():.0f}%\n"
-        result += f"**Next step:** Use `add_physiboss_input_link()` to connect PhysiCell signals to boolean nodes."
-        
-        return result
+        updated_cell = _configuration_cell_type(
+            candidate_config,
+            cell_type,
+        )
+        after = deepcopy(_mapping_at(
+            updated_cell,
+            "phenotype",
+            "intracellular",
+            "settings",
+        ))
+        configuration_changed = before != after
+        tracking = _physiboss_tracking(candidate_config)
+        session.publish_config_update(
+            config=candidate_config,
+            completed_step=WorkflowStep.PHYSIBOSS_SETTINGS_CONFIGURED,
+            configuration_changed=configuration_changed,
+            physiboss_tracking=tracking,
+        )
+
+        lines = [f"**PhysiBoSS settings patched for {cell_type}:**"]
+        for name, value in requested_updates.items():
+            if value is not None:
+                lines.append(f"- {name}: {_display_value(value)}")
+        if not configuration_changed:
+            lines.append("- The requested values already matched the configuration.")
+        lines.extend([
+            "- All omitted PhysiBoSS settings were preserved.",
+            f"- Progress: {session.get_progress_percentage():.0f}%",
+            (
+                "**Next step:** Use `add_physiboss_input_link()` to connect "
+                "PhysiCell signals to Boolean nodes."
+            ),
+        ])
+        return "\n".join(lines)
     except Exception as exc:
         raise RuntimeError(
             f"Could not configure PhysiBoSS settings: {exc}"
