@@ -100,12 +100,25 @@ from session_manager import (
 
 from mcp.server.mcpserver import MCPServer
 
+PHYSICELL_SERVER_INSTRUCTIONS = (
+    "Create one session per PhysiCell model and pass `session_id` explicitly "
+    "when multiple configurations are active. For a new model, create the "
+    "domain before adding substrates and cell types; for existing XML, "
+    "validate, load, and analyze it before editing. When revising "
+    "`configure_cell_parameters()` or `set_substrate_interaction()`, provide "
+    "every value that must be preserved because omitted arguments currently "
+    "use defaults. Inspect session resources or `get_simulation_summary()` "
+    "before export. Read `docs://physicell/agent_manual` or use "
+    "`physicell_workflow_prompt` for the complete workflow."
+)
+
 mcp = MCPServer(
     "PhysiCell",
     title="PhysiCell Configuration Builder",
     description=(
         "Create, inspect, and export PhysiCell simulation configuration files."
     ),
+    instructions=PHYSICELL_SERVER_INSTRUCTIONS,
     version=__version__,
 )
 

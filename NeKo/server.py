@@ -79,12 +79,23 @@ from mcp_biomodelling_servers.structured_outputs import (
 logger = logging.getLogger(__name__)
 _stdout_capture_lock = Lock()
 
+NEKO_SERVER_INSTRUCTIONS = (
+    "Create a session before building a signalling network, and pass "
+    "`session_id` explicitly when working with multiple networks. Run "
+    "`candidate_connectors()` before applying expensive connection strategies, "
+    "inspect network history after topology changes, and prefer "
+    "`verbosity='summary'` during iterative work. Export with `format='bnet'` "
+    "for MaBoSS. Read `docs://neko/agent_manual` or use "
+    "`neko_workflow_prompt` for the complete workflow."
+)
+
 mcp = MCPServer(
     "NeKo",
     title="NeKo Signalling Network Builder",
     description=(
         "Build and analyze signalling networks from biological interaction databases."
     ),
+    instructions=NEKO_SERVER_INSTRUCTIONS,
     version=__version__,
 )
 

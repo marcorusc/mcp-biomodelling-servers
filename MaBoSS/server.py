@@ -63,12 +63,22 @@ from scientific_outputs import (
 
 logger = logging.getLogger(__name__)
 
+MABOSS_SERVER_INSTRUCTIONS = (
+    "Create a session before loading or simulating a Boolean model, and pass "
+    "`session_id` explicitly when working with multiple models. Inspect node "
+    "names before configuration and restrict output nodes to the smallest "
+    "biologically meaningful set before `run_simulation()` to control the "
+    "exponential state space. Read `docs://maboss/agent_manual` or use "
+    "`maboss_workflow_prompt` for the complete workflow."
+)
+
 mcp = MCPServer(
     "MaBoSS",
     title="MaBoSS Boolean Model Simulator",
     description=(
         "Configure, simulate, analyze, and visualize Boolean models with MaBoSS."
     ),
+    instructions=MABOSS_SERVER_INSTRUCTIONS,
     version=__version__,
 )
 
