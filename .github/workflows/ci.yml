@@ -90,6 +90,7 @@ jobs:
           python -m ruff check \
             artifact_manager.py \
             mcp_biomodelling_servers/artifact_manager.py \
+            mcp_biomodelling_servers/structured_outputs.py \
             MaBoSS/session_manager.py \
             NeKo/session_manager.py \
             PhysiCell/session_manager.py \
@@ -114,6 +115,7 @@ jobs:
             --ignore-missing-imports \
             --strict-optional \
             artifact_manager.py \
+            mcp_biomodelling_servers/structured_outputs.py \
             MaBoSS/session_manager.py \
             NeKo/session_manager.py \
             PhysiCell/session_manager.py
