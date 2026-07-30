@@ -122,6 +122,21 @@ def _create_result_session(result: FakeTrajectoryResult) -> str:
     return session_id
 
 
+def test_clean_for_markdown_handles_missing_values_across_pandas_versions() -> None:
+    with pd.option_context("future.infer_string", True):
+        frame = pd.DataFrame(
+            {
+                "state": ["  A\nB  ", None],
+                "probability": [0.75, float("nan")],
+            }
+        )
+        cleaned = maboss_server.clean_for_markdown(frame)
+
+    assert cleaned.to_dict(orient="records") == [
+        {"state": "A B", "probability": "0.75"},
+    ]
+
+
 def _create_simulation_session(simulation: object) -> str:
     session_id = session_manager.create_session()
     session = session_manager.get_session(session_id)

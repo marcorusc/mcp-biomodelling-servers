@@ -1755,12 +1755,13 @@ def test_case_insensitive_public_options_remain_compatible(
             },
         )
     )
-    listing_result = _run(
-        _call_tool(
-            "list_genes_and_interactions",
-            {"session_id": session_id, "verbosity": "FULL"},
+    with pd.option_context("future.infer_string", True):
+        listing_result = _run(
+            _call_tool(
+                "list_genes_and_interactions",
+                {"session_id": session_id, "verbosity": "FULL"},
+            )
         )
-    )
     connector_result = _run(
         _call_tool(
             "candidate_connectors",
@@ -1780,6 +1781,14 @@ def test_case_insensitive_public_options_remain_compatible(
     assert export_result.structured_content["renamed_nodes"] == []
     assert export_result.structured_content["duplicate_rules_removed"] == []
     assert listing_result.is_error is False
+    assert listing_result.structured_content is not None
+    assert listing_result.structured_content["nodes"] == [
+        {
+            "gene_symbol": "TP53",
+            "uniprot": "P04637",
+            "node_type": None,
+        }
+    ]
     assert connector_result.is_error is False
 
 
