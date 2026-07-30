@@ -171,6 +171,206 @@ class MaBoSSParameterUpdates(BaseModel):
     thread_count: int | None = Field(default=None, ge=1)
 
 
+InitialStateProbability = Annotated[
+    float,
+    Field(ge=0, le=1, allow_inf_nan=False),
+]
+SingleNodeProbabilityList = Annotated[
+    list[InitialStateProbability],
+    Field(min_length=2, max_length=2),
+]
+JointStateVector = Annotated[
+    list[Literal[0, 1]],
+    Field(min_length=1),
+]
+
+
+class MaBoSSJointStateProbability(BaseModel):
+    """One JSON-native state/probability entry for a joint distribution."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    state: JointStateVector = Field(
+        description=(
+            "Boolean state vector in the same order as the requested nodes."
+        )
+    )
+    probability: InitialStateProbability = Field(
+        description="Probability assigned to this joint Boolean state."
+    )
+
+
+JointStateProbabilityList = Annotated[
+    list[MaBoSSJointStateProbability],
+    Field(min_length=1),
+]
+InitialStateProbabilitySpecification = (
+    SingleNodeProbabilityList
+    | JointStateProbabilityList
+    | dict
+)
+
+
+def _initial_state_probability(value, *, state: object) -> float:
+    """Validate a runtime probability, including legacy direct Python calls."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(
+            f"Probability for state {state!r} must be a finite number "
+            "between 0 and 1."
+        )
+    probability = float(value)
+    if not math.isfinite(probability) or not 0 <= probability <= 1:
+        raise ValueError(
+            f"Probability for state {state!r} must be a finite number "
+            "between 0 and 1."
+        )
+    return probability
+
+
+def _initial_state_key(
+    state: object,
+    *,
+    node_count: int,
+) -> int | tuple[int, ...]:
+    """Normalize one legacy or JSON-native Boolean state."""
+    if (
+        node_count == 1
+        and not isinstance(state, bool)
+        and state in (0, 1, "0", "1")
+    ):
+        return int(state)
+
+    if not isinstance(state, (list, tuple)):
+        if isinstance(state, str):
+            raise ValueError(
+                "Multi-node initial states cannot use JSON object keys. "
+                "Provide probDict as a list of records such as "
+                "[{'state': [0, 0], 'probability': 1.0}]."
+            )
+        raise ValueError(
+            "Each multi-node initial state must be a list or tuple of 0/1 "
+            "values."
+        )
+    if len(state) != node_count:
+        raise ValueError(
+            f"Initial state {state!r} has {len(state)} values, but "
+            f"{node_count} nodes were requested."
+        )
+    if any(
+        isinstance(value, bool) or value not in (0, 1)
+        for value in state
+    ):
+        raise ValueError(
+            f"Initial state {state!r} must contain only integer 0/1 values."
+        )
+
+    normalized = tuple(int(value) for value in state)
+    return normalized[0] if node_count == 1 else normalized
+
+
+def _normalize_initial_state_probabilities(
+    nodes: str | list[str],
+    probabilities: InitialStateProbabilitySpecification,
+) -> tuple[str | list[str], list[float] | dict[int | tuple[int, ...], float]]:
+    """Validate and convert initial-state inputs to pyMaBoSS's native form."""
+    node_names = [nodes] if isinstance(nodes, str) else list(nodes)
+    if not node_names:
+        raise ValueError("At least one node must be provided.")
+    if len(node_names) != len(set(node_names)):
+        raise ValueError("Initial-state node names must be unique.")
+
+    node_count = len(node_names)
+    node_arg: str | list[str] = (
+        node_names[0] if node_count == 1 else node_names
+    )
+
+    if isinstance(probabilities, list) and all(
+        isinstance(value, (int, float)) and not isinstance(value, bool)
+        for value in probabilities
+    ):
+        if node_count != 1:
+            raise ValueError(
+                "A numeric [P(OFF), P(ON)] list can configure only one node. "
+                "For multiple nodes, provide JSON state/probability records."
+            )
+        if len(probabilities) != 2:
+            raise ValueError(
+                "A single-node probability list must contain exactly "
+                "[P(OFF), P(ON)]."
+            )
+        normalized_list = [
+            _initial_state_probability(value, state=state)
+            for state, value in enumerate(probabilities)
+        ]
+        if not math.isclose(
+            sum(normalized_list),
+            1.0,
+            rel_tol=1e-9,
+            abs_tol=1e-9,
+        ):
+            raise ValueError("Initial-state probabilities must sum to 1.")
+        return node_arg, normalized_list
+
+    entries: list[tuple[object, object]]
+    if isinstance(probabilities, list):
+        if not probabilities:
+            raise ValueError(
+                "At least one initial-state probability record is required."
+            )
+        entries = []
+        for entry in probabilities:
+            if isinstance(entry, MaBoSSJointStateProbability):
+                entries.append((entry.state, entry.probability))
+            elif isinstance(entry, dict):
+                if set(entry) != {"state", "probability"}:
+                    raise ValueError(
+                        "Each initial-state record must contain exactly "
+                        "'state' and 'probability'."
+                    )
+                entries.append((entry["state"], entry["probability"]))
+            else:
+                raise ValueError(
+                    "Joint initial-state probabilities must be records with "
+                    "'state' and 'probability' fields."
+                )
+    elif isinstance(probabilities, dict):
+        if not probabilities:
+            raise ValueError(
+                "At least one initial-state probability is required."
+            )
+        entries = list(probabilities.items())
+    else:
+        raise ValueError(
+            "probDict must be [P(OFF), P(ON)], a legacy state mapping, or "
+            "a JSON-native list of state/probability records."
+        )
+
+    normalized_mapping: dict[int | tuple[int, ...], float] = {}
+    for state, value in entries:
+        normalized_state = _initial_state_key(
+            state,
+            node_count=node_count,
+        )
+        if normalized_state in normalized_mapping:
+            raise ValueError(
+                f"Initial state {state!r} is specified more than once."
+            )
+        normalized_mapping[normalized_state] = _initial_state_probability(
+            value,
+            state=state,
+        )
+
+    if not math.isclose(
+        sum(normalized_mapping.values()),
+        1.0,
+        rel_tol=1e-9,
+        abs_tol=1e-9,
+    ):
+        raise ValueError("Initial-state probabilities must sum to 1.")
+
+    return node_arg, normalized_mapping
+
+
 def _scientific_scalar(value):
     """Convert a dataframe/backend scalar into a strict JSON-safe value."""
     if value is None:
@@ -395,7 +595,7 @@ MABOSS_AGENT_MANUAL = """
 4. **Inspect parameters:** `update_maboss_parameters()` (no args) — review current defaults
 5. **Tune:** `update_maboss_parameters({"sample_count": 1000, "thread_count": 4})`
 6. **Reduce output nodes (IMPORTANT):** `set_maboss_output_nodes(["Apoptosis", "Proliferation"])` — restricts the result to only the nodes you care about. Without this, MaBoSS enumerates ALL 2^N Boolean states, which becomes exponentially expensive for large networks (>20 nodes). Always set output nodes to the smallest biologically meaningful subset before running.
-7. **Configure (optional):** `get_maboss_initial_state()` to inspect current state, then `set_maboss_initial_state(...)` if non-default probabilities are needed. Only use node names returned by `get_maboss_nodes()`.
+7. **Configure (optional):** `get_maboss_initial_state()` to inspect current state, then `set_maboss_initial_state(...)` if non-default probabilities are needed. For one node, use `[P(OFF), P(ON)]`. For multiple nodes, use JSON-native records such as `[{"state": [0, 0], "probability": 0.4}, {"state": [1, 0], "probability": 0.6}]`. State-vector order must match `nodes`, and probabilities must sum to 1. Only use node names returned by `get_maboss_nodes()`.
 8. **Run:** `run_simulation()` — executes the simulation and saves `result.csv` to the artifact directory
 9. **Analyse:** `get_simulation_result()` — returns the state probability table as a Markdown table
 10. **Visualise:** `visualize_network_trajectories()` — saves a PNG artifact
@@ -1936,12 +2136,15 @@ def set_maboss_initial_state(
             )
         ),
     ],
-    probDict: Annotated[list[float] | dict, Field(
+    probDict: Annotated[InitialStateProbabilitySpecification, Field(
         description=(
             "Probability specification. "
             "Single node: list [P(OFF), P(ON)] or dict {0: P(OFF), 1: P(ON)}. "
-            "Multiple nodes: dict mapping tuples of 0/1 to probabilities, "
-            "e.g. {(0, 0): 0.4, (1, 0): 0.6}."
+            "Multiple nodes: JSON-native records with a Boolean state vector "
+            "and probability, e.g. [{'state': [0, 0], 'probability': 0.4}, "
+            "{'state': [1, 0], 'probability': 0.6}]. State-vector order must "
+            "match nodes. Legacy tuple-key dictionaries remain available to "
+            "direct Python callers. Probabilities must sum to 1."
         )
     )],
     session_id: NonEmptyString | None = Field(
@@ -1956,7 +2159,13 @@ def set_maboss_initial_state(
 
     Examples:
         set_maboss_initial_state('node1', [0.3, 0.7])
-        set_maboss_initial_state(['node1', 'node2'], {(0, 0): 0.4, (1, 0): 0.6, (0, 1): 0})
+        set_maboss_initial_state(
+            ['node1', 'node2'],
+            [
+                {'state': [0, 0], 'probability': 0.4},
+                {'state': [1, 0], 'probability': 0.6},
+            ],
+        )
     """
     sess = ensure_session(session_id)
     if sess.sim is None:
@@ -1965,27 +2174,31 @@ def set_maboss_initial_state(
             "Call bnet_to_bnd_and_cfg then build_simulation first."
         )
     try:
-        if isinstance(nodes, str):
-            node_arg = nodes
-        elif isinstance(nodes, (list, tuple)):
-            node_arg = list(nodes)
-        else:
-            raise ValueError("Invalid type for 'nodes'. Must be str or list of str.")
-
-        if isinstance(node_arg, str):
-            if not isinstance(probDict, (list, dict)):
-                raise ValueError(
-                    "For a single node, probDict must be a list or dict."
-                )
-        elif isinstance(node_arg, list):
-            if not isinstance(probDict, dict):
-                raise ValueError(
-                    "For multiple nodes, probDict must be a dict mapping "
-                    "tuples to probabilities."
-                )
+        node_arg, normalized_probabilities = (
+            _normalize_initial_state_probabilities(nodes, probDict)
+        )
+        available_nodes = {
+            str(node)
+            for node in sess.sim.network.keys()
+        }
+        requested_nodes = (
+            [node_arg]
+            if isinstance(node_arg, str)
+            else node_arg
+        )
+        unknown_nodes = [
+            node
+            for node in requested_nodes
+            if node not in available_nodes
+        ]
+        if unknown_nodes:
+            raise ValueError(
+                "Unknown MaBoSS initial-state node(s): "
+                f"{', '.join(unknown_nodes)}. Call get_maboss_nodes() first."
+            )
 
         logger.info("Previous initial state: %s", sess.sim.network.get_istate())
-        sess.sim.network.set_istate(node_arg, probDict)
+        sess.sim.network.set_istate(node_arg, normalized_probabilities)
         logger.info("Updated initial state: %s", sess.sim.network.get_istate())
         return f"Initial state set: {sess.sim.network.get_istate()}"
     except ValueError:

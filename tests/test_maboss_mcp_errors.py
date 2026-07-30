@@ -128,6 +128,26 @@ class HandoffNetworkStub:
         return list(self._outputs)
 
 
+class InitialStateNetworkStub:
+    """Capture normalized initial-state updates sent to pyMaBoSS."""
+
+    def __init__(self) -> None:
+        self.nodes = ["A", "B"]
+        self.initial_state: dict[object, dict[object, float]] = {
+            "A": {0: 0.5, 1: 0.5},
+        }
+        self.last_update: tuple[object, object] | None = None
+
+    def keys(self) -> list[str]:
+        return list(self.nodes)
+
+    def get_istate(self) -> dict[object, dict[object, float]]:
+        return self.initial_state
+
+    def set_istate(self, nodes: object, probabilities: object) -> None:
+        self.last_update = (nodes, probabilities)
+
+
 class HandoffSimulationStub:
     """Serializable in-memory MaBoSS model used at both handoff boundaries."""
 
@@ -1452,6 +1472,155 @@ def test_session_locking_preserves_public_tool_schemas() -> None:
         "visualize_network_trajectories"
     ].input_schema["properties"]
     assert "until" in trajectory_properties
+
+
+def test_initial_state_schema_exposes_json_native_joint_records() -> None:
+    listed_tools = _run(_list_tools())
+    tools = {tool.name: tool for tool in listed_tools.tools}
+    tool_schema = tools["set_maboss_initial_state"].input_schema
+    probability_schema = tool_schema["properties"]["probDict"]
+    record_schema = tool_schema["$defs"]["MaBoSSJointStateProbability"]
+
+    assert any(
+        option.get("type") == "array"
+        and option.get("items", {}).get(
+            "$ref",
+            "",
+        ).endswith("/MaBoSSJointStateProbability")
+        for option in probability_schema["anyOf"]
+    )
+    assert record_schema["additionalProperties"] is False
+    assert record_schema["required"] == ["state", "probability"]
+    assert record_schema["properties"]["state"]["minItems"] == 1
+    assert record_schema["properties"]["state"]["items"]["enum"] == [0, 1]
+    assert record_schema["properties"]["probability"]["minimum"] == 0
+    assert record_schema["properties"]["probability"]["maximum"] == 1
+
+
+def test_json_native_joint_initial_state_is_normalized_for_pymaboss() -> None:
+    network = InitialStateNetworkStub()
+    session_id = _create_simulation_session(
+        SimpleNamespace(network=network),
+    )
+
+    result = _run(
+        _call_tool(
+            "set_maboss_initial_state",
+            {
+                "nodes": ["A", "B"],
+                "probDict": [
+                    {"state": [0, 0], "probability": 0.4},
+                    {"state": [1, 0], "probability": 0.6},
+                ],
+                "session_id": session_id,
+            },
+        )
+    )
+
+    assert result.is_error is False
+    assert network.last_update == (
+        ["A", "B"],
+        {(0, 0): 0.4, (1, 0): 0.6},
+    )
+
+
+def test_single_node_json_mapping_normalizes_string_keys() -> None:
+    network = InitialStateNetworkStub()
+    session_id = _create_simulation_session(
+        SimpleNamespace(network=network),
+    )
+
+    result = _run(
+        _call_tool(
+            "set_maboss_initial_state",
+            {
+                "nodes": "A",
+                "probDict": {"0": 0.25, "1": 0.75},
+                "session_id": session_id,
+            },
+        )
+    )
+
+    assert result.is_error is False
+    assert network.last_update == ("A", {0: 0.25, 1: 0.75})
+
+
+@pytest.mark.parametrize(
+    ("nodes", "probabilities", "message"),
+    [
+        (
+            ["A", "B"],
+            [{"state": [0], "probability": 1.0}],
+            "2 nodes were requested",
+        ),
+        (
+            ["A", "B"],
+            [
+                {"state": [0, 0], "probability": 0.4},
+                {"state": [0, 0], "probability": 0.6},
+            ],
+            "specified more than once",
+        ),
+        (
+            ["A", "B"],
+            [{"state": [0, 0], "probability": 0.9}],
+            "must sum to 1",
+        ),
+        (
+            ["A", "A"],
+            [{"state": [0, 0], "probability": 1.0}],
+            "must be unique",
+        ),
+        (
+            ["A", "unknown"],
+            [{"state": [0, 0], "probability": 1.0}],
+            "Unknown MaBoSS initial-state node",
+        ),
+    ],
+)
+def test_invalid_joint_initial_state_does_not_reach_pymaboss(
+    nodes: list[str],
+    probabilities: list[dict[str, object]],
+    message: str,
+) -> None:
+    network = InitialStateNetworkStub()
+    session_id = _create_simulation_session(
+        SimpleNamespace(network=network),
+    )
+
+    result = _run(
+        _call_tool(
+            "set_maboss_initial_state",
+            {
+                "nodes": nodes,
+                "probDict": probabilities,
+                "session_id": session_id,
+            },
+        )
+    )
+
+    assert result.is_error is True
+    assert message in result.content[0].text
+    assert network.last_update is None
+
+
+def test_legacy_tuple_key_joint_initial_state_remains_supported() -> None:
+    network = InitialStateNetworkStub()
+    session_id = _create_simulation_session(
+        SimpleNamespace(network=network),
+    )
+
+    result = maboss_server.set_maboss_initial_state(
+        ["A", "B"],
+        {(0, 0): 0.4, (1, 0): 0.6},
+        session_id,
+    )
+
+    assert "Initial state set" in result
+    assert network.last_update == (
+        ["A", "B"],
+        {(0, 0): 0.4, (1, 0): 0.6},
+    )
 
 
 def test_all_maboss_tools_publish_safety_annotations() -> None:
