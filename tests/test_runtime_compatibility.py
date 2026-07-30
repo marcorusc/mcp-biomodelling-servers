@@ -39,6 +39,8 @@ def test_neko_runtime_exposes_server_and_history_contracts() -> None:
         from neko.core.tools import is_connected
         from neko.inputs import Universe, signor
         import pandas as pd
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
 
         assert Exports is not None
         assert Universe is not None
@@ -79,6 +81,18 @@ def test_neko_runtime_exposes_server_and_history_contracts() -> None:
         assert isinstance(states, list)
         assert network.history_graph() is not None
         assert isinstance(network.history_html(), str)
+
+        export_network = Network(
+            initial_nodes=["P04637", "P38398"],
+            resources=resources,
+        )
+        export_network.complete_connection(maxlen=1)
+        with TemporaryDirectory() as temporary_directory:
+            prefix = Path(temporary_directory) / "runtime"
+            Exports(export_network).export_bnet(str(prefix))
+            generated_bnets = list(Path(temporary_directory).glob("*.bnet"))
+            assert len(generated_bnets) == 1
+            assert generated_bnets[0].name.startswith("runtime")
         """
     )
 

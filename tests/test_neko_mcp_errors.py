@@ -416,6 +416,7 @@ def test_artifact_tools_publish_structured_output_schemas() -> None:
 
     for tool_name, expected_title in {
         "export_network": "NeKoNetworkExportResult",
+        "export_neko_handoff": "NeKoHandoffExportResult",
         "list_bnet_files": "NeKoArtifactFileListResult",
         "clean_generated_files": "NeKoArtifactCleanupResult",
     }.items():
@@ -423,6 +424,13 @@ def test_artifact_tools_publish_structured_output_schemas() -> None:
         assert schema is not None
         assert schema["title"] == expected_title
         assert "result" not in schema["properties"]
+
+
+def test_neko_guidance_prefers_typed_handoff_for_maboss_transfer() -> None:
+    assert "export_neko_handoff" in neko_server.NEKO_SERVER_INSTRUCTIONS
+    assert "export_neko_handoff" in neko_server.NEKO_AGENT_MANUAL
+    assert "output nodes" in neko_server.NEKO_AGENT_MANUAL
+    assert "export_network(format='bnet')" in neko_server.NEKO_AGENT_MANUAL
 
 
 def test_scientific_tools_publish_named_structured_output_schemas() -> None:
@@ -925,6 +933,8 @@ def test_bnet_export_returns_structured_sanitization_metadata(
     session_id = _create_session(network)
     artifact_dir = tmp_path / "artifacts" / session_id
     artifact_dir.mkdir(parents=True)
+    stale_path = artifact_dir / "AAA_previous.bnet"
+    stale_path.write_text("STALE, STALE\n", encoding="utf-8")
     monkeypatch.setattr(neko_server, "Exports", RecordingExports)
     monkeypatch.setattr(neko_server, "is_connected", lambda _network: True)
     monkeypatch.setattr(
@@ -956,6 +966,258 @@ def test_bnet_export_returns_structured_sanitization_metadata(
     assert result.structured_content["file"]["name"] == "Network.bnet"
     assert result.structured_content["file"]["media_type"] == "text/plain"
     assert result.structured_content["file"]["size_bytes"] == output_path.stat().st_size
+    assert stale_path.read_text(encoding="utf-8") == "STALE, STALE\n"
+
+
+def test_neko_handoff_exports_typed_provenance_and_translated_outputs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class RecordingExports:
+        def __init__(self, network: object) -> None:
+            del network
+
+        def export_bnet(self, prefix: str) -> None:
+            Path(f"{prefix}_1.bnet").write_text(
+                "# model in BoolNet format\n"
+                "targets, factors\n"
+                "A-1, B\n"
+                "A_1, A_1\n"
+                "B, A-1\n",
+                encoding="utf-8",
+            )
+
+    network = _network_stub(current_state_id=7)
+    session_id = _create_session(network)
+    artifact_dir = tmp_path / "artifacts" / session_id
+    artifact_dir.mkdir(parents=True)
+    monkeypatch.setattr(neko_server, "Exports", RecordingExports)
+    monkeypatch.setattr(neko_server, "is_connected", lambda _network: True)
+    monkeypatch.setattr(neko_server, "_neko_package_version", lambda: "2.0.0")
+    monkeypatch.setattr(
+        neko_server,
+        "_export_dir",
+        lambda _session_id: artifact_dir,
+    )
+
+    result = _run(
+        _call_tool(
+            "export_neko_handoff",
+            {
+                "biological_context": "Test A/B signalling.",
+                "output_nodes": ["A-1"],
+                "artifact_prefix": "a_b_model",
+                "session_id": session_id,
+            },
+        )
+    )
+
+    bnet_path = artifact_dir / "a_b_model.bnet"
+    manifest_path = artifact_dir / "a_b_model.handoff.json"
+    assert result.is_error is False
+    assert bnet_path.read_text(encoding="utf-8") == "A_1, B\nB, A_1\n"
+    assert manifest_path.is_file()
+    assert result.structured_content is not None
+    assert result.structured_content["server"] == "NeKo"
+    assert result.structured_content["session_id"] == session_id
+    assert result.structured_content["manifest_file"]["path"] == str(
+        manifest_path
+    )
+    manifest = result.structured_content["manifest"]
+    assert manifest["schema_version"] == "1.0"
+    assert manifest["handoff_type"] == "neko-to-maboss"
+    assert manifest["history_state_id"] == 7
+    assert manifest["biological_context"] == "Test A/B signalling."
+    assert manifest["source"]["mcp_package"] == {
+        "name": "mcp-biomodelling-servers",
+        "version": neko_server.__version__,
+    }
+    assert manifest["source"]["modelling_package"] == {
+        "name": "nekomata",
+        "version": "2.0.0",
+    }
+    assert manifest["network"] == {
+        "nodes": ["A_1", "B"],
+        "output_nodes": ["A_1"],
+        "renamed_nodes": ["A-1"],
+        "node_renames": {"A-1": "A_1"},
+        "duplicate_rules_removed": ["A_1"],
+    }
+    assert manifest["bnet_file"]["path"] == str(bnet_path)
+    assert len(manifest["bnet_file"]["sha256"]) == 64
+    assert len(result.structured_content["manifest_file"]["sha256"]) == 64
+    on_disk = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert on_disk == manifest
+    assert "Next: pass the manifest path" in result.content[0].text
+
+
+def test_neko_handoff_rejects_multiple_generated_models(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class MultipleModelExports:
+        def __init__(self, network: object) -> None:
+            del network
+
+        def export_bnet(self, prefix: str) -> None:
+            Path(f"{prefix}_1.bnet").write_text("A, A\n", encoding="utf-8")
+            Path(f"{prefix}_2.bnet").write_text("B, B\n", encoding="utf-8")
+
+    session_id = _create_session(_network_stub())
+    artifact_dir = tmp_path / "artifacts" / session_id
+    artifact_dir.mkdir(parents=True)
+    monkeypatch.setattr(neko_server, "Exports", MultipleModelExports)
+    monkeypatch.setattr(neko_server, "is_connected", lambda _network: True)
+    monkeypatch.setattr(neko_server, "_neko_package_version", lambda: "2.0.0")
+    monkeypatch.setattr(
+        neko_server,
+        "_export_dir",
+        lambda _session_id: artifact_dir,
+    )
+
+    result = _run(
+        _call_tool(
+            "export_neko_handoff",
+            {
+                "biological_context": "Test context.",
+                "artifact_prefix": "ambiguous",
+                "session_id": session_id,
+            },
+        )
+    )
+
+    assert result.is_error is True
+    assert "generated multiple BNET models" in result.content[0].text
+    assert "requires exactly one model" in result.content[0].text
+    assert list(artifact_dir.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("output_nodes", "message"),
+    [
+        (["missing"], "absent from the sanitized BNET"),
+        (
+            ["A-1", "A_1"],
+            "collapse onto the same sanitized MaBoSS node",
+        ),
+        (["B", "B"], "must not contain duplicate names"),
+    ],
+)
+def test_neko_handoff_rejects_invalid_outputs_without_partial_artifacts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    output_nodes: list[str],
+    message: str,
+) -> None:
+    class RecordingExports:
+        def __init__(self, network: object) -> None:
+            del network
+
+        def export_bnet(self, prefix: str) -> None:
+            Path(f"{prefix}.bnet").write_text(
+                "A-1, B\nA_1, A_1\nB, A-1\n",
+                encoding="utf-8",
+            )
+
+    session_id = _create_session(_network_stub())
+    artifact_dir = tmp_path / "artifacts" / session_id
+    artifact_dir.mkdir(parents=True)
+    monkeypatch.setattr(neko_server, "Exports", RecordingExports)
+    monkeypatch.setattr(neko_server, "is_connected", lambda _network: True)
+    monkeypatch.setattr(neko_server, "_neko_package_version", lambda: "2.0.0")
+    monkeypatch.setattr(
+        neko_server,
+        "_export_dir",
+        lambda _session_id: artifact_dir,
+    )
+
+    result = _run(
+        _call_tool(
+            "export_neko_handoff",
+            {
+                "biological_context": "Test context.",
+                "output_nodes": output_nodes,
+                "artifact_prefix": "invalid_outputs",
+                "session_id": session_id,
+            },
+        )
+    )
+
+    assert result.is_error is True
+    assert message in result.content[0].text
+    assert list(artifact_dir.iterdir()) == []
+
+
+def test_neko_handoff_refuses_existing_artifacts(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    session_id = _create_session(_network_stub())
+    artifact_dir = tmp_path / "artifacts" / session_id
+    artifact_dir.mkdir(parents=True)
+    existing_bnet = artifact_dir / "retained.bnet"
+    existing_bnet.write_text("original\n", encoding="utf-8")
+    monkeypatch.setattr(neko_server, "is_connected", lambda _network: True)
+    monkeypatch.setattr(
+        neko_server,
+        "_export_dir",
+        lambda _session_id: artifact_dir,
+    )
+
+    result = _run(
+        _call_tool(
+            "export_neko_handoff",
+            {
+                "biological_context": "Test context.",
+                "artifact_prefix": "retained",
+                "session_id": session_id,
+            },
+        )
+    )
+
+    assert result.is_error is True
+    assert "Refusing to overwrite" in result.content[0].text
+    assert "different artifact_prefix" in result.content[0].text
+    assert existing_bnet.read_text(encoding="utf-8") == "original\n"
+    assert not (artifact_dir / "retained.handoff.json").exists()
+
+
+def test_neko_handoff_allows_empty_declared_outputs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class RecordingExports:
+        def __init__(self, network: object) -> None:
+            del network
+
+        def export_bnet(self, prefix: str) -> None:
+            Path(f"{prefix}.bnet").write_text("A, A\n", encoding="utf-8")
+
+    session_id = _create_session(_network_stub())
+    artifact_dir = tmp_path / "artifacts" / session_id
+    artifact_dir.mkdir(parents=True)
+    monkeypatch.setattr(neko_server, "Exports", RecordingExports)
+    monkeypatch.setattr(neko_server, "is_connected", lambda _network: True)
+    monkeypatch.setattr(neko_server, "_neko_package_version", lambda: "2.0.0")
+    monkeypatch.setattr(
+        neko_server,
+        "_export_dir",
+        lambda _session_id: artifact_dir,
+    )
+
+    result = _run(
+        _call_tool(
+            "export_neko_handoff",
+            {
+                "biological_context": "Test context.",
+                "session_id": session_id,
+            },
+        )
+    )
+
+    assert result.is_error is False
+    assert result.structured_content["manifest"]["network"]["output_nodes"] == []
+    assert "select a small output set in MaBoSS" in result.content[0].text
 
 
 def test_neko_bnet_listing_and_cleanup_are_structured(
@@ -1051,6 +1313,61 @@ def test_invalid_export_format_is_tool_error() -> None:
         _call_tool(
             "export_network",
             {"session_id": session_id, "format": "graphml"},
+        )
+    )
+
+    assert result.is_error is True
+    assert "validation error" in result.content[0].text.lower()
+
+
+def test_neko_handoff_requires_network_and_connectivity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    empty_session = _create_session()
+    missing_network = _run(
+        _call_tool(
+            "export_neko_handoff",
+            {
+                "biological_context": "Test context.",
+                "session_id": empty_session,
+            },
+        )
+    )
+    assert missing_network.is_error is True
+    assert "No network" in missing_network.content[0].text
+
+    disconnected_session = _create_session(_network_stub())
+    monkeypatch.setattr(neko_server, "is_connected", lambda _network: False)
+    disconnected = _run(
+        _call_tool(
+            "export_neko_handoff",
+            {
+                "biological_context": "Test context.",
+                "session_id": disconnected_session,
+            },
+        )
+    )
+    assert disconnected.is_error is True
+    assert "connected" in disconnected.content[0].text.lower()
+
+
+@pytest.mark.parametrize(
+    "artifact_prefix",
+    ["../escape", "/absolute", ".hidden", "trailing.", "with space"],
+)
+def test_neko_handoff_rejects_unsafe_artifact_prefixes(
+    artifact_prefix: str,
+) -> None:
+    session_id = _create_session(_network_stub())
+
+    result = _run(
+        _call_tool(
+            "export_neko_handoff",
+            {
+                "biological_context": "Test context.",
+                "artifact_prefix": artifact_prefix,
+                "session_id": session_id,
+            },
         )
     )
 
@@ -1416,6 +1733,7 @@ def test_session_locking_preserves_public_tool_schemas() -> None:
         "remove_gene",
         "remove_interaction",
         "export_network",
+        "export_neko_handoff",
         "list_genes_and_interactions",
         "find_paths",
         "reset_network",
@@ -1501,6 +1819,7 @@ def test_all_neko_tools_publish_safety_annotations() -> None:
     }
     non_idempotent_closed = {
         "create_session",
+        "export_neko_handoff",
         "navigate_network_history",
     }
     non_idempotent_open = {
@@ -1571,6 +1890,16 @@ def test_neko_tool_schemas_publish_stable_enums_and_bounds() -> None:
 
     export_schema = tools["export_network"].input_schema["properties"]
     assert export_schema["format"]["enum"] == ["sif", "bnet"]
+
+    handoff_schema = tools["export_neko_handoff"].input_schema
+    assert handoff_schema["required"] == ["biological_context"]
+    handoff_properties = handoff_schema["properties"]
+    assert handoff_properties["artifact_prefix"]["minLength"] == 1
+    assert handoff_properties["artifact_prefix"]["maxLength"] == 128
+    assert handoff_properties["artifact_prefix"]["pattern"].startswith("^")
+    assert (
+        handoff_properties["biological_context"]["minLength"] == 1
+    )
 
     path_schema = tools["find_paths"].input_schema["properties"]["maxlen"]
     assert path_schema["minimum"] == 1
@@ -1819,6 +2148,7 @@ def test_list_bnet_files_does_not_create_artifact_directory(
         "remove_gene",
         "remove_interaction",
         "export_network",
+        "export_neko_handoff",
         "list_genes_and_interactions",
         "find_paths",
         "reset_network",

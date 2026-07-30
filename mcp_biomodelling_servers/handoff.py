@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import hashlib
 import math
+import os
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
@@ -171,6 +173,10 @@ class HandoffNetwork(StructuredOutputModel):
     nodes: list[NonEmptyString] = Field(min_length=1)
     output_nodes: list[NonEmptyString] = Field(default_factory=list)
     renamed_nodes: list[NonEmptyString] = Field(default_factory=list)
+    node_renames: dict[NonEmptyString, NonEmptyString] = Field(
+        default_factory=dict,
+        description="Original NeKo node name to sanitized MaBoSS node name.",
+    )
     duplicate_rules_removed: list[NonEmptyString] = Field(default_factory=list)
 
     @field_validator(
@@ -186,16 +192,51 @@ class HandoffNetwork(StructuredOutputModel):
         info: ValidationInfo,
     ) -> list[str]:
         """Keep every ordered identifier collection unambiguous."""
-        return _require_unique(value, info.field_name)
+        return _require_unique(value, info.field_name or "collection")
 
     @model_validator(mode="after")
     def validate_output_nodes(self) -> HandoffNetwork:
-        """Require every declared output to exist in the network."""
+        """Require outputs and sanitizer metadata to match the final network."""
         unknown = sorted(set(self.output_nodes) - set(self.nodes))
         if unknown:
             raise ValueError(
                 "Output nodes are absent from the network: "
                 + ", ".join(unknown)
+            )
+
+        unknown_renames = sorted(
+            set(self.node_renames.values()) - set(self.nodes)
+        )
+        if unknown_renames:
+            raise ValueError(
+                "Renamed targets are absent from the network: "
+                + ", ".join(unknown_renames)
+            )
+        identity_renames = sorted(
+            original
+            for original, renamed in self.node_renames.items()
+            if original == renamed
+        )
+        if identity_renames:
+            raise ValueError(
+                "Node rename mappings must change the original name: "
+                + ", ".join(identity_renames)
+            )
+        undeclared_renames = sorted(
+            set(self.node_renames) - set(self.renamed_nodes)
+        )
+        if undeclared_renames:
+            raise ValueError(
+                "Node rename mappings are missing from renamed_nodes: "
+                + ", ".join(undeclared_renames)
+            )
+        unknown_duplicates = sorted(
+            set(self.duplicate_rules_removed) - set(self.nodes)
+        )
+        if unknown_duplicates:
+            raise ValueError(
+                "Removed duplicate rules are absent from the final network: "
+                + ", ".join(unknown_duplicates)
             )
         return self
 
@@ -265,6 +306,11 @@ class NeKoToMaBoSSHandoffManifest(HandoffManifestBase):
     """Manifest produced from a NeKo network for conversion by MaBoSS."""
 
     handoff_type: Literal["neko-to-maboss"] = "neko-to-maboss"
+    history_state_id: int | None = Field(
+        default=None,
+        ge=0,
+        description="Current NeKo history state when the BNET was exported.",
+    )
     bnet_file: HandoffArtifact
 
     @model_validator(mode="after")
@@ -283,6 +329,34 @@ class NeKoToMaBoSSHandoffManifest(HandoffManifestBase):
         if self.lineage:
             raise ValueError(
                 "A NeKo-to-MaBoSS manifest cannot declare upstream lineage."
+            )
+        return self
+
+
+class NeKoHandoffExportResult(StructuredOutputModel):
+    """Structured result returned by NeKo ``export_neko_handoff``."""
+
+    server: Literal["NeKo"]
+    session_id: NonEmptyString
+    manifest_file: HandoffArtifact
+    manifest: NeKoToMaBoSSHandoffManifest
+
+    @model_validator(mode="after")
+    def validate_export_result(self) -> NeKoHandoffExportResult:
+        """Keep the returned manifest artifact and source session aligned."""
+        if self.manifest_file.server != "NeKo":
+            raise ValueError("The handoff manifest file must be owned by NeKo.")
+        if self.manifest_file.role != "parent_manifest":
+            raise ValueError(
+                "The handoff manifest file must have role 'parent_manifest'."
+            )
+        if self.manifest_file.session_id != self.session_id:
+            raise ValueError(
+                "The handoff manifest file session does not match the result."
+            )
+        if self.manifest.source.session_id != self.session_id:
+            raise ValueError(
+                "The NeKo manifest source session does not match the result."
             )
         return self
 
@@ -361,7 +435,9 @@ ModelHandoffManifest: TypeAlias = Annotated[
     NeKoToMaBoSSHandoffManifest | MaBoSSToPhysiCellHandoffManifest,
     Field(discriminator="handoff_type"),
 ]
-_HANDOFF_ADAPTER = TypeAdapter(ModelHandoffManifest)
+_HANDOFF_ADAPTER: TypeAdapter[ModelHandoffManifest] = TypeAdapter(
+    ModelHandoffManifest
+)
 
 
 def sha256_file(path: str | Path) -> str:
@@ -387,6 +463,46 @@ def sha256_file(path: str | Path) -> str:
             f"Artifact changed while its digest was calculated: {artifact_path}"
         )
     return digest.hexdigest()
+
+
+def bnet_node_names(path: str | Path) -> list[str]:
+    """Read unique Boolean target names from a BNET file in stored order."""
+    bnet_path = Path(path)
+    if bnet_path.suffix.lower() != ".bnet":
+        raise ValueError("Boolean network files must use the .bnet suffix.")
+    if not bnet_path.exists():
+        raise FileNotFoundError(f"BNET file does not exist: {bnet_path}")
+    if not bnet_path.is_file():
+        raise ValueError(f"BNET path is not a regular file: {bnet_path}")
+
+    nodes: list[str] = []
+    seen: set[str] = set()
+    with bnet_path.open("r", encoding="utf-8") as bnet_file:
+        for line_number, raw_line in enumerate(bnet_file, start=1):
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.lower() == "targets, factors":
+                continue
+            if "," not in line:
+                raise ValueError(
+                    f"Invalid BNET rule on line {line_number}: missing comma."
+                )
+            node = line.split(",", 1)[0].strip()
+            if not node:
+                raise ValueError(
+                    f"Invalid BNET rule on line {line_number}: empty target."
+                )
+            if node in seen:
+                raise ValueError(
+                    f"Duplicate BNET target {node!r} on line {line_number}."
+                )
+            nodes.append(node)
+            seen.add(node)
+
+    if not nodes:
+        raise ValueError(f"BNET file contains no Boolean rules: {bnet_path}")
+    return nodes
 
 
 def handoff_artifact(
@@ -549,5 +665,29 @@ def write_handoff_manifest(
             f"Handoff manifest exceeds the "
             f"{MAX_HANDOFF_MANIFEST_BYTES}-byte limit."
         )
-    manifest_path.write_text(serialized, encoding="utf-8")
+    temporary_path: Path | None = None
+    try:
+        file_descriptor, temporary_name = tempfile.mkstemp(
+            dir=manifest_path.parent,
+            prefix=f".{manifest_path.name}.",
+            suffix=".tmp",
+        )
+        temporary_path = Path(temporary_name)
+        with os.fdopen(file_descriptor, "w", encoding="utf-8") as temporary:
+            temporary.write(serialized)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        if overwrite:
+            temporary_path.replace(manifest_path)
+        else:
+            try:
+                os.link(temporary_path, manifest_path)
+            except FileExistsError as exc:
+                raise FileExistsError(
+                    "Refusing to overwrite handoff manifest created "
+                    f"concurrently: {manifest_path}"
+                ) from exc
+    finally:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()
     return manifest_path

@@ -26,6 +26,7 @@ EXPECTED_NAMED_OUTPUTS = {
     },
     "NeKo": {
         "export_network": "NeKoNetworkExportResult",
+        "export_neko_handoff": "NeKoHandoffExportResult",
         "list_genes_and_interactions": "NeKoNetworkInventoryResult",
         "find_paths": "NeKoPathSearchResult",
         "list_network_history": "NetworkHistorySummary",
@@ -66,7 +67,7 @@ EXPECTED_NAMED_OUTPUTS = {
 
 EXPECTED_TOOL_COUNTS = {
     "MaBoSS": 22,
-    "NeKo": 32,
+    "NeKo": 33,
     "PhysiCell": 33,
 }
 

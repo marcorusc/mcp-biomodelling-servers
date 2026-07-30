@@ -222,6 +222,8 @@ def sanitize_bnet_file(path: str) -> dict:
     Returns:
         dict with keys:
             ``cleaned_names`` (set[str]) — original names that were renamed.
+            ``name_mapping`` (dict[str, str]) — renamed originals mapped to
+            their sanitized MaBoSS node names.
             ``duplicates_removed`` (list[str]) — cleaned names whose extra rows were dropped.
     """
     _clean = lambda name: re.sub(r"[^A-Za-z0-9_]", "_", name)
@@ -280,7 +282,15 @@ def sanitize_bnet_file(path: str) -> dict:
     with open(path, "w") as fh:
         fh.writelines(new_lines)
 
-    return {"cleaned_names": cleaned_names, "duplicates_removed": duplicates_removed}
+    return {
+        "cleaned_names": cleaned_names,
+        "name_mapping": {
+            original: cleaned
+            for original, cleaned in name_map.items()
+            if original != cleaned
+        },
+        "duplicates_removed": duplicates_removed,
+    }
 
 
 # Keep the old name as a thin alias so existing callers don't break immediately.

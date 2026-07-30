@@ -7,6 +7,7 @@ import json
 import logging
 import re
 import tempfile
+from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
 from threading import Lock
 from typing import Annotated, Literal, Optional, List
@@ -25,6 +26,16 @@ from session_manager import session_manager, ensure_session, normalize_verbosity
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from artifact_manager import safe_artifact_path, list_artifacts, clean_artifacts, write_session_meta, list_artifact_sessions as _list_artifact_sessions_on_disk
 from mcp_biomodelling_servers import __version__
+from mcp_biomodelling_servers.handoff import (
+    HandoffNetwork,
+    HandoffPackage,
+    HandoffProvenance,
+    NeKoHandoffExportResult,
+    NeKoToMaBoSSHandoffManifest,
+    bnet_node_names,
+    handoff_artifact,
+    write_handoff_manifest,
+)
 
 from src.helpers import (
     E_NO_NET, SUMMARY_HINT, _SERVER_ROOT,
@@ -85,7 +96,8 @@ NEKO_SERVER_INSTRUCTIONS = (
     "`candidate_connectors()` before applying expensive connection strategies, "
     "inspect network history after topology changes, and prefer "
     "`verbosity='summary'` during iterative work. Export with `format='bnet'` "
-    "for MaBoSS. Read `docs://neko/agent_manual` or use "
+    "for a standalone Boolean file, or use `export_neko_handoff` to preserve "
+    "typed MaBoSS provenance. Read `docs://neko/agent_manual` or use "
     "`neko_workflow_prompt` for the complete workflow."
 )
 
@@ -124,6 +136,18 @@ NormalizedVerbosity = Annotated[
 NormalizedExportFormat = Annotated[
     Literal["sif", "bnet"],
     BeforeValidator(_lower_string),
+]
+HandoffArtifactPrefix = Annotated[
+    str,
+    Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9_-])?$",
+        description=(
+            "Safe basename prefix for the paired .bnet and .handoff.json "
+            "artifacts. Directory components and a trailing dot are forbidden."
+        ),
+    ),
 ]
 OutputFormat = Literal["markdown", "json"]
 NormalizedConnectorMethod = Annotated[
@@ -314,6 +338,88 @@ def _referenced_interaction_records(
     return records
 
 
+def _export_sanitized_bnet(
+    network,
+    destination: Path,
+    *,
+    overwrite: bool,
+) -> dict:
+    """Export and sanitize one BNET through a temporary session-local path."""
+    if destination.exists() and not overwrite:
+        raise FileExistsError(
+            f"Refusing to overwrite existing BNET artifact: {destination}"
+        )
+
+    try:
+        with tempfile.TemporaryDirectory(
+            dir=destination.parent,
+            prefix=".neko-bnet-",
+        ) as temporary_directory:
+            temporary_prefix = Path(temporary_directory) / destination.stem
+            try:
+                Exports(network).export_bnet(str(temporary_prefix))
+            except Exception as exc:
+                raise RuntimeError(f"Error exporting BNET: {exc}") from exc
+            generated_bnets = sorted(Path(temporary_directory).glob("*.bnet"))
+            if not generated_bnets:
+                raise FileNotFoundError(
+                    "NeKo did not create a BNET file in the temporary export "
+                    f"directory {temporary_directory}."
+                )
+            if len(generated_bnets) > 1:
+                generated_names = ", ".join(
+                    path.name for path in generated_bnets
+                )
+                raise RuntimeError(
+                    "NeKo generated multiple BNET models "
+                    f"({generated_names}); this export requires exactly one model."
+                )
+            temporary_bnet = generated_bnets[0]
+            try:
+                sanitizer_result = sanitize_bnet_file(str(temporary_bnet))
+            except Exception as exc:
+                raise RuntimeError(f"Error sanitizing BNET: {exc}") from exc
+
+            if overwrite:
+                temporary_bnet.replace(destination)
+            else:
+                try:
+                    os.link(temporary_bnet, destination)
+                except FileExistsError as exc:
+                    raise FileExistsError(
+                        "Refusing to overwrite BNET artifact created "
+                        f"concurrently: {destination}"
+                    ) from exc
+            return sanitizer_result
+    except OSError as exc:
+        raise RuntimeError(
+            f"Could not finalize BNET artifact {destination}: {exc}"
+        ) from exc
+
+
+def _neko_package_version() -> str:
+    """Return the installed NeKo distribution version for provenance."""
+    try:
+        return package_version("nekomata")
+    except PackageNotFoundError as exc:
+        raise RuntimeError(
+            "Cannot export a handoff because the installed `nekomata` "
+            "package version is unavailable."
+        ) from exc
+
+
+def _network_history_state_id(network) -> int | None:
+    """Return a valid non-negative NeKo history state identifier when present."""
+    value = getattr(network, "current_state_id", None)
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        state_id = int(value)
+    except (TypeError, ValueError):
+        return None
+    return state_id if state_id >= 0 else None
+
+
 # NOTE: Previous implementation used a single global `network` object.
 # Now session-based management (see `session_manager.py`).
 # Each tool can accept an optional `session_id` allowing multiple networks.
@@ -333,17 +439,24 @@ NEKO_AGENT_MANUAL = """
    `compare_network_states(state_a, state_b)` before deciding whether to
    `navigate_network_history(action='checkout', state_id=...)`.
 6. **Inspect network:** `list_genes_and_interactions(verbosity='preview')`
-7. **Export:** `export_network(format='bnet')` -> Pass to MaBoSS.
+7. **Export:** Use `export_neko_handoff(biological_context=...,
+   output_nodes=[...])` for a typed MaBoSS transfer. Use
+   `export_network(format='bnet')` only when a standalone BNET is sufficient.
 
 ## 2. Tool Categories
 * **Sessions:** `create_session`, `list_sessions`, `set_default_session`, `delete_session`, `status`, `reset_network`
 * **Connection Solvers:** `bridge_components`, `connect_targeted_nodes`, `apply_global_connection`
 * **Inspection:** `list_genes_and_interactions`, `find_paths`, `get_references`, `filter_interactions`
 * **History:** `list_network_history`, `navigate_network_history`, `compare_network_states`, `set_network_history_limit`
+* **Handoff:** `export_neko_handoff` records exact sanitized Boolean nodes,
+  declared outputs, package versions, history state, and artifact digests.
 
 ## 3. Critical Operating Rules
 * **Session First:** Always call `create_session` before `create_network`.
 * **Scout Before You Shoot:** Always run `candidate_connectors()` before heavy connection tools.
+* **Output Names:** Handoff output nodes may use original NeKo names; export
+  translates renamed symbols to the exact names stored in the sanitized BNET.
+  If outputs are omitted, MaBoSS must select a small output set before running.
 * **Token Frugality:** In iterative loops, ALWAYS use `verbosity='summary'`. 
 """
 
@@ -722,14 +835,13 @@ def export_network(
     sess, network = _session_network(session_id)
     if network is None:
         raise RuntimeError(format_no_network_guidance())
-    exporter = Exports(network)
     out_dir = _export_dir(sess.session_id)
 
     # ── SIF export ────────────────────────────────────────────────────────────
     if export_format == "sif":
         out_path = str(out_dir / "Network.sif")
         try:
-            exporter.export_sif(out_path)
+            Exports(network).export_sif(out_path)
         except Exception as e:
             raise RuntimeError(f"Error exporting SIF: {e}") from e
         if verbosity == "summary":
@@ -763,20 +875,13 @@ def export_network(
     else:
         if not is_connected(network):
             raise RuntimeError(format_connectivity_guidance())
-        try:
-            exporter.export_bnet(str(out_dir / "Network"))
-        except Exception as e:
-            raise RuntimeError(f"Error exporting BNET: {e}") from e
-
-        bnet_files = sorted(out_dir.glob("*.bnet"))
-        if not bnet_files:
-            raise FileNotFoundError("No .bnet files were generated.")
-        out_path = str(bnet_files[0])
-
-        try:
-            result = sanitize_bnet_file(out_path)
-        except Exception as e:
-            raise RuntimeError(f"Error sanitizing BNET: {e}") from e
+        output_path = safe_artifact_path(out_dir, "Network.bnet")
+        result = _export_sanitized_bnet(
+            network,
+            output_path,
+            overwrite=True,
+        )
+        out_path = str(output_path)
 
         if verbosity == "summary":
             text = f"BNET exported: {out_path}. {SUMMARY_HINT}"
@@ -815,6 +920,172 @@ def export_network(
             duplicate_rules_removed=sorted(set(result["duplicates_removed"])),
         )
         return structured_report(text, payload)
+
+
+@mcp.tool(annotations=_NON_IDEMPOTENT_CLOSED)
+@session_locked
+def export_neko_handoff(
+        biological_context: NonEmptyString = Field(description="Biological question or modelling context that must remain attached to the network."),
+        output_nodes: Optional[List[NonEmptyString]] = Field(None, description="Optional biologically meaningful MaBoSS output nodes. Original NeKo names are translated to sanitized BNET names."),
+        artifact_prefix: HandoffArtifactPrefix = Field("neko_to_maboss", description="Safe prefix used for '<prefix>.bnet' and '<prefix>.handoff.json'. Choose a new prefix for every retained handoff."),
+        session_id: Optional[NonEmptyString] = Field(None, description="Session ID to export; omit to use the active/default session.")) -> Annotated[CallToolResult, NeKoHandoffExportResult]:
+    """Export a versioned, integrity-protected NeKo-to-MaBoSS handoff.
+
+    The tool writes a sanitized BNET plus a JSON handoff manifest into the
+    session artifact directory. Existing handoffs are never overwritten.
+    Declared outputs are translated to the exact node names stored in the BNET.
+    """
+    sess, network = _session_network(session_id)
+    if network is None:
+        raise RuntimeError(format_no_network_guidance())
+    if not is_connected(network):
+        raise RuntimeError(format_connectivity_guidance())
+
+    out_dir = _export_dir(sess.session_id)
+    bnet_path = safe_artifact_path(
+        out_dir,
+        f"{artifact_prefix}.bnet",
+    )
+    manifest_path = safe_artifact_path(
+        out_dir,
+        f"{artifact_prefix}.handoff.json",
+    )
+    existing = [
+        path
+        for path in (bnet_path, manifest_path)
+        if path.exists()
+    ]
+    if existing:
+        raise FileExistsError(
+            "Refusing to overwrite an existing NeKo handoff artifact: "
+            + ", ".join(str(path) for path in existing)
+            + ". Choose a different artifact_prefix."
+        )
+
+    neko_version = _neko_package_version()
+    created_paths: list[Path] = []
+    try:
+        sanitizer_result = _export_sanitized_bnet(
+            network,
+            bnet_path,
+            overwrite=False,
+        )
+        created_paths.append(bnet_path)
+        nodes = bnet_node_names(bnet_path)
+
+        renamed_nodes = sorted(
+            str(node)
+            for node in sanitizer_result.get("cleaned_names", set())
+        )
+        node_renames = {
+            str(original): str(renamed)
+            for original, renamed in sorted(
+                sanitizer_result.get("name_mapping", {}).items()
+            )
+        }
+        duplicate_rules_removed = sorted({
+            str(node)
+            for node in sanitizer_result.get("duplicates_removed", [])
+        })
+
+        requested_outputs = list(output_nodes or [])
+        if len(requested_outputs) != len(set(requested_outputs)):
+            raise ValueError(
+                "output_nodes must not contain duplicate names."
+            )
+        translated_outputs = [
+            node_renames.get(node, node)
+            for node in requested_outputs
+        ]
+        if len(translated_outputs) != len(set(translated_outputs)):
+            raise ValueError(
+                "Declared output nodes collapse onto the same sanitized "
+                "MaBoSS node. Select only one original name for each output."
+            )
+        unknown_outputs = sorted(set(translated_outputs) - set(nodes))
+        if unknown_outputs:
+            available_preview = ", ".join(nodes[:25])
+            raise ValueError(
+                "Declared output nodes are absent from the sanitized BNET: "
+                + ", ".join(unknown_outputs)
+                + f". Available nodes include: {available_preview}."
+            )
+
+        bnet_reference = handoff_artifact(
+            bnet_path,
+            server="NeKo",
+            session_id=sess.session_id,
+            role="neko_bnet",
+        )
+        manifest = NeKoToMaBoSSHandoffManifest(
+            source=HandoffProvenance(
+                server="NeKo",
+                session_id=sess.session_id,
+                mcp_package=HandoffPackage(
+                    name="mcp-biomodelling-servers",
+                    version=__version__,
+                ),
+                modelling_package=HandoffPackage(
+                    name="nekomata",
+                    version=neko_version,
+                ),
+                operation="export_neko_handoff",
+            ),
+            biological_context=biological_context,
+            network=HandoffNetwork(
+                nodes=nodes,
+                output_nodes=translated_outputs,
+                renamed_nodes=renamed_nodes,
+                node_renames=node_renames,
+                duplicate_rules_removed=duplicate_rules_removed,
+            ),
+            history_state_id=_network_history_state_id(network),
+            bnet_file=bnet_reference,
+        )
+        write_handoff_manifest(manifest_path, manifest)
+        created_paths.append(manifest_path)
+        manifest_reference = handoff_artifact(
+            manifest_path,
+            server="NeKo",
+            session_id=sess.session_id,
+            role="parent_manifest",
+        )
+        payload = NeKoHandoffExportResult(
+            server="NeKo",
+            session_id=sess.session_id,
+            manifest_file=manifest_reference,
+            manifest=manifest,
+        )
+    except Exception:
+        for path in reversed(created_paths):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                logger.warning(
+                    "Could not roll back incomplete handoff artifact %s",
+                    path,
+                    exc_info=True,
+                )
+        raise
+
+    output_summary = (
+        ", ".join(translated_outputs)
+        if translated_outputs
+        else (
+            "none declared; select a small output set in MaBoSS before "
+            "running a simulation"
+        )
+    )
+    text = (
+        "NeKo-to-MaBoSS handoff exported successfully.\n"
+        f"  Manifest: {manifest_path}\n"
+        f"  BNET: {bnet_path}\n"
+        f"  Boolean nodes: {len(nodes)}\n"
+        f"  Declared outputs: {output_summary}\n\n"
+        "Next: pass the manifest path to the MaBoSS handoff import tool."
+    )
+    return structured_report(text, payload)
+
 
 @mcp.tool(annotations=_READ_ONLY_CLOSED)
 @session_locked

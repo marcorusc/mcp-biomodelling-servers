@@ -10,6 +10,7 @@ from typing import Literal
 import pytest
 from pydantic import ValidationError
 
+import mcp_biomodelling_servers.handoff as handoff_contracts
 from mcp_biomodelling_servers.handoff import (
     HANDOFF_SCHEMA_VERSION,
     MAX_HANDOFF_MANIFEST_BYTES,
@@ -19,8 +20,10 @@ from mcp_biomodelling_servers.handoff import (
     HandoffProvenance,
     MaBoSSSimulationHandoff,
     MaBoSSToPhysiCellHandoffManifest,
+    NeKoHandoffExportResult,
     NeKoToMaBoSSHandoffManifest,
     PhysiCellTarget,
+    bnet_node_names,
     handoff_artifact,
     load_handoff_manifest,
     manifest_artifacts,
@@ -196,6 +199,91 @@ def test_sha256_file_matches_known_digest(tmp_path: Path) -> None:
     artifact_path = _write(tmp_path / "known.bnet", "A, B\n")
 
     assert sha256_file(artifact_path) == hashlib.sha256(b"A, B\n").hexdigest()
+
+
+def test_bnet_node_names_reads_sanitized_targets_in_stored_order(
+    tmp_path: Path,
+) -> None:
+    bnet_path = _write(
+        tmp_path / "Network.bnet",
+        "# comment\n"
+        "targets, factors\n"
+        "A_1, B\n"
+        "\n"
+        "B, A_1\n",
+    )
+
+    assert bnet_node_names(bnet_path) == ["A_1", "B"]
+
+
+@pytest.mark.parametrize(
+    ("contents", "message"),
+    [
+        ("not-a-rule\n", "missing comma"),
+        (", A\n", "empty target"),
+        ("A, A\nA, A\n", "Duplicate BNET target"),
+        ("# comments only\n", "contains no Boolean rules"),
+    ],
+)
+def test_bnet_node_names_rejects_invalid_models(
+    tmp_path: Path,
+    contents: str,
+    message: str,
+) -> None:
+    bnet_path = _write(tmp_path / "invalid.bnet", contents)
+
+    with pytest.raises(ValueError, match=message):
+        bnet_node_names(bnet_path)
+
+
+def test_network_validates_node_rename_and_duplicate_rule_metadata() -> None:
+    network = HandoffNetwork(
+        nodes=["A_1", "B"],
+        renamed_nodes=["A-1"],
+        node_renames={"A-1": "A_1"},
+        duplicate_rules_removed=["A_1"],
+    )
+    assert network.node_renames == {"A-1": "A_1"}
+
+    with pytest.raises(ValidationError, match="absent from the network"):
+        HandoffNetwork(
+            nodes=["A"],
+            renamed_nodes=["B-1"],
+            node_renames={"B-1": "B_1"},
+        )
+    with pytest.raises(ValidationError, match="must change"):
+        HandoffNetwork(
+            nodes=["A"],
+            renamed_nodes=["A"],
+            node_renames={"A": "A"},
+        )
+
+
+def test_neko_handoff_export_result_aligns_manifest_and_file(
+    tmp_path: Path,
+) -> None:
+    manifest = _neko_manifest(tmp_path)
+    manifest.history_state_id = 4
+    manifest_path = write_handoff_manifest(
+        tmp_path / "neko-handoff.json",
+        manifest,
+    )
+    manifest_file = handoff_artifact(
+        manifest_path,
+        server="NeKo",
+        session_id=manifest.source.session_id,
+        role="parent_manifest",
+    )
+
+    result = NeKoHandoffExportResult(
+        server="NeKo",
+        session_id=manifest.source.session_id,
+        manifest_file=manifest_file,
+        manifest=manifest,
+    )
+
+    assert result.manifest.history_state_id == 4
+    assert result.manifest_file.sha256 == sha256_file(manifest_path)
 
 
 def test_handoff_artifact_requires_existing_regular_file(
@@ -421,6 +509,26 @@ def test_manifest_io_rejects_invalid_suffix_and_accidental_overwrite(
         manifest,
         overwrite=True,
     ) == manifest_path
+
+
+def test_manifest_io_preserves_a_concurrently_created_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manifest = _neko_manifest(tmp_path)
+    manifest_path = tmp_path / "handoff.json"
+
+    def create_competing_file(_source: Path, destination: Path) -> None:
+        Path(destination).write_text("concurrent\n", encoding="utf-8")
+        raise FileExistsError
+
+    monkeypatch.setattr(handoff_contracts.os, "link", create_competing_file)
+
+    with pytest.raises(FileExistsError, match="created concurrently"):
+        write_handoff_manifest(manifest_path, manifest)
+
+    assert manifest_path.read_text(encoding="utf-8") == "concurrent\n"
+    assert list(tmp_path.glob(".handoff.json.*.tmp")) == []
 
 
 def test_manifest_io_requires_existing_directory_and_json_input(
