@@ -41,6 +41,22 @@ from src.history import (
     state_ids,
     summarize_history,
 )
+from src.structured_outputs import (
+    NeKoComponentListResult,
+    NeKoComponentRecord,
+    NeKoConnectorCandidateResult,
+    NeKoConnectorSimulation,
+    NeKoDisconnectedNodesResult,
+    NeKoHubCandidate,
+    NeKoInteractionFilterResult,
+    NeKoInteractionRecord,
+    NeKoNetworkInventoryResult,
+    NeKoNetworkStatusResult,
+    NeKoNodeRecord,
+    NeKoPathSearchResult,
+    NeKoReferencedInteractionRecord,
+    NeKoReferenceQueryResult,
+)
 
 import pandas as pd
 
@@ -161,6 +177,131 @@ _DESTRUCTIVE_NON_IDEMPOTENT_OPEN = ToolAnnotations(
     idempotent_hint=False,
     open_world_hint=True,
 )
+
+
+def _optional_text(value) -> str | None:
+    """Convert one dataframe scalar to a JSON-safe optional string."""
+    if value is None:
+        return None
+    try:
+        if bool(pd.isna(value)):
+            return None
+    except (TypeError, ValueError):
+        pass
+    text = str(value).strip()
+    return text or None
+
+
+def _required_text(value, *, field_name: str) -> str:
+    """Convert a required dataframe scalar or reject malformed network data."""
+    text = _optional_text(value)
+    if text is None:
+        raise ValueError(f"Network data contains an empty {field_name}.")
+    return text
+
+
+def _node_records(network) -> list[NeKoNodeRecord]:
+    """Return all network nodes in their stored order."""
+    nodes = getattr(network, "nodes", None)
+    if nodes is None or nodes.empty:
+        return []
+
+    records = []
+    for _, row in nodes.iterrows():
+        records.append(
+            NeKoNodeRecord(
+                gene_symbol=_optional_text(row.get("Genesymbol")),
+                uniprot=_optional_text(row.get("Uniprot")),
+                node_type=_optional_text(row.get("Type")),
+            )
+        )
+    return records
+
+
+def _node_record_index(network) -> dict[str, NeKoNodeRecord]:
+    """Index node records by both UniProt identifier and gene symbol."""
+    index = {}
+    for record in _node_records(network):
+        if record.uniprot is not None:
+            index[record.uniprot] = record
+        if record.gene_symbol is not None:
+            index.setdefault(record.gene_symbol, record)
+    return index
+
+
+def _node_record_for_identifier(
+        identifier,
+        *,
+        node_index: dict[str, NeKoNodeRecord],
+        uniprot_to_symbol: dict,
+) -> NeKoNodeRecord:
+    """Resolve an internal network identifier without losing its UniProt ID."""
+    identifier_text = _required_text(identifier, field_name="node identifier")
+    stored = node_index.get(identifier_text)
+    if stored is not None:
+        return stored
+    return NeKoNodeRecord(
+        gene_symbol=_optional_text(
+            uniprot_to_symbol.get(identifier, uniprot_to_symbol.get(identifier_text))
+        ),
+        uniprot=identifier_text,
+    )
+
+
+def _interaction_records(df: pd.DataFrame) -> list[NeKoInteractionRecord]:
+    """Convert an edge dataframe into strict JSON-safe interaction records."""
+    records = []
+    for _, row in df.iterrows():
+        records.append(
+            NeKoInteractionRecord(
+                source=_required_text(row.get("source"), field_name="edge source"),
+                target=_required_text(row.get("target"), field_name="edge target"),
+                effect=_optional_text(row.get("Effect")),
+            )
+        )
+    return records
+
+
+def _reference_list(value) -> list[str]:
+    """Normalize NeKo's comma/semicolon-delimited reference values."""
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        raw_references = value
+    else:
+        text = _optional_text(value)
+        if text is None or text.lower() == "none":
+            return []
+        raw_references = re.split(r"[;,]", text)
+
+    references = []
+    seen = set()
+    for value in raw_references:
+        reference = _optional_text(value)
+        if reference is not None and reference not in seen:
+            references.append(reference)
+            seen.add(reference)
+    return references
+
+
+def _referenced_interaction_records(
+        df: pd.DataFrame,
+) -> list[NeKoReferencedInteractionRecord]:
+    """Convert an edge dataframe while retaining its complete evidence list."""
+    records = []
+    for _, row in df.iterrows():
+        references = _reference_list(row.get("References"))
+        records.append(
+            NeKoReferencedInteractionRecord(
+                source=_required_text(row.get("source"), field_name="edge source"),
+                target=_required_text(row.get("target"), field_name="edge target"),
+                effect=_optional_text(row.get("Effect")),
+                reference_count=len(references),
+                references=references,
+            )
+        )
+    return records
+
 
 # NOTE: Previous implementation used a single global `network` object.
 # Now session-based management (see `session_manager.py`).
@@ -669,7 +810,7 @@ def export_network(
 def list_genes_and_interactions(
         session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session."),
         verbosity: NormalizedVerbosity = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary' (counts only), 'preview' (truncated table), 'full' (up to 100 rows)."),
-        max_rows: int = Field(50, ge=1, description="Maximum rows to return in preview/full mode.")) -> str:
+        max_rows: int = Field(50, ge=1, description="Maximum rows to return in preview mode.")) -> Annotated[CallToolResult, NeKoNetworkInventoryResult]:
     """Return a Markdown table of all nodes and directed edges in the network.
 
     Equivalent to 'show the network'. Use filter_interactions() for targeted queries.
@@ -681,16 +822,79 @@ def list_genes_and_interactions(
 
     try:
         df = sess.get_edges_df()
+        if df is None:
+            df = pd.DataFrame(columns=["source", "target", "Effect"])
         if "resources" in df.columns:
             df = df.drop(columns=["resources"])
-        if df.empty:
-            return "_Network loaded but contains no interactions._\n\n" + clean_for_markdown(df).to_markdown(index=False, tablefmt="plain")
         df = df[[c for c in ['source', 'target', 'Effect'] if c in df.columns]]
+
+        nodes = _node_records(network)
+        row_limit = max_rows if verbosity == "preview" else 100
+        returned_nodes = [] if verbosity == "summary" else nodes[:row_limit]
+        returned_df = (
+            df.head(0)
+            if verbosity == "summary"
+            else df.head(row_limit)
+        )
+        interactions = _interaction_records(returned_df)
+        truncated = (
+            len(returned_nodes) < len(nodes)
+            or len(interactions) < len(df)
+        )
+        payload = NeKoNetworkInventoryResult(
+            server="NeKo",
+            session_id=sess.session_id,
+            verbosity=verbosity,
+            total_node_count=len(nodes),
+            total_interaction_count=len(df),
+            returned_node_count=len(returned_nodes),
+            returned_interaction_count=len(interactions),
+            truncated=truncated,
+            nodes=returned_nodes,
+            interactions=interactions,
+        )
+
         if verbosity == "summary":
-            return f"Interactions: {len(df)}. {SUMMARY_HINT}"
-        table, truncated = _short_table(df, max_rows=max_rows if verbosity == "preview" else 100)
-        note = " (truncated)" if truncated else ""
-        return table + note
+            text = (
+                f"Nodes: {len(nodes)}. Interactions: {len(df)}. "
+                f"{SUMMARY_HINT}"
+            )
+            return structured_report(text, payload)
+
+        node_rows = [
+            {
+                "Gene symbol": record.gene_symbol,
+                "UniProt": record.uniprot,
+                "Type": record.node_type,
+            }
+            for record in returned_nodes
+        ]
+        node_df = pd.DataFrame(
+            node_rows,
+            columns=["Gene symbol", "UniProt", "Type"],
+        )
+        node_table = (
+            "_No nodes._"
+            if node_df.empty
+            else clean_for_markdown(node_df).to_markdown(
+                index=False,
+                tablefmt="plain",
+            )
+        )
+        interaction_table = (
+            "_Network loaded but contains no interactions._"
+            if returned_df.empty
+            else clean_for_markdown(returned_df).to_markdown(
+                index=False,
+                tablefmt="plain",
+            )
+        )
+        note = "\n\n_Result truncated._" if truncated else ""
+        text = (
+            f"Nodes ({len(nodes)} total):\n{node_table}\n\n"
+            f"Interactions ({len(df)} total):\n{interaction_table}{note}"
+        )
+        return structured_report(text, payload)
     except Exception as e:
         raise RuntimeError(f"Unable to retrieve network data: {e}") from e
 
@@ -701,7 +905,7 @@ def find_paths(
         target: Annotated[NonEmptyString, Field(description="Target gene symbol (path end).")],
         maxlen: int = Field(3, ge=1, le=5, description="Maximum number of edges in a path (1-5; longer paths are slower to compute)."),
         session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session."),
-        verbosity: NormalizedVerbosity = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary' (count only), 'preview'/'full' (path listing).")) -> str:
+        verbosity: NormalizedVerbosity = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary' (count only), 'preview'/'full' (path listing).")) -> Annotated[CallToolResult, NeKoPathSearchResult]:
     """Find and display all directed paths between two genes up to maxlen edges.
 
     Useful for verifying biological signal flow before BNET export.
@@ -720,14 +924,30 @@ def find_paths(
             network.print_my_paths(source, target, maxlen=maxlen)
 
             raw_output = buffer.getvalue().strip()
+            lines = [
+                line.strip()
+                for line in raw_output.splitlines()
+                if line.strip()
+            ]
+            payload = NeKoPathSearchResult(
+                server="NeKo",
+                session_id=sess.session_id,
+                source=source,
+                target=target,
+                max_length=maxlen,
+                has_output=bool(lines),
+                output_line_count=len(lines),
+                path_output_lines=lines,
+            )
 
-            if not raw_output:
-                return "No paths found."
+            if not lines:
+                return structured_report("No paths found.", payload)
             if verbosity == "summary":
-                lines = [line for line in raw_output.splitlines() if line.strip()]
-                return f"Found {len(lines)} path lines. {SUMMARY_HINT}"
+                text = f"Found {len(lines)} path lines. {SUMMARY_HINT}"
+                return structured_report(text, payload)
             label = "Paths" if verbosity == "preview" else "Paths (full output)"
-            return f"{label}:\n```\n{raw_output}\n```"
+            text = f"{label}:\n```\n{raw_output}\n```"
+            return structured_report(text, payload)
 
         except Exception as e:
             raise RuntimeError(f"Unable to find paths: {e}") from e
@@ -1023,32 +1243,58 @@ def list_bnet_files(
 @mcp.tool(annotations=_READ_ONLY_CLOSED)
 @session_locked
 def check_disconnected_nodes(
-        session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session.")) -> str:
+        session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session.")) -> Annotated[CallToolResult, NeKoDisconnectedNodesResult]:
     """List any nodes in the network that have no edges (isolated nodes)."""
     sess, network = _session_network(session_id)
     if network is None:
         raise RuntimeError(E_NO_NET)
-    
+
     u2s, s2u = _get_translators(network)
-    
-    all_nodes = set(network.nodes["Uniprot"].tolist())
-    if is_connected(network):
-        return "All nodes are connected."
-        
-    connected_nodes = set(network.edges["source"].tolist()) | set(network.edges["target"].tolist())
+    del s2u
+
+    all_nodes = {
+        node
+        for node in network.nodes["Uniprot"].tolist()
+        if _optional_text(node) is not None
+    }
+    connected_nodes = (
+        set(network.edges["source"].tolist())
+        | set(network.edges["target"].tolist())
+    )
     disconnected_uniprot = all_nodes - connected_nodes
-    
-    disconnected_uniprot = [node for node in disconnected_uniprot if pd.notna(node) and node != ""]
-    
-    if not disconnected_uniprot:
-        return "All nodes are connected."
-    
-    # If a Uniprot ID lacks a symbol, we fall back to showing the Uniprot ID
-    disconnected_symbols = [u2s.get(uid, uid) for uid in disconnected_uniprot]
-    
-    disconnected_symbols.sort()
-    
-    return "Disconnected nodes (Gene Symbols):\n" + "\n".join(disconnected_symbols)
+    node_index = _node_record_index(network)
+    disconnected_nodes = [
+        _node_record_for_identifier(
+            node,
+            node_index=node_index,
+            uniprot_to_symbol=u2s,
+        )
+        for node in disconnected_uniprot
+    ]
+    disconnected_nodes.sort(
+        key=lambda record: record.gene_symbol or record.uniprot or ""
+    )
+    payload = NeKoDisconnectedNodesResult(
+        server="NeKo",
+        session_id=sess.session_id,
+        total_node_count=len(all_nodes),
+        disconnected_count=len(disconnected_nodes),
+        all_nodes_have_interactions=not disconnected_nodes,
+        disconnected_nodes=disconnected_nodes,
+    )
+
+    if not disconnected_nodes:
+        return structured_report("All nodes are connected.", payload)
+
+    disconnected_labels = [
+        record.gene_symbol or record.uniprot or "(unknown)"
+        for record in disconnected_nodes
+    ]
+    text = (
+        "Disconnected nodes (Gene Symbols):\n"
+        + "\n".join(disconnected_labels)
+    )
+    return structured_report(text, payload)
 
 @mcp.tool(annotations=_READ_ONLY_CLOSED)
 @session_locked
@@ -1056,7 +1302,7 @@ def get_references(
         node1: Annotated[NonEmptyString, Field(description="Gene symbol. Returns all edges where this gene is source or target.")],
         node2: Optional[NonEmptyString] = Field(None, description="Second gene symbol. When provided, returns only edges between node1 and node2 (either direction)."),
         session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session."),
-        verbosity: NormalizedVerbosity = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary' (count only), 'preview'/'full' (Markdown table).")) -> str:
+        verbosity: NormalizedVerbosity = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary' (count only), 'preview'/'full' (Markdown table).")) -> Annotated[CallToolResult, NeKoReferenceQueryResult]:
     """Show literature references for interactions involving one or two genes.
 
     References are truncated to the first 5 per edge with a count of remaining.
@@ -1071,33 +1317,65 @@ def get_references(
     except Exception as e:
         raise RuntimeError(f"Unable to retrieve network edges: {e}") from e
     if df.empty:
-        return "_No interactions found in the network._"
+        payload = NeKoReferenceQueryResult(
+            server="NeKo",
+            session_id=sess.session_id,
+            node1=node1,
+            node2=node2,
+            interaction_count=0,
+            interactions=[],
+        )
+        return structured_report(
+            "_No interactions found in the network._",
+            payload,
+        )
     # Filter by node(s)
     if node2:
         mask = ((df['source'] == node1) & (df['target'] == node2)) | ((df['source'] == node2) & (df['target'] == node1))
-        filtered = df[mask]
+        filtered = df[mask].copy()
     else:
         mask = (df['source'] == node1) | (df['target'] == node1)
-        filtered = df[mask]
+        filtered = df[mask].copy()
     if filtered.empty:
-        return "No matching interactions."
+        payload = NeKoReferenceQueryResult(
+            server="NeKo",
+            session_id=sess.session_id,
+            node1=node1,
+            node2=node2,
+            interaction_count=0,
+            interactions=[],
+        )
+        return structured_report("No matching interactions.", payload)
     # Only keep relevant columns
     cols = ['source', 'target', 'Effect', 'References']
     filtered = filtered[[c for c in cols if c in filtered.columns]]
+    interactions = _referenced_interaction_records(filtered)
+    payload = NeKoReferenceQueryResult(
+        server="NeKo",
+        session_id=sess.session_id,
+        node1=node1,
+        node2=node2,
+        interaction_count=len(interactions),
+        interactions=interactions,
+    )
     # Truncate references for display
     def short_refs(refs):
-        if pd.isna(refs) or not refs or refs == 'None':
-            return ''
-        ref_list = [r.strip() for r in str(refs).replace(';', ',').split(',') if r.strip()]
+        ref_list = _reference_list(refs)
         if len(ref_list) > 5:
             return '; '.join(ref_list[:5]) + f" (+{len(ref_list)-5} more)"
         return '; '.join(ref_list)
-    filtered['References'] = filtered['References'].apply(short_refs)
+    display = filtered.copy()
+    if "References" in display.columns:
+        display['References'] = display['References'].apply(short_refs)
     # Clean for markdown
     if verbosity == "summary":
-        return f"References: {len(filtered)} interactions. {SUMMARY_HINT}"
-    md = clean_for_markdown(filtered).to_markdown(index=False, tablefmt="plain")
-    return md
+        text = f"References: {len(filtered)} interactions. {SUMMARY_HINT}"
+        return structured_report(text, payload)
+    md = clean_for_markdown(display).to_markdown(
+        index=False,
+        tablefmt="plain",
+    )
+    return structured_report(md, payload)
 
 @mcp.tool(annotations=_NON_IDEMPOTENT_OPEN)
 @session_locked
@@ -1166,7 +1444,7 @@ def filter_interactions(
         session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session."),
         verbosity: NormalizedVerbosity = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary' (count), 'preview'/'full' (Markdown table)."),
         format: OutputFormat = Field("markdown", description="Output format: 'markdown' (default) or 'json'."),
-        max_rows: int = Field(50, ge=1, description="Maximum rows returned in preview mode.")) -> str:
+        max_rows: int = Field(50, ge=1, description="Maximum rows returned in preview mode.")) -> Annotated[CallToolResult, NeKoInteractionFilterResult]:
     """Filter and display interactions by effect type, source gene, or target gene.
 
     Non-destructive - does not modify the network; use remove_interaction() to permanently delete edges.
@@ -1176,25 +1454,62 @@ def filter_interactions(
     if network is None:
         raise RuntimeError(E_NO_NET)
     df = sess.get_edges_df()
-    if df is None or df.empty:
-        return "No interactions." if format != 'json' else "{}"
+    if df is None:
+        df = pd.DataFrame(columns=["source", "target", "Effect"])
     if effect and 'Effect' in df.columns:
         df = df[df['Effect'].isin(effect)]
     if source:
         df = df[df['source'] == source]
     if target:
         df = df[df['target'] == target]
-    if df.empty:
-        return "No matches." if format != 'json' else "{}"
-    if format == 'json':
-        # Return a compact JSON-like string (avoid importing json for token saving)
-        subset = df.head(max_rows if verbosity != 'full' else 500)
-        records = subset.to_dict(orient='records')
-        return str(records)
-    if verbosity == 'summary':
-        return f"Filtered interactions: {len(df)}. {SUMMARY_HINT}"
-    table, truncated = _short_table(df[[c for c in df.columns if c in ['source','target','Effect']]], max_rows if verbosity=='preview' else 100)
-    return table + (" (truncated)" if truncated else "")
+
+    total_match_count = len(df)
+    if verbosity == "summary" and format != "json":
+        returned_df = df.head(0)
+    elif verbosity == "full":
+        returned_df = df.head(500)
+    else:
+        returned_df = df.head(max_rows)
+    returned_df = returned_df[
+        [
+            column
+            for column in ["source", "target", "Effect"]
+            if column in returned_df.columns
+        ]
+    ]
+    interactions = _interaction_records(returned_df)
+    truncated = len(interactions) < total_match_count
+    payload = NeKoInteractionFilterResult(
+        server="NeKo",
+        session_id=sess.session_id,
+        verbosity=verbosity,
+        effect_filter=effect,
+        source_filter=source,
+        target_filter=target,
+        total_match_count=total_match_count,
+        returned_count=len(interactions),
+        truncated=truncated,
+        interactions=interactions,
+    )
+
+    if format == "json":
+        text = json.dumps(
+            [record.model_dump(mode="json") for record in interactions],
+            separators=(",", ":"),
+        )
+        return structured_report(text, payload)
+    if total_match_count == 0:
+        text = "No interactions." if not any((effect, source, target)) else "No matches."
+        return structured_report(text, payload)
+    if verbosity == "summary":
+        text = f"Filtered interactions: {total_match_count}. {SUMMARY_HINT}"
+        return structured_report(text, payload)
+    table = clean_for_markdown(returned_df).to_markdown(
+        index=False,
+        tablefmt="plain",
+    )
+    text = table + (" (truncated)" if truncated else "")
+    return structured_report(text, payload)
 
 @mcp.tool(annotations=_NON_IDEMPOTENT_CLOSED)
 def create_session(
@@ -1314,14 +1629,35 @@ def delete_session(
 @mcp.tool(annotations=_READ_ONLY_CLOSED)
 @session_locked
 def status(
-        session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to query the active/default session.")) -> str:
+        session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to query the active/default session.")) -> Annotated[CallToolResult, NeKoNetworkStatusResult]:
     """Return a one-line session summary: session ID, node count, edge count."""
     sess, network = _session_network(session_id)
     if network is None:
-        return f"Session {sess.session_id}: no network."
+        payload = NeKoNetworkStatusResult(
+            server="NeKo",
+            session_id=sess.session_id,
+            has_network=False,
+            node_count=0,
+            interaction_count=0,
+        )
+        return structured_report(
+            f"Session {sess.session_id}: no network.",
+            payload,
+        )
     df = sess.get_edges_df()
     edges = len(df) if df is not None else 0
-    return f"Session {sess.session_id}: nodes={len(network.nodes)} edges={edges}."
+    payload = NeKoNetworkStatusResult(
+        server="NeKo",
+        session_id=sess.session_id,
+        has_network=True,
+        node_count=len(network.nodes),
+        interaction_count=edges,
+    )
+    text = (
+        f"Session {sess.session_id}: "
+        f"nodes={len(network.nodes)} edges={edges}."
+    )
+    return structured_report(text, payload)
 
 # ===== Component & Strategy Tools =====
 @mcp.tool(annotations=_READ_ONLY_CLOSED)
@@ -1329,7 +1665,7 @@ def status(
 def list_components(
         session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session."),
         verbosity: NormalizedVerbosity = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary' (counts), 'preview'/'full' (per-component stats)."),
-        format: OutputFormat = Field("markdown", description="Output format: 'markdown' (default) or 'json'.")) -> str:
+        format: OutputFormat = Field("markdown", description="Output format: 'markdown' (default) or 'json'.")) -> Annotated[CallToolResult, NeKoComponentListResult]:
     """List connected components with size, average degree, and sample nodes.
 
     Use this after check_disconnected_nodes() to understand the component structure
@@ -1341,9 +1677,7 @@ def list_components(
         raise RuntimeError(E_NO_NET)
     
     comps = _compute_components(network)
-    if not comps:
-        return "No components (empty network)."
-    
+
     deg = {}
     try:
         sources = network.edges["source"].tolist()
@@ -1358,22 +1692,71 @@ def list_components(
     except Exception:
         pass
 
-    data = []
+    u2s, _ = _get_translators(network)
+    node_index = _node_record_index(network)
+    components = []
     for idx, comp in enumerate(comps):
         dvals = [deg.get(n, 0) for n in comp]
         avg_d = round(sum(dvals)/len(dvals), 2) if dvals else 0
-        data.append({"id": idx, "size": len(comp), "avg_degree": avg_d, "sample": comp[:5]})
-        
-    if format == 'json':
-        return str(data)
-        
-    if verbosity == 'summary':
-        return f"Components={len(comps)} largest={max((len(c) for c in comps), default=0)}. {SUMMARY_HINT}"
-        
+        components.append(
+            NeKoComponentRecord(
+                component_id=idx,
+                size=len(comp),
+                average_degree=avg_d,
+                nodes=[
+                    _node_record_for_identifier(
+                        node,
+                        node_index=node_index,
+                        uniprot_to_symbol=u2s,
+                    )
+                    for node in comp
+                ],
+            )
+        )
+    largest_component_size = max(
+        (component.size for component in components),
+        default=0,
+    )
+    payload = NeKoComponentListResult(
+        server="NeKo",
+        session_id=sess.session_id,
+        component_count=len(components),
+        largest_component_size=largest_component_size,
+        components=components,
+    )
+
+    if format == "json":
+        text = json.dumps(
+            [component.model_dump(mode="json") for component in components],
+            separators=(",", ":"),
+        )
+        return structured_report(text, payload)
+    if not components:
+        return structured_report("No components (empty network).", payload)
+    if verbosity == "summary":
+        text = (
+            f"Components={len(components)} "
+            f"largest={largest_component_size}. {SUMMARY_HINT}"
+        )
+        return structured_report(text, payload)
+
     lines = ["Components:"]
-    for row in data:
-        lines.append(f"- {row['id']}: size={row['size']} avg_deg={row['avg_degree']} sample={row['sample']}")
-    return "\n".join(lines)
+    for component in components:
+        visible_nodes = (
+            component.nodes[:5]
+            if verbosity == "preview"
+            else component.nodes
+        )
+        labels = [
+            node.gene_symbol or node.uniprot or "(unknown)"
+            for node in visible_nodes
+        ]
+        label = "sample" if verbosity == "preview" else "nodes"
+        lines.append(
+            f"- {component.component_id}: size={component.size} "
+            f"avg_deg={component.average_degree} {label}={labels}"
+        )
+    return structured_report("\n".join(lines), payload)
 
 @mcp.tool(annotations=_READ_ONLY_OPEN)
 @session_locked
@@ -1382,7 +1765,7 @@ def candidate_connectors(
         top_k: int = Field(10, ge=1, description="Number of hub genes to report when method='hubs'."),
         session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session."),
         format: OutputFormat = Field("markdown", description="Output format: 'markdown' (default) or 'json'."),
-        verbosity: NormalizedVerbosity = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary', 'preview', or 'full'.")) -> str:
+        verbosity: NormalizedVerbosity = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary', 'preview', or 'full'.")) -> Annotated[CallToolResult, NeKoConnectorCandidateResult]:
     """Suggest nodes or parameter relaxations that could bridge disconnected components.
 
     Run before applying a connection strategy to estimate the benefit without committing to changes.
@@ -1397,8 +1780,9 @@ def candidate_connectors(
     
     u2s, _ = _get_translators(network)
     
-    suggestions = []
-    rationale = ''
+    hub_candidates = []
+    simulation = None
+    rationale = ""
     
     # --- HUBS METHOD ---
     if method == 'hubs':
@@ -1414,8 +1798,25 @@ def candidate_connectors(
             pass
             
         if not deg:
-            return "No edge data available to calculate hubs."
-            
+            payload = NeKoConnectorCandidateResult(
+                server="NeKo",
+                session_id=sess.session_id,
+                method=method,
+                rationale="No edge data are available to calculate hubs.",
+                suggestion_count=0,
+                hub_candidates=[],
+            )
+            if format == "json":
+                text = json.dumps(
+                    payload.model_dump(mode="json"),
+                    separators=(",", ":"),
+                )
+                return structured_report(text, payload)
+            return structured_report(
+                "No edge data available to calculate hubs.",
+                payload,
+            )
+
         maxd = max(deg.values()) if deg else 1
         
         # Sort by degree and take top_k
@@ -1423,8 +1824,15 @@ def candidate_connectors(
         
         # TRANSLATE BACK TO GENE SYMBOLS for the LLM
         for uid, d in ranked_uniprot:
-            symbol = u2s.get(uid, str(uid)) # Fallback to Uniprot ID if no symbol exists
-            suggestions.append({"gene": symbol, "score": round(d/maxd, 3), "raw_degree": d})
+            uniprot = _required_text(uid, field_name="hub identifier")
+            hub_candidates.append(
+                NeKoHubCandidate(
+                    gene_symbol=_optional_text(u2s.get(uid)),
+                    uniprot=uniprot,
+                    relative_score=round(d / maxd, 3),
+                    degree=d,
+                )
+            )
             
         rationale = 'High-degree nodes (hubs) may naturally act as bridges between isolated components.'
 
@@ -1448,11 +1856,11 @@ def candidate_connectors(
             net_copy.complete_connection(**params)
             after_e = len(net_copy.edges)
             
-            suggestions = [{
-                "predicted_new_edges": after_e - before_e, 
-                "simulated_maxlen": params.get('maxlen'), 
-                "simulated_only_signed": params.get('only_signed')
-            }]
+            simulation = NeKoConnectorSimulation(
+                predicted_new_edges=max(after_e - before_e, 0),
+                simulated_max_length=params.get("maxlen"),
+                simulated_only_signed=params.get("only_signed"),
+            )
             
         except Exception as e:
             raise RuntimeError(f"Connector simulation failed: {e}") from e
@@ -1462,25 +1870,48 @@ def candidate_connectors(
             "Use 'hubs', 'relax_max_len', or 'unsigned'."
         )
 
+    suggestion_count = len(hub_candidates) if method == "hubs" else int(
+        simulation is not None
+    )
+    payload = NeKoConnectorCandidateResult(
+        server="NeKo",
+        session_id=sess.session_id,
+        method=method,
+        rationale=rationale,
+        suggestion_count=suggestion_count,
+        hub_candidates=hub_candidates,
+        simulation=simulation,
+    )
+
     # --- FORMAT OUTPUT ---
-    if format == 'json':
-        return str({"method": method, "suggestions": suggestions, "rationale": rationale})
-        
-    if verbosity == 'summary':
-        return f"{method}: {len(suggestions)} suggestions. {SUMMARY_HINT}"
-        
+    if format == "json":
+        text = json.dumps(payload.model_dump(mode="json"), separators=(",", ":"))
+        return structured_report(text, payload)
+    if verbosity == "summary":
+        text = f"{method}: {suggestion_count} suggestions. {SUMMARY_HINT}"
+        return structured_report(text, payload)
+
     lines = [f"Candidate connectors ({method}):"]
-    for s in suggestions:
-        if 'gene' in s:
-            lines.append(f"- **{s['gene']}**: relative_score={s['score']} (edges={s['raw_degree']})")
-        else:
-            lines.append(f"- Predicted new edges: {s.get('predicted_new_edges', 0)}")
-            lines.append(f"- Parameters simulated: max_len={s.get('simulated_maxlen')}, only_signed={s.get('simulated_only_signed')}")
+    for candidate in hub_candidates:
+        label = candidate.gene_symbol or candidate.uniprot
+        lines.append(
+            f"- **{label}**: relative_score={candidate.relative_score} "
+            f"(edges={candidate.degree})"
+        )
+    if simulation is not None:
+        lines.append(
+            f"- Predicted new edges: {simulation.predicted_new_edges}"
+        )
+        lines.append(
+            "- Parameters simulated: "
+            f"max_len={simulation.simulated_max_length}, "
+            f"only_signed={simulation.simulated_only_signed}"
+        )
             
     if rationale:
         lines.append(f"\n*Rationale: {rationale}*")
         
-    return "\n".join(lines)
+    return structured_report("\n".join(lines), payload)
 
 @mcp.tool(annotations=_NON_IDEMPOTENT_OPEN)
 @session_locked

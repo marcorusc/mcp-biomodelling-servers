@@ -2,6 +2,7 @@
 
 import asyncio
 import inspect
+import json
 import sys
 import threading
 from collections.abc import Coroutine
@@ -424,6 +425,485 @@ def test_artifact_tools_publish_structured_output_schemas() -> None:
         assert "result" not in schema["properties"]
 
 
+def test_scientific_tools_publish_named_structured_output_schemas() -> None:
+    listed_tools = _run(_list_tools())
+    tools = {tool.name: tool for tool in listed_tools.tools}
+
+    for tool_name, expected_title in {
+        "status": "NeKoNetworkStatusResult",
+        "list_genes_and_interactions": "NeKoNetworkInventoryResult",
+        "find_paths": "NeKoPathSearchResult",
+        "check_disconnected_nodes": "NeKoDisconnectedNodesResult",
+        "get_references": "NeKoReferenceQueryResult",
+        "filter_interactions": "NeKoInteractionFilterResult",
+        "list_components": "NeKoComponentListResult",
+        "candidate_connectors": "NeKoConnectorCandidateResult",
+    }.items():
+        schema = tools[tool_name].output_schema
+        assert schema is not None
+        assert schema["title"] == expected_title
+        assert "result" not in schema["properties"]
+        assert "server" in schema["properties"]
+        assert "session_id" in schema["properties"]
+
+
+def test_status_returns_structured_network_presence_and_counts() -> None:
+    empty_session_id = _create_session()
+    empty_result = _run(
+        _call_tool("status", {"session_id": empty_session_id})
+    )
+
+    assert empty_result.is_error is False
+    assert empty_result.structured_content == {
+        "server": "NeKo",
+        "session_id": empty_session_id,
+        "has_network": False,
+        "node_count": 0,
+        "interaction_count": 0,
+    }
+
+    edges = pd.DataFrame(
+        [{"source": "TP53", "target": "MDM2", "Effect": "inhibition"}]
+    )
+    network = _network_stub(
+        nodes=pd.DataFrame(
+            [
+                {"Uniprot": "P04637", "Genesymbol": "TP53"},
+                {"Uniprot": "Q00987", "Genesymbol": "MDM2"},
+            ]
+        ),
+        convert_edgelist_into_genesymbol=lambda: edges.copy(),
+    )
+    session_id = _create_session(network)
+    result = _run(_call_tool("status", {"session_id": session_id}))
+
+    assert result.is_error is False
+    assert "nodes=2 edges=1" in result.content[0].text
+    assert result.structured_content["has_network"] is True
+    assert result.structured_content["node_count"] == 2
+    assert result.structured_content["interaction_count"] == 1
+
+
+def test_network_inventory_returns_nodes_interactions_and_truncation() -> None:
+    edges = pd.DataFrame(
+        [
+            {
+                "source": "TP53",
+                "target": "MDM2",
+                "Effect": "inhibition",
+            },
+            {
+                "source": "MDM2",
+                "target": "AKT1",
+                "Effect": pd.NA,
+            },
+        ]
+    )
+    network = _network_stub(
+        nodes=pd.DataFrame(
+            [
+                {
+                    "Uniprot": "P04637",
+                    "Genesymbol": "TP53",
+                    "Type": "protein",
+                },
+                {
+                    "Uniprot": "Q00987",
+                    "Genesymbol": "MDM2",
+                    "Type": pd.NA,
+                },
+            ]
+        ),
+        convert_edgelist_into_genesymbol=lambda: edges.copy(),
+    )
+    session_id = _create_session(network)
+
+    result = _run(
+        _call_tool(
+            "list_genes_and_interactions",
+            {
+                "session_id": session_id,
+                "verbosity": "preview",
+                "max_rows": 1,
+            },
+        )
+    )
+
+    assert result.is_error is False
+    assert "Nodes (2 total)" in result.content[0].text
+    assert "Interactions (2 total)" in result.content[0].text
+    assert result.structured_content["total_node_count"] == 2
+    assert result.structured_content["total_interaction_count"] == 2
+    assert result.structured_content["returned_node_count"] == 1
+    assert result.structured_content["returned_interaction_count"] == 1
+    assert result.structured_content["truncated"] is True
+    assert result.structured_content["nodes"] == [
+        {
+            "gene_symbol": "TP53",
+            "uniprot": "P04637",
+            "node_type": "protein",
+        }
+    ]
+    assert result.structured_content["interactions"] == [
+        {
+            "source": "TP53",
+            "target": "MDM2",
+            "effect": "inhibition",
+        }
+    ]
+
+
+def test_find_paths_returns_captured_structured_lines() -> None:
+    def print_paths(*args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        print("TP53 -> MDM2")
+        print("TP53 -> AKT1 -> MDM2")
+
+    network = _network_stub(print_my_paths=print_paths)
+    session_id = _create_session(network)
+
+    result = _run(
+        _call_tool(
+            "find_paths",
+            {
+                "session_id": session_id,
+                "source": "TP53",
+                "target": "MDM2",
+                "maxlen": 3,
+                "verbosity": "full",
+            },
+        )
+    )
+
+    assert result.is_error is False
+    assert "Paths (full output)" in result.content[0].text
+    assert result.structured_content == {
+        "server": "NeKo",
+        "session_id": session_id,
+        "source": "TP53",
+        "target": "MDM2",
+        "max_length": 3,
+        "has_output": True,
+        "output_line_count": 2,
+        "path_output_lines": [
+            "TP53 -> MDM2",
+            "TP53 -> AKT1 -> MDM2",
+        ],
+    }
+
+
+def test_disconnected_nodes_return_both_biological_identifiers() -> None:
+    network = _network_stub(
+        nodes=pd.DataFrame(
+            [
+                {"Uniprot": "P04637", "Genesymbol": "TP53"},
+                {"Uniprot": "Q00987", "Genesymbol": "MDM2"},
+                {"Uniprot": "P31749", "Genesymbol": "AKT1"},
+            ]
+        ),
+        edges=pd.DataFrame(
+            [
+                {
+                    "source": "P04637",
+                    "target": "Q00987",
+                    "Effect": "inhibition",
+                }
+            ]
+        ),
+    )
+    session_id = _create_session(network)
+
+    result = _run(
+        _call_tool(
+            "check_disconnected_nodes",
+            {"session_id": session_id},
+        )
+    )
+
+    assert result.is_error is False
+    assert "AKT1" in result.content[0].text
+    assert result.structured_content["total_node_count"] == 3
+    assert result.structured_content["disconnected_count"] == 1
+    assert result.structured_content["all_nodes_have_interactions"] is False
+    assert result.structured_content["disconnected_nodes"] == [
+        {
+            "gene_symbol": "AKT1",
+            "uniprot": "P31749",
+            "node_type": None,
+        }
+    ]
+
+    network.edges.loc[len(network.edges)] = {
+        "source": "Q00987",
+        "target": "P31749",
+        "Effect": "stimulation",
+    }
+    connected_result = _run(
+        _call_tool(
+            "check_disconnected_nodes",
+            {"session_id": session_id},
+        )
+    )
+    assert connected_result.is_error is False
+    assert connected_result.content[0].text == "All nodes are connected."
+    assert connected_result.structured_content["disconnected_count"] == 0
+    assert connected_result.structured_content["all_nodes_have_interactions"] is True
+    assert connected_result.structured_content["disconnected_nodes"] == []
+
+
+def test_reference_query_preserves_complete_normalized_evidence() -> None:
+    edges = pd.DataFrame(
+        [
+            {
+                "source": "TP53",
+                "target": "MDM2",
+                "Effect": "inhibition",
+                "References": (
+                    "PMID:1; PMID:2, PMID:3; PMID:4; "
+                    "PMID:5; PMID:6; PMID:1"
+                ),
+            }
+        ]
+    )
+    network = _network_stub(
+        convert_edgelist_into_genesymbol=lambda: edges.copy()
+    )
+    session_id = _create_session(network)
+
+    result = _run(
+        _call_tool(
+            "get_references",
+            {
+                "session_id": session_id,
+                "node1": "TP53",
+                "node2": "MDM2",
+                "verbosity": "full",
+            },
+        )
+    )
+
+    assert result.is_error is False
+    assert "(+1 more)" in result.content[0].text
+    interaction = result.structured_content["interactions"][0]
+    assert interaction["reference_count"] == 6
+    assert interaction["references"] == [
+        "PMID:1",
+        "PMID:2",
+        "PMID:3",
+        "PMID:4",
+        "PMID:5",
+        "PMID:6",
+    ]
+
+
+def test_filter_interactions_returns_typed_records_and_valid_json() -> None:
+    edges = pd.DataFrame(
+        [
+            {
+                "source": "TP53",
+                "target": "MDM2",
+                "Effect": "inhibition",
+            },
+            {
+                "source": "AKT1",
+                "target": "MDM2",
+                "Effect": "stimulation",
+            },
+        ]
+    )
+    network = _network_stub(
+        convert_edgelist_into_genesymbol=lambda: edges.copy()
+    )
+    session_id = _create_session(network)
+
+    result = _run(
+        _call_tool(
+            "filter_interactions",
+            {
+                "session_id": session_id,
+                "effect": ["inhibition"],
+                "format": "json",
+                "verbosity": "full",
+            },
+        )
+    )
+
+    assert result.is_error is False
+    assert json.loads(result.content[0].text) == [
+        {
+            "source": "TP53",
+            "target": "MDM2",
+            "effect": "inhibition",
+        }
+    ]
+    assert result.structured_content["effect_filter"] == ["inhibition"]
+    assert result.structured_content["total_match_count"] == 1
+    assert result.structured_content["returned_count"] == 1
+    assert result.structured_content["truncated"] is False
+
+    empty_result = _run(
+        _call_tool(
+            "filter_interactions",
+            {
+                "session_id": session_id,
+                "source": "EGFR",
+                "format": "json",
+            },
+        )
+    )
+    assert empty_result.is_error is False
+    assert json.loads(empty_result.content[0].text) == []
+    assert empty_result.structured_content["total_match_count"] == 0
+    assert empty_result.structured_content["interactions"] == []
+
+
+def test_component_output_contains_complete_gene_symbol_membership() -> None:
+    network = _network_stub(
+        nodes=pd.DataFrame(
+            [
+                {"Uniprot": "P04637", "Genesymbol": "TP53"},
+                {"Uniprot": "Q00987", "Genesymbol": "MDM2"},
+                {"Uniprot": "P31749", "Genesymbol": "AKT1"},
+            ]
+        ),
+        edges=pd.DataFrame(
+            [
+                {
+                    "source": "P04637",
+                    "target": "Q00987",
+                    "Effect": "inhibition",
+                }
+            ]
+        ),
+    )
+    session_id = _create_session(network)
+
+    result = _run(
+        _call_tool(
+            "list_components",
+            {
+                "session_id": session_id,
+                "verbosity": "full",
+                "format": "json",
+            },
+        )
+    )
+
+    assert result.is_error is False
+    assert isinstance(json.loads(result.content[0].text), list)
+    assert result.structured_content["component_count"] == 2
+    assert result.structured_content["largest_component_size"] == 2
+    memberships = [
+        {
+            node["gene_symbol"]
+            for node in component["nodes"]
+        }
+        for component in result.structured_content["components"]
+    ]
+    assert {"TP53", "MDM2"} in memberships
+    assert {"AKT1"} in memberships
+
+
+def test_hub_candidates_return_typed_identifiers_and_scores() -> None:
+    network = _network_stub(
+        nodes=pd.DataFrame(
+            [
+                {"Uniprot": "P04637", "Genesymbol": "TP53"},
+                {"Uniprot": "Q00987", "Genesymbol": "MDM2"},
+            ]
+        ),
+        edges=pd.DataFrame(
+            [
+                {
+                    "source": "P04637",
+                    "target": "Q00987",
+                    "Effect": "inhibition",
+                }
+            ]
+        ),
+    )
+    session_id = _create_session(network)
+
+    result = _run(
+        _call_tool(
+            "candidate_connectors",
+            {
+                "session_id": session_id,
+                "method": "hubs",
+                "top_k": 1,
+                "verbosity": "full",
+            },
+        )
+    )
+
+    assert result.is_error is False
+    assert result.structured_content["method"] == "hubs"
+    assert result.structured_content["suggestion_count"] == 1
+    assert result.structured_content["simulation"] is None
+    assert result.structured_content["hub_candidates"] == [
+        {
+            "gene_symbol": "TP53",
+            "uniprot": "P04637",
+            "relative_score": 1.0,
+            "degree": 1,
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("method", "expected_max_length", "expected_only_signed"),
+    [
+        ("relax_max_len", 3, True),
+        ("unsigned", 2, False),
+    ],
+)
+def test_connector_simulations_return_typed_predictions(
+    method: str,
+    expected_max_length: int,
+    expected_only_signed: bool,
+) -> None:
+    class SimulatedNetwork:
+        def __init__(self) -> None:
+            self.nodes = pd.DataFrame(
+                [
+                    {"Uniprot": "P04637", "Genesymbol": "TP53"},
+                    {"Uniprot": "Q00987", "Genesymbol": "MDM2"},
+                ]
+            )
+            self.edges = pd.DataFrame(
+                [{"source": "P04637", "target": "Q00987"}]
+            )
+
+        def complete_connection(self, **kwargs: Any) -> None:
+            del kwargs
+            self.edges.loc[len(self.edges)] = {
+                "source": "Q00987",
+                "target": "P04637",
+            }
+
+    session_id = _create_session(SimulatedNetwork())
+
+    result = _run(
+        _call_tool(
+            "candidate_connectors",
+            {
+                "session_id": session_id,
+                "method": method,
+                "format": "json",
+            },
+        )
+    )
+
+    assert result.is_error is False
+    assert json.loads(result.content[0].text)["method"] == method
+    assert result.structured_content["hub_candidates"] == []
+    assert result.structured_content["simulation"] == {
+        "predicted_new_edges": 1,
+        "simulated_max_length": expected_max_length,
+        "simulated_only_signed": expected_only_signed,
+    }
+
+
 def test_bnet_export_returns_structured_sanitization_metadata(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -645,6 +1125,16 @@ def test_empty_path_query_remains_successful() -> None:
 
     assert result.is_error is False
     assert result.content[0].text == "No paths found."
+    assert result.structured_content == {
+        "server": "NeKo",
+        "session_id": session_id,
+        "source": "TP53",
+        "target": "MDM2",
+        "max_length": 3,
+        "has_output": False,
+        "output_line_count": 0,
+        "path_output_lines": [],
+    }
 
 
 def test_find_paths_restores_stdout_after_failure() -> None:
