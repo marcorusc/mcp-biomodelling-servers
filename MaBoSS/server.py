@@ -30,6 +30,13 @@ from artifact_manager import (
 )
 from artifact_manager import list_artifact_sessions as _list_artifact_sessions_on_disk
 from mcp_biomodelling_servers import __version__
+from mcp_biomodelling_servers.structured_outputs import (
+    ArtifactSessionSummary,
+    MaBoSSArtifactSessionListResult,
+    MaBoSSSessionListResult,
+    MaBoSSSessionSummary,
+    structured_report,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -351,11 +358,31 @@ def create_session(
 
 
 @mcp.tool(annotations=_READ_ONLY_TOOL)
-def list_sessions() -> str:
+def list_sessions() -> Annotated[CallToolResult, MaBoSSSessionListResult]:
     """List all active MaBoSS sessions with their simulation and result status."""
     sessions = session_manager.list_sessions()
+    payload = MaBoSSSessionListResult(
+        server="MaBoSS",
+        count=len(sessions),
+        sessions=[
+            MaBoSSSessionSummary(
+                session_id=sid,
+                created_at=info["created_at"],
+                last_accessed=info["last_accessed"],
+                is_default=info["is_default"],
+                has_simulation=info["has_simulation"],
+                has_result=info["has_result"],
+                bnd_path=info["bnd_path"],
+                cfg_path=info["cfg_path"],
+            )
+            for sid, info in sessions.items()
+        ],
+    )
     if not sessions:
-        return "No active sessions. Call create_session() to start one."
+        return structured_report(
+            "No active sessions. Call create_session() to start one.",
+            payload,
+        )
     lines = ["## MaBoSS Sessions\n"]
     for sid, info in sessions.items():
         default_marker = " **(default)**" if info["is_default"] else ""
@@ -364,11 +391,12 @@ def list_sessions() -> str:
         lines.append(
             f"- **{sid}**{default_marker}: sim={has_sim}  result={has_res}  bnd={info['bnd_path'] or '—'}"
         )
-    return "\n".join(lines)
+    return structured_report("\n".join(lines), payload)
 
 
 @mcp.tool(annotations=_READ_ONLY_TOOL)
-def list_artifact_sessions() -> str:
+def list_artifact_sessions(
+) -> Annotated[CallToolResult, MaBoSSArtifactSessionListResult]:
     """List all MaBoSS sessions that have artifact files on disk (including past server runs).
 
     Unlike list_sessions() which only shows in-memory sessions, this scans the
@@ -380,8 +408,26 @@ def list_artifact_sessions() -> str:
                        cfg_path='/path/to/artifacts/<uuid>/output.cfg')
     """
     sessions = _list_artifact_sessions_on_disk(_SERVER_ROOT, server_name="MaBoSS")
+    payload = MaBoSSArtifactSessionListResult(
+        server="MaBoSS",
+        count=len(sessions),
+        sessions=[
+            ArtifactSessionSummary(
+                session_id=str(session["session_id"]),
+                server=str(session.get("server") or "unknown"),
+                label=str(session["label"]) if session.get("label") else None,
+                created_at=(
+                    str(session["created_at"])
+                    if session.get("created_at")
+                    else None
+                ),
+                files=[str(filename) for filename in session.get("files", [])],
+            )
+            for session in sessions
+        ],
+    )
     if not sessions:
-        return "No artifact sessions found on disk."
+        return structured_report("No artifact sessions found on disk.", payload)
     lines = ["## MaBoSS Artifact Sessions (on disk)\n"]
     for s in sessions:
         sid = s["session_id"]
@@ -395,7 +441,7 @@ def list_artifact_sessions() -> str:
             lines.append(f"  Files: {', '.join(files)}")
         else:
             lines.append("  Files: (none)")
-    return "\n".join(lines)
+    return structured_report("\n".join(lines), payload)
 
 
 @mcp.tool(annotations=_IDEMPOTENT_TOOL)

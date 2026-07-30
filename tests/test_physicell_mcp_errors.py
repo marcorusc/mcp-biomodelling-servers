@@ -144,6 +144,104 @@ def test_create_session_is_successful() -> None:
     assert result.is_error is False
 
 
+def test_session_discovery_tools_publish_structured_output_schemas() -> None:
+    listed_tools = _run(_list_tools())
+    tools = {tool.name: tool for tool in listed_tools.tools}
+
+    for tool_name, expected_title in {
+        "list_sessions": "PhysiCellSessionListResult",
+        "list_artifact_sessions": "PhysiCellArtifactSessionListResult",
+    }.items():
+        schema = tools[tool_name].output_schema
+        assert schema is not None
+        assert schema["title"] == expected_title
+        assert schema["required"] == ["server", "count", "sessions"]
+        assert set(schema["properties"]) == {"server", "count", "sessions"}
+        assert "result" not in schema["properties"]
+
+
+def test_list_sessions_returns_structured_empty_result() -> None:
+    result = _run(_call_tool("list_sessions"))
+
+    assert result.is_error is False
+    assert result.content[0].text == (
+        "No active sessions. Use `create_session()` to start."
+    )
+    assert result.structured_content == {
+        "server": "PhysiCell",
+        "count": 0,
+        "sessions": [],
+    }
+
+
+def test_list_sessions_returns_structured_physicell_state() -> None:
+    session_id = session_manager.create_session(session_name="tumour spheroid")
+    session = session_manager.get_session(session_id)
+    assert session is not None
+    session.config = object()
+    session.scenario_context = "hypoxic tumour spheroid"
+    session.substrates_count = 2
+    session.cell_types_count = 3
+    session.rules_count = 1
+
+    result = _run(_call_tool("list_sessions"))
+
+    assert result.is_error is False
+    assert session_id[:8] in result.content[0].text
+    assert result.structured_content is not None
+    structured_session = result.structured_content["sessions"][0]
+    assert structured_session["session_id"] == session_id
+    assert structured_session["session_name"] == "tumour spheroid"
+    assert structured_session["created_at"] >= 0
+    assert structured_session["last_accessed"] >= structured_session["created_at"]
+    assert structured_session["is_default"] is True
+    assert structured_session["has_configuration"] is True
+    assert structured_session["scenario_context"] == "hypoxic tumour spheroid"
+    assert structured_session["substrates_count"] == 2
+    assert structured_session["cell_types_count"] == 3
+    assert structured_session["rules_count"] == 1
+    assert structured_session["loaded_from_xml"] is False
+    assert structured_session["xml_modification_count"] == 0
+    assert result.structured_content["server"] == "PhysiCell"
+    assert result.structured_content["count"] == 1
+
+
+def test_list_artifact_sessions_returns_structured_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        physicell_server,
+        "_list_artifact_sessions_on_disk",
+        lambda *_args, **_kwargs: [
+            {
+                "session_id": "physicell-artifact-session",
+                "server": "PhysiCell",
+                "label": "tumour spheroid",
+                "created_at": "2026-07-30T10:20:30+00:00",
+                "files": ["PhysiCell_settings.xml"],
+            }
+        ],
+    )
+
+    result = _run(_call_tool("list_artifact_sessions"))
+
+    assert result.is_error is False
+    assert "Full ID: `physicell-artifact-session`" in result.content[0].text
+    assert result.structured_content == {
+        "server": "PhysiCell",
+        "count": 1,
+        "sessions": [
+            {
+                "session_id": "physicell-artifact-session",
+                "server": "PhysiCell",
+                "label": "tumour spheroid",
+                "created_at": "2026-07-30T10:20:30+00:00",
+                "files": ["PhysiCell_settings.xml"],
+            }
+        ],
+    }
+
+
 def test_unknown_default_session_is_tool_error() -> None:
     result = _run(
         _call_tool("set_default_session", {"session_id": "missing-session"})

@@ -47,7 +47,14 @@ import pandas as pd
 
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ResourceNotFoundError
-from mcp.types import ToolAnnotations
+from mcp.types import CallToolResult, ToolAnnotations
+from mcp_biomodelling_servers.structured_outputs import (
+    ArtifactSessionSummary,
+    NeKoArtifactSessionListResult,
+    NeKoSessionListResult,
+    NeKoSessionSummary,
+    structured_report,
+)
 
 logger = logging.getLogger(__name__)
 _stdout_capture_lock = Lock()
@@ -1157,18 +1164,37 @@ def create_session(
     return f"Created session: {sid}{label_info}"
 
 @mcp.tool(annotations=_READ_ONLY_CLOSED)
-def list_sessions() -> str:
+def list_sessions() -> Annotated[CallToolResult, NeKoSessionListResult]:
     """List all active sessions with network presence and basic node/edge counts."""
     data = session_manager.list_sessions()
+    default_session_id = session_manager.get_default_session_id()
+    payload = NeKoSessionListResult(
+        server="NeKo",
+        count=len(data),
+        sessions=[
+            NeKoSessionSummary(
+                session_id=sid,
+                created_at=meta["created_at"],
+                last_accessed=meta["last_accessed"],
+                is_default=sid == default_session_id,
+                has_network=meta["has_network"],
+                node_count=meta["nodes"],
+                edge_count=meta["edges"],
+                history_max_states=meta["history_max_states"],
+            )
+            for sid, meta in data.items()
+        ],
+    )
     if not data:
-        return "No sessions."
+        return structured_report("No sessions.", payload)
     lines = ["Sessions:"]
     for sid, meta in data.items():
         lines.append(f"- {sid}: has_network={meta['has_network']} nodes={meta['nodes']} edges={meta['edges']}")
-    return "\n".join(lines)
+    return structured_report("\n".join(lines), payload)
 
 @mcp.tool(annotations=_READ_ONLY_CLOSED)
-def list_artifact_sessions() -> str:
+def list_artifact_sessions(
+) -> Annotated[CallToolResult, NeKoArtifactSessionListResult]:
     """List all NeKo sessions that have artifact files on disk (including past server runs).
 
     Unlike list_sessions() which only shows in-memory sessions, this scans the
@@ -1179,8 +1205,26 @@ def list_artifact_sessions() -> str:
       create_network(sif_file='/path/to/artifacts/<uuid>/Network.sif')
     """
     sessions = _list_artifact_sessions_on_disk(_SERVER_ROOT, server_name="NeKo")
+    payload = NeKoArtifactSessionListResult(
+        server="NeKo",
+        count=len(sessions),
+        sessions=[
+            ArtifactSessionSummary(
+                session_id=str(session["session_id"]),
+                server=str(session.get("server") or "unknown"),
+                label=str(session["label"]) if session.get("label") else None,
+                created_at=(
+                    str(session["created_at"])
+                    if session.get("created_at")
+                    else None
+                ),
+                files=[str(filename) for filename in session.get("files", [])],
+            )
+            for session in sessions
+        ],
+    )
     if not sessions:
-        return "No artifact sessions found on disk."
+        return structured_report("No artifact sessions found on disk.", payload)
     lines = ["## NeKo Artifact Sessions (on disk)\n"]
     for s in sessions:
         sid = s["session_id"]
@@ -1194,7 +1238,7 @@ def list_artifact_sessions() -> str:
             lines.append(f"  Files: {', '.join(files)}")
         else:
             lines.append("  Files: (none)")
-    return "\n".join(lines)
+    return structured_report("\n".join(lines), payload)
 
 @mcp.tool(annotations=_IDEMPOTENT_CLOSED)
 def set_default_session(

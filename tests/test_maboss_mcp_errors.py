@@ -153,6 +153,93 @@ def test_create_session_is_successful() -> None:
     assert result.is_error is False
 
 
+def test_session_discovery_tools_publish_structured_output_schemas() -> None:
+    listed_tools = _run(_list_tools())
+    tools = {tool.name: tool for tool in listed_tools.tools}
+
+    for tool_name, expected_title in {
+        "list_sessions": "MaBoSSSessionListResult",
+        "list_artifact_sessions": "MaBoSSArtifactSessionListResult",
+    }.items():
+        schema = tools[tool_name].output_schema
+        assert schema is not None
+        assert schema["title"] == expected_title
+        assert schema["required"] == ["server", "count", "sessions"]
+        assert set(schema["properties"]) == {"server", "count", "sessions"}
+        assert "result" not in schema["properties"]
+
+
+def test_list_sessions_returns_structured_empty_result() -> None:
+    result = _run(_call_tool("list_sessions"))
+
+    assert result.is_error is False
+    assert result.content[0].text == (
+        "No active sessions. Call create_session() to start one."
+    )
+    assert result.structured_content == {
+        "server": "MaBoSS",
+        "count": 0,
+        "sessions": [],
+    }
+
+
+def test_list_sessions_returns_structured_maboss_state() -> None:
+    session_id = _create_simulation_session(object())
+
+    result = _run(_call_tool("list_sessions"))
+
+    assert result.is_error is False
+    assert f"**{session_id}**" in result.content[0].text
+    assert result.structured_content is not None
+    structured_session = result.structured_content["sessions"][0]
+    assert structured_session["session_id"] == session_id
+    assert structured_session["created_at"] >= 0
+    assert structured_session["last_accessed"] >= structured_session["created_at"]
+    assert structured_session["is_default"] is True
+    assert structured_session["has_simulation"] is True
+    assert structured_session["has_result"] is False
+    assert structured_session["bnd_path"] == "/model.bnd"
+    assert structured_session["cfg_path"] == "/model.cfg"
+    assert result.structured_content["server"] == "MaBoSS"
+    assert result.structured_content["count"] == 1
+
+
+def test_list_artifact_sessions_returns_structured_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        maboss_server,
+        "_list_artifact_sessions_on_disk",
+        lambda *_args, **_kwargs: [
+            {
+                "session_id": "maboss-artifact-session",
+                "server": "MaBoSS",
+                "label": "baseline",
+                "created_at": "2026-07-30T10:20:30+00:00",
+                "files": ["model.bnd", "model.cfg"],
+            }
+        ],
+    )
+
+    result = _run(_call_tool("list_artifact_sessions"))
+
+    assert result.is_error is False
+    assert "**maboss-artifact-session** (baseline)" in result.content[0].text
+    assert result.structured_content == {
+        "server": "MaBoSS",
+        "count": 1,
+        "sessions": [
+            {
+                "session_id": "maboss-artifact-session",
+                "server": "MaBoSS",
+                "label": "baseline",
+                "created_at": "2026-07-30T10:20:30+00:00",
+                "files": ["model.bnd", "model.cfg"],
+            }
+        ],
+    }
+
+
 def test_unknown_default_session_is_tool_error() -> None:
     result = _run(_call_tool("set_default_session", {"session_id": "missing-session"}))
 

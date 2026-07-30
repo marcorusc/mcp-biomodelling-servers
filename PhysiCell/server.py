@@ -18,7 +18,7 @@ from pathlib import Path
 from threading import RLock
 from typing import Annotated, Literal, Optional
 
-from mcp.types import ToolAnnotations
+from mcp.types import CallToolResult, ToolAnnotations
 from pydantic import Field
 
 # Add the physicell_config package to Python path
@@ -36,6 +36,13 @@ from artifact_manager import (
     write_session_meta,
 )
 from mcp_biomodelling_servers import __version__
+from mcp_biomodelling_servers.structured_outputs import (
+    ArtifactSessionSummary,
+    PhysiCellArtifactSessionListResult,
+    PhysiCellSessionListResult,
+    PhysiCellSessionSummary,
+    structured_report,
+)
 
 _SERVER_ROOT = current_dir
 
@@ -252,43 +259,76 @@ def create_session(
     return result
 
 @mcp.tool(annotations=_READ_ONLY_TOOL)
-def list_sessions() -> str:
+def list_sessions() -> Annotated[CallToolResult, PhysiCellSessionListResult]:
     """List all active simulation sessions with their status and progress.
 
     Returns:
-        str: Formatted list of sessions with progress information.
+        CallToolResult: Formatted text plus validated session metadata.
     """
     sessions = session_manager.list_session_snapshots()
-    
+    payload = PhysiCellSessionListResult(
+        server="PhysiCell",
+        count=len(sessions),
+        sessions=[
+            PhysiCellSessionSummary(
+                session_id=session["session_id"],
+                session_name=session["session_name"],
+                created_at=session["created_at"],
+                last_accessed=session["last_accessed"],
+                is_default=session["is_default"],
+                has_configuration=session["has_config"],
+                progress=session["progress"],
+                scenario_context=session["scenario_context"] or None,
+                substrates_count=session["substrates_count"],
+                cell_types_count=session["cell_types_count"],
+                rules_count=session["rules_count"],
+                physiboss_models_count=session["physiboss_models_count"],
+                physiboss_settings_count=session["physiboss_settings_count"],
+                physiboss_input_links_count=session["physiboss_input_links_count"],
+                physiboss_output_links_count=session["physiboss_output_links_count"],
+                physiboss_mutations_count=session["physiboss_mutations_count"],
+                loaded_from_xml=session["loaded_from_xml"],
+                xml_modification_count=session["xml_modification_count"],
+            )
+            for session in sessions
+        ],
+    )
+
     if not sessions:
-        return "No active sessions. Use `create_session()` to start."
-    
+        return structured_report(
+            "No active sessions. Use `create_session()` to start.",
+            payload,
+        )
+
     result = f"## Active Sessions ({len(sessions)})\n\n"
-    
+
     for session in sessions:
         age_hours = (time.time() - session["created_at"]) / 3600
         progress = session["progress"]
-        
+
         # Mark default session
         default_marker = " (default)" if session["is_default"] else ""
-        
+
         result += f"**{session['session_id'][:8]}...{default_marker}**\n"
         result += f"- Age: {age_hours:.1f} hours\n"
         result += f"- Progress: {progress:.0f}%\n"
         result += f"- Components: {session['substrates_count']} substrates, {session['cell_types_count']} cell types, {session['rules_count']} rules\n"
-        
+
         scenario_context = session["scenario_context"]
         if scenario_context:
             result += f"- Scenario: {scenario_context[:50]}{'...' if len(scenario_context) > 50 else ''}\n"
-        
+
         result += "\n"
-    
+
     result += "Use `set_default_session(session_id)` to switch between sessions."
-    
-    return result
+
+    return structured_report(result, payload)
 
 @mcp.tool(annotations=_READ_ONLY_TOOL)
-def list_artifact_sessions() -> str:
+def list_artifact_sessions() -> Annotated[
+    CallToolResult,
+    PhysiCellArtifactSessionListResult,
+]:
     """List all PhysiCell sessions that have artifact files on disk (including past server runs).
 
     Unlike list_sessions() which only shows in-memory sessions, this scans the
@@ -299,8 +339,22 @@ def list_artifact_sessions() -> str:
       load_xml_configuration(xml_path='/path/to/artifacts/<uuid>/PhysiCell_settings.xml')
     """
     sessions = _list_artifact_sessions_on_disk(_SERVER_ROOT, server_name="PhysiCell")
+    payload = PhysiCellArtifactSessionListResult(
+        server="PhysiCell",
+        count=len(sessions),
+        sessions=[
+            ArtifactSessionSummary(
+                session_id=session["session_id"],
+                server=str(session.get("server") or "PhysiCell"),
+                label=session.get("label") or None,
+                created_at=session.get("created_at") or None,
+                files=[str(file_name) for file_name in session.get("files", [])],
+            )
+            for session in sessions
+        ],
+    )
     if not sessions:
-        return "No artifact sessions found on disk."
+        return structured_report("No artifact sessions found on disk.", payload)
     lines = ["## PhysiCell Artifact Sessions (on disk)\n"]
     for s in sessions:
         sid = s["session_id"]
@@ -315,7 +369,7 @@ def list_artifact_sessions() -> str:
             lines.append(f"  Files: {', '.join(files)}")
         else:
             lines.append("  Files: (none)")
-    return "\n".join(lines)
+    return structured_report("\n".join(lines), payload)
 
 @mcp.tool(annotations=_IDEMPOTENT_TOOL)
 @_session_locked
