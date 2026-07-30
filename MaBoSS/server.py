@@ -4,7 +4,7 @@ import os
 import sys
 from functools import wraps
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 # Make the repo root importable so we can use the shared artifact_manager
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -17,8 +17,8 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from mcp.server.mcpserver import Context, Image, MCPServer
 from mcp.server.mcpserver.exceptions import ResourceNotFoundError
-from mcp.types import CallToolResult, TextContent
-from pydantic import Field
+from mcp.types import CallToolResult, TextContent, ToolAnnotations
+from pydantic import BaseModel, ConfigDict, Field
 from session_manager import ensure_session, session_manager
 
 from artifact_manager import (
@@ -43,6 +43,59 @@ mcp = MCPServer(
 )
 
 _SERVER_ROOT = Path(__file__).parent
+
+NonEmptyString = Annotated[
+    str,
+    Field(
+        min_length=1,
+        pattern=r".*\S.*",
+        description="A non-empty string containing at least one non-whitespace character.",
+    ),
+]
+MutationState = Literal["ON", "OFF", "WT"]
+
+_READ_ONLY_TOOL = ToolAnnotations(
+    read_only_hint=True,
+    destructive_hint=False,
+    idempotent_hint=True,
+    open_world_hint=False,
+)
+_IDEMPOTENT_TOOL = ToolAnnotations(
+    read_only_hint=False,
+    destructive_hint=False,
+    idempotent_hint=True,
+    open_world_hint=False,
+)
+_NON_IDEMPOTENT_TOOL = ToolAnnotations(
+    read_only_hint=False,
+    destructive_hint=False,
+    idempotent_hint=False,
+    open_world_hint=False,
+)
+_DESTRUCTIVE_TOOL = ToolAnnotations(
+    read_only_hint=False,
+    destructive_hint=True,
+    idempotent_hint=False,
+    open_world_hint=False,
+)
+_IDEMPOTENT_DESTRUCTIVE_TOOL = ToolAnnotations(
+    read_only_hint=False,
+    destructive_hint=True,
+    idempotent_hint=True,
+    open_world_hint=False,
+)
+
+
+class MaBoSSParameterUpdates(BaseModel):
+    """Schema for common MaBoSS parameters with support for backend extensions."""
+
+    model_config = ConfigDict(extra="allow")
+
+    sample_count: int | None = Field(default=None, ge=1)
+    max_time: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    time_tick: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    discrete_time: Literal[0, 1] | None = None
+    thread_count: int | None = Field(default=None, ge=1)
 
 
 def _session_locked(handler):
@@ -272,7 +325,7 @@ def resource_generated_files(session_id: str) -> str:
 # Session management tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
+@mcp.tool(annotations=_NON_IDEMPOTENT_TOOL)
 def create_session(
     set_as_default: bool = Field(
         default=True,
@@ -297,7 +350,7 @@ def create_session(
     return f"Session created: {sid}{label_info}" + (" (set as default)" if set_as_default else "")
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY_TOOL)
 def list_sessions() -> str:
     """List all active MaBoSS sessions with their simulation and result status."""
     sessions = session_manager.list_sessions()
@@ -314,7 +367,7 @@ def list_sessions() -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY_TOOL)
 def list_artifact_sessions() -> str:
     """List all MaBoSS sessions that have artifact files on disk (including past server runs).
 
@@ -345,9 +398,12 @@ def list_artifact_sessions() -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_IDEMPOTENT_TOOL)
 def set_default_session(
-    session_id: Annotated[str, Field(description="ID of the session to set as the active default.")],
+    session_id: Annotated[
+        NonEmptyString,
+        Field(description="ID of the session to set as the active default."),
+    ],
 ) -> str:
     """Set the default (active) MaBoSS session used when session_id is omitted in other tools."""
     if session_manager.set_default(session_id):
@@ -355,9 +411,12 @@ def set_default_session(
     raise ValueError(f"Session not found: {session_id}")
 
 
-@mcp.tool()
+@mcp.tool(annotations=_DESTRUCTIVE_TOOL)
 def delete_session(
-    session_id: Annotated[str, Field(description="ID of the session to delete.")],
+    session_id: Annotated[
+        NonEmptyString,
+        Field(description="ID of the session to delete."),
+    ],
     clean_files: bool = Field(
         default=True,
         description="When True (default), also remove all artifact files for this session.",
@@ -382,11 +441,14 @@ def delete_session(
 # Pipeline tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
+@mcp.tool(annotations=_IDEMPOTENT_TOOL)
 @_session_locked
 def bnet_to_bnd_and_cfg(
-    bnet_path: Annotated[str, Field(description="Absolute or CWD-relative path to the .bnet file to convert.")],
-    session_id: str | None = Field(
+    bnet_path: Annotated[
+        NonEmptyString,
+        Field(description="Absolute or CWD-relative path to the .bnet file to convert."),
+    ],
+    session_id: NonEmptyString | None = Field(
         default=None,
         description="Session to write the output files into. Omit to use the active default session.",
     ),
@@ -424,18 +486,18 @@ def bnet_to_bnd_and_cfg(
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=_IDEMPOTENT_TOOL)
 @_session_locked
 def build_simulation(
-    session_id: str | None = Field(
+    session_id: NonEmptyString | None = Field(
         default=None,
         description="Session to load the simulation into. Omit to use the active default session.",
     ),
-    bnd_path: str | None = Field(
+    bnd_path: NonEmptyString | None = Field(
         default=None,
         description="Path to the .bnd file. Omit to use the file generated by bnet_to_bnd_and_cfg for this session.",
     ),
-    cfg_path: str | None = Field(
+    cfg_path: NonEmptyString | None = Field(
         default=None,
         description="Path to the .cfg file. Omit to use the file generated by bnet_to_bnd_and_cfg for this session.",
     ),
@@ -479,10 +541,10 @@ def build_simulation(
         )
 
 
-@mcp.tool()
+@mcp.tool(annotations=_NON_IDEMPOTENT_TOOL)
 async def run_simulation(
     ctx: Context,
-    session_id: str | None = Field(
+    session_id: NonEmptyString | None = Field(
         default=None,
         description="Session to run. Omit to use the active default session.",
     ),
@@ -540,10 +602,10 @@ async def run_simulation(
         "The result is also saved to the session artifact directory as result.csv."
     )
 
-@mcp.tool()
+@mcp.tool(annotations=_NON_IDEMPOTENT_TOOL)
 @_session_locked
 def export_maboss_bnd_cfg(
-    prefix: Annotated[str, Field(
+    prefix: Annotated[NonEmptyString, Field(
         default="updated",
         description=(
             "Prefix for output filenames written to the session artifact directory. "
@@ -554,7 +616,7 @@ def export_maboss_bnd_cfg(
         default=False,
         description="If True, overwrite existing files with the same names in the artifact directory.",
     )] = False,
-    session_id: str | None = Field(
+    session_id: NonEmptyString | None = Field(
         default=None,
         description="Session to export from. Omit to use the active default session.",
     ),
@@ -627,10 +689,10 @@ def export_maboss_bnd_cfg(
 # Inspection tools (read-only, no side effects)
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY_TOOL)
 @_session_locked
 def get_maboss_nodes(
-    session_id: str | None = Field(
+    session_id: NonEmptyString | None = Field(
         default=None,
         description="Session to query. Omit to use the active default session.",
     ),
@@ -651,10 +713,10 @@ def get_maboss_nodes(
     return "Network nodes:\n" + "\n".join(f"- {n}" for n in nodes_list)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY_TOOL)
 @_session_locked
 def get_maboss_initial_state(
-    session_id: str | None = Field(
+    session_id: NonEmptyString | None = Field(
         default=None,
         description="Session to query. Omit to use the active default session.",
     ),
@@ -673,10 +735,10 @@ def get_maboss_initial_state(
     except Exception as e:
         raise RuntimeError(f"Error retrieving initial state: {e}") from e
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY_TOOL)
 @_session_locked
 def get_maboss_logical_rules(
-    session_id: str | None = Field(
+    session_id: NonEmptyString | None = Field(
         default=None,
         description="Session to query. Omit to use the active default session.",
     ),
@@ -693,12 +755,18 @@ def get_maboss_logical_rules(
         raise RuntimeError(f"Error retrieving logical rules: {e}") from e
 
 
-@mcp.tool()
+@mcp.tool(annotations=_IDEMPOTENT_TOOL)
 @_session_locked
 def change_maboss_rule(
-    node: Annotated[str, Field(description="Name of the node to change the rule for.")],
-    new_rule: Annotated[str, Field(description="New rule string to replace the existing rule.")],
-    session_id: str | None = Field(
+    node: Annotated[
+        NonEmptyString,
+        Field(description="Name of the node to change the rule for."),
+    ],
+    new_rule: Annotated[
+        NonEmptyString,
+        Field(description="New rule string to replace the existing rule."),
+    ],
+    session_id: NonEmptyString | None = Field(
         default=None,
         description="Session to update. Omit to use the active default session.",
     ),
@@ -788,10 +856,10 @@ def change_maboss_rule(
         raise RuntimeError(f"Error changing MaBoSS rule: {e}") from e
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY_TOOL)
 @_session_locked
 def get_maboss_mutations(
-    session_id: str | None = Field(
+    session_id: NonEmptyString | None = Field(
         default=None,
         description="Session to query. Omit to use the active default session.",
     ),
@@ -812,10 +880,10 @@ def get_maboss_mutations(
 # Configuration tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
+@mcp.tool(annotations=_IDEMPOTENT_TOOL)
 @_session_locked
 def update_maboss_parameters(
-    parameters: dict | None = Field(  # noqa: B008
+    parameters: MaBoSSParameterUpdates | None = Field(  # noqa: B008
         default=None,
         description=(
             "Dict of {parameter_name: value} to update. "
@@ -824,7 +892,7 @@ def update_maboss_parameters(
             "discrete_time (0|1), thread_count (int)."
         ),
     ),
-    session_id: str | None = Field(
+    session_id: NonEmptyString | None = Field(
         default=None,
         description="Session to update. Omit to use the active default session.",
     ),
@@ -841,7 +909,12 @@ def update_maboss_parameters(
             "Call bnet_to_bnd_and_cfg then build_simulation first."
         )
     try:
-        if not parameters:
+        parameter_updates = (
+            None
+            if parameters is None
+            else parameters.model_dump(exclude_none=True)
+        )
+        if not parameter_updates:
             df = pd.DataFrame(
                 [[k, v] for k, v in sess.sim.param.items()],
                 columns=["parameter", "value"],
@@ -852,16 +925,16 @@ def update_maboss_parameters(
                 + df.to_markdown(index=False, tablefmt="plain")
             )
         allowed = set(sess.sim.param.keys())
-        unknown = [k for k in parameters.keys() if k not in allowed]
+        unknown = [k for k in parameter_updates if k not in allowed]
         if unknown:
             raise ValueError(
                 "Unsupported parameter(s): " + ", ".join(unknown) +
                 "\nCall update_maboss_parameters with no arguments to list valid keys."
             )
-        for key, value in parameters.items():
+        for key, value in parameter_updates.items():
             sess.sim.param[key] = value
-        logger.info("MaBoSS parameters updated: %s", parameters)
-        summary = ", ".join(f"{k}={v}" for k, v in parameters.items())
+        logger.info("MaBoSS parameters updated: %s", parameter_updates)
+        summary = ", ".join(f"{k}={v}" for k, v in parameter_updates.items())
         return f"Parameters updated: {summary}"
     except ValueError:
         raise
@@ -870,11 +943,17 @@ def update_maboss_parameters(
         raise RuntimeError(f"Error updating MaBoSS parameters: {e}") from e
 
 
-@mcp.tool()
+@mcp.tool(annotations=_IDEMPOTENT_TOOL)
 @_session_locked
 def set_maboss_output_nodes(
-    output_nodes: Annotated[list[str], Field(description="List of node names to mark as output nodes (e.g. ['Apoptosis', 'Proliferation']).")],
-    session_id: str | None = Field(
+    output_nodes: Annotated[
+        list[NonEmptyString],
+        Field(
+            min_length=1,
+            description="Non-empty list of node names to mark as output nodes (e.g. ['Apoptosis', 'Proliferation']).",
+        ),
+    ],
+    session_id: NonEmptyString | None = Field(
         default=None,
         description="Session to update. Omit to use the active default session.",
     ),
@@ -900,15 +979,18 @@ def set_maboss_output_nodes(
         raise RuntimeError(f"Error setting MaBoSS output nodes: {e}") from e
 
 
-@mcp.tool()
+@mcp.tool(annotations=_IDEMPOTENT_TOOL)
 @_session_locked
 def set_maboss_initial_state(
-    nodes: Annotated[str | list[str], Field(
-        description=(
-            "Node name (str) or list of node names to set initial state for. "
-            "E.g. 'node1' or ['node1', 'node2']."
-        )
-    )],
+    nodes: Annotated[
+        NonEmptyString | Annotated[list[NonEmptyString], Field(min_length=1)],
+        Field(
+            description=(
+                "Node name (str) or non-empty list of node names to set initial "
+                "state for. E.g. 'node1' or ['node1', 'node2']."
+            )
+        ),
+    ],
     probDict: Annotated[list[float] | dict, Field(
         description=(
             "Probability specification. "
@@ -917,7 +999,7 @@ def set_maboss_initial_state(
             "e.g. {(0, 0): 0.4, (1, 0): 0.6}."
         )
     )],
-    session_id: str | None = Field(
+    session_id: NonEmptyString | None = Field(
         default=None,
         description="Session to update. Omit to use the active default session.",
     ),
@@ -972,21 +1054,30 @@ def set_maboss_initial_state(
 # Analysis tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY_TOOL)
 async def simulate_mutation(
     ctx: Context,
-    nodes: Annotated[str | list[str], Field(
-        description="Node name (str) or list of node names to mutate. E.g. 'FoxO3' or ['FoxO3', 'AKT']."
-    )],
-    state: Annotated[str | list[str], Field(
-        default="OFF",
-        description=(
-            "Mutation state(s): 'ON', 'OFF', or 'WT'. "
-            "A single string applies to all nodes. "
-            "A list must match the length of nodes, e.g. ['OFF', 'ON']."
+    nodes: Annotated[
+        NonEmptyString | Annotated[list[NonEmptyString], Field(min_length=1)],
+        Field(
+            description=(
+                "Node name (str) or list of node names to mutate. "
+                "E.g. 'FoxO3' or ['FoxO3', 'AKT']."
+            )
         ),
-    )] = "OFF",
-    session_id: str | None = Field(
+    ],
+    state: Annotated[
+        MutationState | list[MutationState],
+        Field(
+            default="OFF",
+            description=(
+                "Mutation state(s): 'ON', 'OFF', or 'WT'. "
+                "A single string applies to all nodes. "
+                "A list must match the length of nodes, e.g. ['OFF', 'ON']."
+            ),
+        ),
+    ] = "OFF",
+    session_id: NonEmptyString | None = Field(
         default=None,
         description="Session to use. Omit to use the active default session.",
     ),
@@ -1070,10 +1161,10 @@ async def simulate_mutation(
     ])
 
 
-@mcp.tool()
+@mcp.tool(annotations=_IDEMPOTENT_TOOL)
 @_session_locked
 def visualize_network_trajectories(
-    session_id: str | None = None,
+    session_id: NonEmptyString | None = None,
     until: float | None = Field(
         default=None,
         gt=0,
@@ -1147,10 +1238,10 @@ def visualize_network_trajectories(
             plt.close(fig)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY_TOOL)
 @_session_locked
 def get_simulation_result(
-    session_id: str | None = Field(
+    session_id: NonEmptyString | None = Field(
         default=None,
         description="Session to query. Omit to use the active default session.",
     ),
@@ -1185,9 +1276,9 @@ def get_simulation_result(
 # Housekeeping tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY_TOOL)
 def list_generated_files(
-    session_id: str | None = Field(
+    session_id: NonEmptyString | None = Field(
         default=None,
         description=(
             "Session whose artifact files to list. "
@@ -1208,10 +1299,10 @@ def list_generated_files(
     return "## Generated artifact files\n\n" + "\n".join(f"- {f}" for f in files)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_IDEMPOTENT_DESTRUCTIVE_TOOL)
 @_session_locked
 def clean_generated_files(
-    session_id: str | None = Field(
+    session_id: NonEmptyString | None = Field(
         default=None,
         description="Session whose artifact files to remove. Omit to use the active default session.",
     ),

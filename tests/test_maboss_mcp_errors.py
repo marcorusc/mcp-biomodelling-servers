@@ -7,6 +7,7 @@ import sys
 from collections.abc import Coroutine
 from pathlib import Path
 from threading import Event
+from types import SimpleNamespace
 from typing import Any
 
 import matplotlib.pyplot as plt
@@ -334,6 +335,208 @@ def test_session_locking_preserves_public_tool_schemas() -> None:
         "visualize_network_trajectories"
     ].input_schema["properties"]
     assert "until" in trajectory_properties
+
+
+def test_all_maboss_tools_publish_safety_annotations() -> None:
+    listed_tools = _run(_list_tools())
+    tools = {tool.name: tool for tool in listed_tools.tools}
+
+    read_only = {
+        "list_sessions",
+        "list_artifact_sessions",
+        "get_maboss_nodes",
+        "get_maboss_initial_state",
+        "get_maboss_logical_rules",
+        "get_maboss_mutations",
+        "simulate_mutation",
+        "get_simulation_result",
+        "list_generated_files",
+    }
+    idempotent = {
+        "set_default_session",
+        "bnet_to_bnd_and_cfg",
+        "build_simulation",
+        "change_maboss_rule",
+        "update_maboss_parameters",
+        "set_maboss_output_nodes",
+        "set_maboss_initial_state",
+        "visualize_network_trajectories",
+    }
+    non_idempotent = {
+        "create_session",
+        "run_simulation",
+        "export_maboss_bnd_cfg",
+    }
+    destructive = {"delete_session"}
+    idempotent_destructive = {"clean_generated_files"}
+
+    assert set(tools) == (
+        read_only
+        | idempotent
+        | non_idempotent
+        | destructive
+        | idempotent_destructive
+    )
+
+    for tool_name, tool in tools.items():
+        annotations = tool.annotations
+        assert annotations is not None
+        assert annotations.open_world_hint is False
+        assert annotations.read_only_hint is (tool_name in read_only)
+        assert annotations.destructive_hint is (
+            tool_name in destructive | idempotent_destructive
+        )
+        assert annotations.idempotent_hint is (
+            tool_name in read_only | idempotent | idempotent_destructive
+        )
+
+
+def test_maboss_tool_schemas_constrain_common_inputs() -> None:
+    listed_tools = _run(_list_tools())
+    tools = {tool.name: tool for tool in listed_tools.tools}
+
+    mutation_properties = tools["simulate_mutation"].input_schema["properties"]
+    state_schema = mutation_properties["state"]["anyOf"]
+    assert state_schema[0]["enum"] == ["ON", "OFF", "WT"]
+    assert state_schema[1]["items"]["enum"] == ["ON", "OFF", "WT"]
+    assert mutation_properties["nodes"]["anyOf"][1]["minItems"] == 1
+
+    output_schema = tools["set_maboss_output_nodes"].input_schema["properties"][
+        "output_nodes"
+    ]
+    assert output_schema["minItems"] == 1
+    assert output_schema["items"]["minLength"] == 1
+
+    parameter_schema = tools["update_maboss_parameters"].input_schema
+    parameter_definition = parameter_schema["$defs"]["MaBoSSParameterUpdates"]
+    assert parameter_definition["additionalProperties"] is True
+    assert parameter_definition["properties"]["sample_count"]["anyOf"][0][
+        "minimum"
+    ] == 1
+    assert parameter_definition["properties"]["max_time"]["anyOf"][0][
+        "exclusiveMinimum"
+    ] == 0
+    assert parameter_definition["properties"]["time_tick"]["anyOf"][0][
+        "exclusiveMinimum"
+    ] == 0
+    assert parameter_definition["properties"]["discrete_time"]["anyOf"][0][
+        "enum"
+    ] == [0, 1]
+    assert parameter_definition["properties"]["thread_count"]["anyOf"][0][
+        "minimum"
+    ] == 1
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "arguments"),
+    [
+        ("set_default_session", {"session_id": ""}),
+        ("set_default_session", {"session_id": "   "}),
+        ("bnet_to_bnd_and_cfg", {"bnet_path": ""}),
+        ("change_maboss_rule", {"node": "", "new_rule": "A"}),
+        ("change_maboss_rule", {"node": "A", "new_rule": ""}),
+        ("set_maboss_output_nodes", {"output_nodes": []}),
+        ("set_maboss_initial_state", {"nodes": [], "probDict": {}}),
+        ("simulate_mutation", {"nodes": []}),
+        ("simulate_mutation", {"nodes": "A", "state": "INVALID"}),
+    ],
+)
+def test_invalid_common_inputs_are_rejected_before_execution(
+    tool_name: str,
+    arguments: dict[str, Any],
+) -> None:
+    result = _run(_call_tool(tool_name, arguments))
+
+    assert result.is_error is True
+    assert "validation error" in result.content[0].text.lower()
+
+
+def test_parameter_schema_allows_backend_extensions_but_runtime_checks_keys() -> None:
+    simulation = SimpleNamespace(param={"sample_count": 100})
+    session_id = _create_simulation_session(simulation)
+
+    result = _run(
+        _call_tool(
+            "update_maboss_parameters",
+            {
+                "session_id": session_id,
+                "parameters": {"future_parameter": 2},
+            },
+        )
+    )
+
+    assert result.is_error is True
+    assert "Unsupported parameter(s): future_parameter" in result.content[0].text
+    assert simulation.param == {"sample_count": 100}
+
+
+def test_constrained_parameter_model_preserves_update_behavior() -> None:
+    simulation = SimpleNamespace(
+        param={
+            "sample_count": 100,
+            "max_time": 10.0,
+            "thread_count": 1,
+        }
+    )
+    session_id = _create_simulation_session(simulation)
+
+    result = _run(
+        _call_tool(
+            "update_maboss_parameters",
+            {
+                "session_id": session_id,
+                "parameters": {
+                    "sample_count": 250,
+                    "max_time": 25.0,
+                    "thread_count": 4,
+                },
+            },
+        )
+    )
+
+    assert result.is_error is False
+    assert simulation.param == {
+        "sample_count": 250,
+        "max_time": 25.0,
+        "thread_count": 4,
+    }
+
+
+@pytest.mark.parametrize(
+    "parameters",
+    [
+        {"sample_count": 0},
+        {"max_time": 0},
+        {"time_tick": -1},
+        {"discrete_time": 2},
+        {"thread_count": 0},
+    ],
+)
+def test_invalid_parameter_bounds_are_rejected_before_mutation(
+    parameters: dict[str, Any],
+) -> None:
+    simulation = SimpleNamespace(
+        param={
+            "sample_count": 100,
+            "max_time": 10.0,
+            "time_tick": 0.1,
+            "discrete_time": 0,
+            "thread_count": 1,
+        }
+    )
+    original_parameters = simulation.param.copy()
+    session_id = _create_simulation_session(simulation)
+
+    result = _run(
+        _call_tool(
+            "update_maboss_parameters",
+            {"session_id": session_id, "parameters": parameters},
+        )
+    )
+
+    assert result.is_error is True
+    assert "validation error" in result.content[0].text.lower()
+    assert simulation.param == original_parameters
 
 
 def test_resource_waits_for_same_session_simulation() -> None:
