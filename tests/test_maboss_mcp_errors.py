@@ -1518,6 +1518,7 @@ def test_maboss_tool_schemas_constrain_common_inputs() -> None:
     state_schema = mutation_properties["state"]["anyOf"]
     assert state_schema[0]["enum"] == ["ON", "OFF", "WT"]
     assert state_schema[1]["items"]["enum"] == ["ON", "OFF", "WT"]
+    assert state_schema[1]["minItems"] == 1
     assert mutation_properties["nodes"]["anyOf"][1]["minItems"] == 1
 
     output_schema = tools["set_maboss_output_nodes"].input_schema["properties"][
@@ -1577,6 +1578,7 @@ def test_maboss_tool_schemas_constrain_common_inputs() -> None:
         ("set_maboss_output_nodes", {"output_nodes": []}),
         ("set_maboss_initial_state", {"nodes": [], "probDict": {}}),
         ("simulate_mutation", {"nodes": []}),
+        ("simulate_mutation", {"nodes": "A", "state": []}),
         ("simulate_mutation", {"nodes": "A", "state": "INVALID"}),
     ],
 )

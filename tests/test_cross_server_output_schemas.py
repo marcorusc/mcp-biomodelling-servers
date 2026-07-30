@@ -1,6 +1,7 @@
-"""Cross-server regression audit for MCP structured output contracts."""
+"""Cross-server regression audit for MCP tool input and output contracts."""
 
 import asyncio
+import re
 from collections import Counter
 from typing import Any
 
@@ -73,6 +74,15 @@ EXPECTED_TOOL_COUNTS = {
     "NeKo": 33,
     "PhysiCell": 34,
 }
+TOOL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
+INTERNAL_PARAMETER_NAMES = {
+    "config",
+    "context",
+    "ctx",
+    "network",
+    "sess",
+    "session",
+}
 
 
 async def _list_all_tools() -> dict[str, dict[str, Any]]:
@@ -96,6 +106,53 @@ async def _list_all_tools() -> dict[str, dict[str, Any]]:
             tool.name: tool for tool in listed.tools
         }
     return tool_maps
+
+
+def test_all_servers_publish_complete_input_and_annotation_contracts() -> None:
+    tool_maps = asyncio.run(_list_all_tools())
+
+    assert sum(len(tools) for tools in tool_maps.values()) == 91
+    for server_name, tools in tool_maps.items():
+        assert len(tools) == EXPECTED_TOOL_COUNTS[server_name]
+        for tool_name, tool in tools.items():
+            assert TOOL_NAME_PATTERN.fullmatch(tool_name)
+            assert tool.description is not None
+            assert tool.description.strip()
+
+            schema = tool.input_schema
+            assert schema["type"] == "object"
+            properties = schema.get("properties", {})
+            required = schema.get("required", [])
+            assert isinstance(properties, dict)
+            assert isinstance(required, list)
+            assert len(required) == len(set(required))
+            assert set(required) <= set(properties)
+            assert not (set(properties) & INTERNAL_PARAMETER_NAMES)
+
+            for parameter_name, parameter_schema in properties.items():
+                assert isinstance(parameter_schema, dict), (
+                    f"{server_name}.{tool_name}.{parameter_name}"
+                )
+                description = parameter_schema.get("description")
+                assert isinstance(description, str), (
+                    f"{server_name}.{tool_name}.{parameter_name}"
+                )
+                assert description.strip(), (
+                    f"{server_name}.{tool_name}.{parameter_name}"
+                )
+
+            annotations = tool.annotations
+            assert annotations is not None
+            for hint_name in (
+                "read_only_hint",
+                "destructive_hint",
+                "idempotent_hint",
+                "open_world_hint",
+            ):
+                assert isinstance(getattr(annotations, hint_name), bool)
+            if annotations.read_only_hint:
+                assert annotations.destructive_hint is False
+                assert annotations.idempotent_hint is True
 
 
 def test_all_servers_publish_expected_strict_output_contracts() -> None:

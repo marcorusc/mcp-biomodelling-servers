@@ -2246,9 +2246,9 @@ def connect_targeted_nodes(
         outputs: Optional[NonEmptyStringList] = Field(None, description="[connect_as_atopo] Non-empty output gene symbols to anchor topology."),
         max_len: int = Field(1, ge=1, description="Max path length or upstream depth."),
         strategy_mode: Optional[AtopoStrategy] = Field(None, description="[connect_as_atopo] ATOPO connection strategy: 'radial' or 'complete'."),
-        only_signed: Optional[bool] = Field(None),
-        consensus: Optional[bool] = Field(None),
-        session_id: Optional[NonEmptyString] = None) -> str:
+        only_signed: Optional[bool] = Field(None, description="Override the session default and keep only signed interactions."),
+        consensus: Optional[bool] = Field(None, description="Override the session default and require consensus-supported interactions."),
+        session_id: Optional[NonEmptyString] = Field(None, description="Session ID to update; omit to use the active/default session.")) -> str:
     """Apply strategies targeting specific genes (upstream regulators, dense subgroups, or topological mapping)."""
     sess, network = _session_network(session_id)
     if network is None:
@@ -2309,9 +2309,9 @@ def apply_global_connection(
         algorithm: SearchAlgorithm = Field("bfs", description="[complete_connection] Search algorithm: 'bfs' or 'dfs'."),
         minimal: bool = Field(True, description="[complete_connection] Add only minimum required edges."),
         direction: RadialDirection = Field("OUT", description="[connect_network_radially] Growth direction ('OUT' or 'IN')."),
-        only_signed: Optional[bool] = Field(None),
-        consensus: Optional[bool] = Field(None),
-        session_id: Optional[NonEmptyString] = None) -> str:
+        only_signed: Optional[bool] = Field(None, description="Override the session default and keep only signed interactions."),
+        consensus: Optional[bool] = Field(None, description="Override the session default and require consensus-supported interactions."),
+        session_id: Optional[NonEmptyString] = Field(None, description="Session ID to update; omit to use the active/default session.")) -> str:
     """Apply a global connection strategy across the entire network to resolve missing edges."""
     sess, network = _session_network(session_id)
     if network is None:

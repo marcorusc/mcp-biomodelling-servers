@@ -2012,7 +2012,8 @@ async def simulate_mutation(
         ),
     ],
     state: Annotated[
-        MutationState | list[MutationState],
+        MutationState
+        | Annotated[list[MutationState], Field(min_length=1)],
         Field(
             default="OFF",
             description=(
@@ -2138,7 +2139,13 @@ async def simulate_mutation(
 @mcp.tool(annotations=_IDEMPOTENT_TOOL)
 @_session_locked
 def visualize_network_trajectories(
-    session_id: NonEmptyString | None = None,
+    session_id: NonEmptyString | None = Field(
+        default=None,
+        description=(
+            "Session whose stored simulation result should be plotted. "
+            "Omit to use the active default session."
+        ),
+    ),
     until: float | None = Field(
         default=None,
         gt=0,
