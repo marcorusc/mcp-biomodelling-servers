@@ -242,6 +242,22 @@ def test_list_artifact_sessions_returns_structured_metadata(
     }
 
 
+def test_artifact_tools_publish_structured_output_schemas() -> None:
+    listed_tools = _run(_list_tools())
+    tools = {tool.name: tool for tool in listed_tools.tools}
+
+    for tool_name, expected_title in {
+        "export_xml_configuration": "PhysiCellXmlExportResult",
+        "export_cell_rules_csv": "PhysiCellRulesExportResult",
+        "list_generated_files": "PhysiCellArtifactFileListResult",
+        "clean_generated_files": "PhysiCellArtifactCleanupResult",
+    }.items():
+        schema = tools[tool_name].output_schema
+        assert schema is not None
+        assert schema["title"] == expected_title
+        assert "result" not in schema["properties"]
+
+
 def test_unknown_default_session_is_tool_error() -> None:
     result = _run(
         _call_tool("set_default_session", {"session_id": "missing-session"})
@@ -514,6 +530,43 @@ def test_valid_xml_export_stays_in_session_artifacts(
     assert generate_calls == ["generate_xml"]
     assert output_path.read_text(encoding="utf-8") == "<PhysiCell_settings/>"
     assert str(output_path) in result.content[0].text
+    assert result.structured_content is not None
+    assert result.structured_content["server"] == "PhysiCell"
+    assert result.structured_content["session_id"] == session_id
+    assert result.structured_content["source"] == "created"
+    assert result.structured_content["source_filename"] is None
+    assert result.structured_content["modification_count"] == 0
+    assert result.structured_content["file"]["path"] == str(output_path)
+    assert result.structured_content["file"]["media_type"] == "application/xml"
+    assert result.structured_content["file"]["size_bytes"] == output_path.stat().st_size
+
+
+def test_loaded_xml_export_returns_structured_source_provenance(
+    tmp_path: Path,
+) -> None:
+    generate_calls: list[str] = []
+    session_id = _create_session(_xml_export_config(generate_calls))
+    session = session_manager.get_session(session_id)
+    assert session is not None
+    session.loaded_from_xml = True
+    session.original_xml_path = "/models/baseline.xml"
+    session.xml_modification_count = 2
+
+    result = _run(
+        _call_tool(
+            "export_xml_configuration",
+            {"filename": "modified.xml", "session_id": session_id},
+        )
+    )
+
+    output_path = tmp_path / "artifacts" / session_id / "modified.xml"
+    assert result.is_error is False
+    assert "Modified 2 times from baseline.xml" in result.content[0].text
+    assert result.structured_content is not None
+    assert result.structured_content["source"] == "loaded"
+    assert result.structured_content["source_filename"] == "baseline.xml"
+    assert result.structured_content["modification_count"] == 2
+    assert result.structured_content["file"]["path"] == str(output_path)
 
 
 @pytest.mark.parametrize(
@@ -552,6 +605,62 @@ def test_valid_csv_export_stays_in_session_artifacts(
         }
     ]
     assert str(output_path) in result.content[0].text
+    assert result.structured_content is not None
+    assert result.structured_content["server"] == "PhysiCell"
+    assert result.structured_content["session_id"] == session_id
+    assert result.structured_content["xml_reference"] == f"./config/{expected_name}"
+    assert result.structured_content["enabled"] is True
+    assert result.structured_content["rule_count"] == 1
+    assert result.structured_content["file"]["path"] == str(output_path)
+    assert result.structured_content["file"]["media_type"] == "text/csv"
+    assert result.structured_content["file"]["size_bytes"] == output_path.stat().st_size
+
+
+def test_physicell_artifact_listing_and_cleanup_are_structured(
+    tmp_path: Path,
+) -> None:
+    first_id = _create_session()
+    second_id = _create_session()
+    first_dir = tmp_path / "artifacts" / first_id
+    second_dir = tmp_path / "artifacts" / second_id
+    first_dir.mkdir(parents=True)
+    second_dir.mkdir(parents=True)
+    first_xml = first_dir / "PhysiCell_settings.xml"
+    second_csv = second_dir / "cell_rules.csv"
+    first_xml.write_text("<PhysiCell_settings/>", encoding="utf-8")
+    second_csv.write_text("cell_type,signal\n", encoding="utf-8")
+    (second_dir / "notes.txt").write_text("ignored", encoding="utf-8")
+
+    session_result = _run(
+        _call_tool("list_generated_files", {"session_id": first_id})
+    )
+    all_result = _run(
+        _call_tool("list_generated_files", {"session_id": "all"})
+    )
+    cleanup_result = _run(
+        _call_tool("clean_generated_files", {"session_id": first_id})
+    )
+
+    assert session_result.is_error is False
+    assert session_result.structured_content is not None
+    assert session_result.structured_content["scope"] == "session"
+    assert session_result.structured_content["session_id"] == first_id
+    assert session_result.structured_content["count"] == 1
+    assert session_result.structured_content["files"][0]["path"] == str(first_xml)
+    assert all_result.structured_content is not None
+    assert all_result.structured_content["scope"] == "all"
+    assert all_result.structured_content["session_id"] is None
+    assert all_result.structured_content["count"] == 2
+    assert {
+        file_record["session_id"]
+        for file_record in all_result.structured_content["files"]
+    } == {first_id, second_id}
+    assert cleanup_result.structured_content == {
+        "session_id": first_id,
+        "removed_count": 1,
+        "server": "PhysiCell",
+    }
+    assert not first_xml.exists()
 
 
 def test_empty_status_results_remain_successful() -> None:
@@ -568,6 +677,13 @@ def test_empty_status_results_remain_successful() -> None:
 
     assert files.is_error is False
     assert "No PhysiCell artifact files found" in files.content[0].text
+    assert files.structured_content == {
+        "scope": "session",
+        "session_id": session_id,
+        "count": 0,
+        "files": [],
+        "server": "PhysiCell",
+    }
     assert context.is_error is False
     assert "No MaBoSS context available" in context.content[0].text
 
@@ -1059,8 +1175,8 @@ def test_artifact_cleanup_waits_for_same_session_export(
         export_result = export_future.result(timeout=2)
         cleanup_result = cleanup_future.result(timeout=2)
 
-    assert "concurrent.xml" in export_result
-    assert "Cleaned 1 artifact file" in cleanup_result
+    assert "concurrent.xml" in export_result.content[0].text
+    assert "Cleaned 1 artifact file" in cleanup_result.content[0].text
     assert not (
         tmp_path / "artifacts" / session_id / "concurrent.xml"
     ).exists()

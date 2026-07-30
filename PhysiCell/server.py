@@ -38,9 +38,14 @@ from artifact_manager import (
 from mcp_biomodelling_servers import __version__
 from mcp_biomodelling_servers.structured_outputs import (
     ArtifactSessionSummary,
+    PhysiCellArtifactCleanupResult,
+    PhysiCellArtifactFileListResult,
     PhysiCellArtifactSessionListResult,
+    PhysiCellRulesExportResult,
     PhysiCellSessionListResult,
     PhysiCellSessionSummary,
+    PhysiCellXmlExportResult,
+    artifact_file_summary,
     structured_report,
 )
 
@@ -1629,14 +1634,14 @@ def _format_simulation_summary(session: Optional[SessionState]) -> str:
 def export_xml_configuration(
     filename: NonEmptyString = Field(default="PhysiCell_settings.xml", description="Output filename for the XML configuration file."),
     session_id: Optional[NonEmptyString] = Field(default=None, description="Session to use. Omit to use the active session."),
-) -> str:
+) -> Annotated[CallToolResult, PhysiCellXmlExportResult]:
     """Export the complete PhysiCell configuration to an XML file in the session artifact directory.
 
     The generated file can be passed directly to a PhysiCell executable.
     A simulation domain must have been created before calling this.
 
     Returns:
-        str: Export status, file path, and execution instructions.
+        CallToolResult: Export guidance plus validated XML artifact metadata.
     """
     session = _require_configuration(session_id)
     filename = _validate_export_filename(filename, ".xml")
@@ -1670,25 +1675,44 @@ def export_xml_configuration(
 
         result = f"## XML Configuration Exported\n\n"
         result += f"**File:** {out_path} ({xml_size}KB)\n"
-        
+
         # Show XML modification info if loaded from XML
         if session.loaded_from_xml and session.original_xml_path:
             original_name = Path(session.original_xml_path).name
+            source = "loaded"
+            source_filename = original_name
             if session.xml_modification_count > 0:
                 result += f"**Source:** Modified {session.xml_modification_count} times from {original_name}\n"
             else:
                 result += f"**Source:** Exported from {original_name} (no modifications)\n"
         else:
+            source = "created"
+            source_filename = None
             result += f"**Source:** Created from scratch\n"
-        
+
         result += f"**Substrates:** {len(substrates)} ({', '.join(substrates[:3]) if substrates else 'None'}{'...' if len(substrates) > 3 else ''})\n"
         result += f"**Cell Types:** {len(cell_types)} ({', '.join(cell_types[:3]) if cell_types else 'None'}{'...' if len(cell_types) > 3 else ''})\n"
-        result += f"**Progress:** {session.get_progress_percentage():.0f}%\n\n"
+        progress = session.get_progress_percentage()
+        result += f"**Progress:** {progress:.0f}%\n\n"
         result += f"**Next step:** Copy to PhysiCell project directory and run:\n"
         result += f"```bash\n./myproject {filename}\n```"
-        
-        return result
-        
+
+        payload = PhysiCellXmlExportResult(
+            server="PhysiCell",
+            session_id=session.session_id,
+            file=artifact_file_summary(
+                out_path,
+                session_id=session.session_id,
+            ),
+            source=source,
+            source_filename=source_filename,
+            modification_count=session.xml_modification_count,
+            substrates=substrates,
+            cell_types=cell_types,
+            progress=progress,
+        )
+        return structured_report(result, payload)
+
     except Exception as exc:
         raise RuntimeError(
             f"Could not export the PhysiCell XML configuration: {exc}"
@@ -1699,14 +1723,14 @@ def export_xml_configuration(
 def export_cell_rules_csv(
     filename: NonEmptyString = Field(default="cell_rules.csv", description="Output filename for the cell rules CSV file."),
     session_id: Optional[NonEmptyString] = Field(default=None, description="Session to use. Omit to use the active session."),
-) -> str:
+) -> Annotated[CallToolResult, PhysiCellRulesExportResult]:
     """Export cell signal-behaviour rules to a CSV file in the session artifact directory.
 
     The generated file is used alongside `PhysiCell_settings.xml` by the PhysiCell executable.
     At least one rule must exist (added via `add_single_cell_rule()`).
 
     Returns:
-        str: Export status and file path.
+        CallToolResult: Export guidance plus validated CSV artifact metadata.
     """
     session = _require_configuration(session_id)
     filename = _validate_export_filename(filename, ".csv")
@@ -1743,11 +1767,24 @@ def export_cell_rules_csv(
         result += f"**File:** {out_path}\n"
         result += f"**XML path:** ./config/{filename} (enabled)\n"
         result += f"**Rules:** {rule_count}\n"
-        result += f"**Progress:** {session.get_progress_percentage():.0f}%\n\n"
+        progress = session.get_progress_percentage()
+        result += f"**Progress:** {progress:.0f}%\n\n"
         result += f"**Next step:** Copy to PhysiCell project directory alongside XML configuration"
-        
-        return result
-        
+
+        payload = PhysiCellRulesExportResult(
+            server="PhysiCell",
+            session_id=session.session_id,
+            file=artifact_file_summary(
+                out_path,
+                session_id=session.session_id,
+            ),
+            xml_reference=f"./config/{filename}",
+            enabled=True,
+            rule_count=rule_count,
+            progress=progress,
+        )
+        return structured_report(result, payload)
+
     except Exception as exc:
         raise RuntimeError(
             f"Could not export the cell rules CSV: {exc}"
@@ -1768,20 +1805,24 @@ def clean_for_markdown(text: str) -> str:
 @mcp.tool(annotations=_READ_ONLY_TOOL)
 def list_generated_files(
     session_id: Optional[NonEmptyString] = Field(default=None, description="Session to query. Omit to use the active session. Pass 'all' to list files across every session."),
-) -> str:
+) -> Annotated[CallToolResult, PhysiCellArtifactFileListResult]:
     """List PhysiCell artifact files (XML/CSV) for the active session.
 
     Returns:
-        str: Grouped list of XML and CSV artifact files.
+        CallToolResult: Grouped text plus validated artifact file metadata.
     """
     if session_id == "all":
         files = list_artifacts(_SERVER_ROOT, session_id=None)
+        resolved_session_id = None
+        scope = "all"
     else:
         with session_manager.session_scope(session_id) as session:
             files = list_artifacts(
                 _SERVER_ROOT,
                 session_id=session.session_id,
             )
+            resolved_session_id = session.session_id
+            scope = "session"
 
     xml_files = [f for f in files if str(f).endswith(".xml")]
     csv_files = [f for f in files if str(f).endswith(".csv")]
@@ -1803,24 +1844,51 @@ def list_generated_files(
     if not xml_files and not csv_files:
         result += "No PhysiCell artifact files found."
 
-    return result
+    listed_files = xml_files + csv_files
+    payload = PhysiCellArtifactFileListResult(
+        server="PhysiCell",
+        scope=scope,
+        session_id=resolved_session_id,
+        count=len(listed_files),
+        files=[
+            artifact_file_summary(
+                file_path,
+                session_id=(
+                    resolved_session_id
+                    if resolved_session_id is not None
+                    else file_path.parent.name
+                ),
+            )
+            for file_path in listed_files
+        ],
+    )
+    return structured_report(result, payload)
 
 
 @mcp.tool(annotations=_IDEMPOTENT_DESTRUCTIVE_TOOL)
 @_session_locked
 def clean_generated_files(
     session_id: Optional[NonEmptyString] = Field(default=None, description="Session to clean. Omit to use the active session."),
-) -> str:
+) -> Annotated[CallToolResult, PhysiCellArtifactCleanupResult]:
     """Remove all artifact files (XML, CSV, etc.) for the active session.
 
     Returns:
-        str: Count of files removed.
+        CallToolResult: Cleanup confirmation plus the validated removal count.
     """
     session = _require_session(session_id)
 
     try:
         count = clean_artifacts(_SERVER_ROOT, session.session_id)
-        return f"**Cleaned {count} artifact file(s)** for session {session.session_id[:8]}..."
+        text = (
+            f"**Cleaned {count} artifact file(s)** for session "
+            f"{session.session_id[:8]}..."
+        )
+        payload = PhysiCellArtifactCleanupResult(
+            server="PhysiCell",
+            session_id=session.session_id,
+            removed_count=count,
+        )
+        return structured_report(text, payload)
     except Exception as exc:
         raise RuntimeError(
             f"Could not clean generated PhysiCell files: {exc}"
