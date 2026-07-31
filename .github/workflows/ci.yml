@@ -9,9 +9,6 @@ on:
 permissions:
   contents: read
 
-env:
-  NEKO_COMPAT_REF: d75d30747c33cbbc6721b2c4e0773d885d64fa97
-
 jobs:
   test:
     name: Lint · Type-check · Test
@@ -39,36 +36,25 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install \
             ".[dev]" \
-            "pandas>=2.2,<4" \
-            "nekomata @ git+https://github.com/sysbio-curie/Neko.git@${NEKO_COMPAT_REF}"
+            "pandas>=2.2,<4"
           python -m pip check
 
-      - name: Verify NeKo revision and report runtime versions
+      - name: Verify NeKo release and report runtime versions
         run: |
           python - <<'PY'
-          import json
-          import os
           import sys
-          from importlib.metadata import distribution, version
+          from importlib.metadata import version
 
-          direct_url_text = distribution("nekomata").read_text(
-              "direct_url.json"
-          )
-          if direct_url_text is None:
-              raise SystemExit(
-                  "NeKo was not installed from the pinned Git revision."
-              )
+          from packaging.version import Version
 
-          direct_url = json.loads(direct_url_text)
-          resolved_ref = direct_url.get("vcs_info", {}).get("commit_id")
-          expected_ref = os.environ["NEKO_COMPAT_REF"]
-          if resolved_ref != expected_ref:
+          neko_version = Version(version("nekomata"))
+          if not Version("1.9.0") <= neko_version < Version("2"):
               raise SystemExit(
-                  f"Expected NeKo commit {expected_ref}, got {resolved_ref}."
+                  "Expected NeKo >=1.9.0,<2, "
+                  f"got {neko_version}."
               )
 
           print(f"Python {sys.version}")
-          print(f"NeKo commit {resolved_ref}")
           for package in (
               "mcp",
               "anyio",
@@ -281,42 +267,31 @@ jobs:
           sudo apt-get install --yes --no-install-recommends graphviz
           dot -V
 
-      - name: Install project with coordinated NeKo revision
+      - name: Install project with published NeKo release
         run: |
           python -m pip install --upgrade pip
           python -m pip install \
             "." \
             "pytest>=8" \
-            "${{ matrix.pandas_spec }}" \
-            "nekomata @ git+https://github.com/sysbio-curie/Neko.git@${NEKO_COMPAT_REF}"
+            "${{ matrix.pandas_spec }}"
           python -m pip check
 
-      - name: Verify NeKo revision and report runtime versions
+      - name: Verify NeKo release and report runtime versions
         run: |
           python - <<'PY'
-          import json
-          import os
           import sys
-          from importlib.metadata import distribution, version
+          from importlib.metadata import version
 
-          direct_url_text = distribution("nekomata").read_text(
-              "direct_url.json"
-          )
-          if direct_url_text is None:
-              raise SystemExit(
-                  "NeKo was not installed from the pinned Git revision."
-              )
+          from packaging.version import Version
 
-          direct_url = json.loads(direct_url_text)
-          resolved_ref = direct_url.get("vcs_info", {}).get("commit_id")
-          expected_ref = os.environ["NEKO_COMPAT_REF"]
-          if resolved_ref != expected_ref:
+          neko_version = Version(version("nekomata"))
+          if not Version("1.9.0") <= neko_version < Version("2"):
               raise SystemExit(
-                  f"Expected NeKo commit {expected_ref}, got {resolved_ref}."
+                  "Expected NeKo >=1.9.0,<2, "
+                  f"got {neko_version}."
               )
 
           print(f"Python {sys.version}")
-          print(f"NeKo commit {resolved_ref}")
           for package in (
               "mcp",
               "anyio",

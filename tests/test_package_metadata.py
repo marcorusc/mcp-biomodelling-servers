@@ -17,11 +17,14 @@ REGISTRY_MANIFESTS = (
 PACKAGE_NAME = "mcp-biomodelling-servers"
 
 
+def _project_text() -> str:
+    return (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+
 def _project_version() -> str:
-    pyproject = PROJECT_ROOT / "pyproject.toml"
     match = re.search(
         r'^version = "([^"]+)"$',
-        pyproject.read_text(encoding="utf-8"),
+        _project_text(),
         flags=re.MULTILINE,
     )
 
@@ -31,6 +34,17 @@ def _project_version() -> str:
 
 def test_source_version_matches_project_metadata() -> None:
     assert __version__ == _project_version()
+
+
+def test_project_requires_coordinated_neko_release() -> None:
+    assert (
+        re.search(
+            r'^\s*"nekomata>=1\.9\.0,<2",$',
+            _project_text(),
+            flags=re.MULTILINE,
+        )
+        is not None
+    )
 
 
 @pytest.mark.parametrize("manifest_path", REGISTRY_MANIFESTS)
