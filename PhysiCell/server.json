@@ -1,19 +1,19 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.marcorusc/PhysiCell",
-  "title": "PhysiCell Multiscale Simulation Builder",
-  "description": "MCP server for configuring PhysiCell multiscale multicellular biological simulations",
+  "title": "PhysiCell Configuration Builder",
+  "description": "MCP server for building, inspecting, and exporting PhysiCell and PhysiBoSS configuration files",
   "repository": {
     "url": "https://github.com/marcorusc/mcp-biomodelling-servers",
     "source": "github",
     "subfolder": "PhysiCell"
   },
-  "version": "1.0.0",
+  "version": "2.0.0",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "mcp-biomodelling-servers",
-      "version": "1.0.0",
+      "version": "2.0.0",
       "runtimeHint": "uvx",
       "runtimeArguments": [
         { "type": "named",     "name": "--from", "value": "mcp-biomodelling-servers" },
