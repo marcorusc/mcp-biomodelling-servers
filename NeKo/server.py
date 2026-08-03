@@ -431,7 +431,7 @@ NEKO_AGENT_MANUAL = """
 
 ## 1. Recommended Execution Order
 1. **Initialize:** `create_session()` -> `set_default_params(max_len=2, only_signed=True, consensus=True)`
-2. **Build:** `create_network([...seed genes...], database='omnipath')`
+2. **Build:** `create_network([...list_of_initial_genes...], database='omnipath')`
 3. **Curate:** `remove_bimodal_interactions()` -> `remove_undefined_interactions()`
 4. **Audit Connectivity:** `check_disconnected_nodes()`
    - *If disconnected:* `list_components()` -> `candidate_connectors()` -> Apply a connection tool.
