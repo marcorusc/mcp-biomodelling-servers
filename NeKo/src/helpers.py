@@ -1,13 +1,14 @@
 """NeKo server-side helpers.
 
-Contains constants, private helper functions, the requires_network decorator,
-and standalone utility functions that support server.py tools but are not
+Contains constants, private helper functions, session decorators, and
+standalone utility functions that support server.py tools but are not
 themselves MCP-exposed tools or resources.
 """
 
 import os
 import sys
 import glob
+import inspect
 import re
 import tempfile
 import requests
@@ -30,12 +31,12 @@ for _p in (_NEKO_ROOT, _REPO_ROOT):
 
 from neko._outputs.exports import Exports   # noqa: E402 (post-path setup)
 from utils import clean_for_markdown        # noqa: E402
-from session_manager import ensure_session  # noqa: E402
+from session_manager import ensure_session, session_manager  # noqa: E402
 from artifact_manager import get_artifact_dir  # noqa: E402
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
-#: Canonical error token returned by any tool that requires a network but finds none.
+#: Canonical error message for tools that require a network but find none.
 E_NO_NET = "E_NO_NET: No network in session. Call create_session() then create_network()."
 
 #: One-line hint appended to summary-verbosity responses.
@@ -87,24 +88,50 @@ def _invalidate(sess) -> None:
     if sess:
         sess.invalidate_edges_cache()
 
-# ── Decorator ─────────────────────────────────────────────────────────────────
+# ── Decorators ────────────────────────────────────────────────────────────────
+
+def session_locked(fn):
+    """Run a synchronous handler under its session's exclusive lease."""
+    signature = inspect.signature(fn)
+
+    @wraps(fn)
+    def inner(*args, **kwargs):
+        arguments = signature.bind_partial(*args, **kwargs).arguments
+        with session_manager.session_scope(arguments.get("session_id")):
+            return fn(*args, **kwargs)
+
+    return inner
 
 def requires_network(fn):
     """Decorator that guards tools requiring an active network.
 
     Injects ``sess`` and ``network`` keyword arguments into the decorated
-    function.  Returns :data:`E_NO_NET` immediately if no network exists in
-    the current session.
+    function. Raises a recoverable tool error if no network exists in the
+    current session.
     """
+    signature = inspect.signature(fn)
+    public_signature = signature.replace(
+        parameters=[
+            parameter
+            for name, parameter in signature.parameters.items()
+            if name not in {"sess", "network"}
+        ]
+    )
+
     @wraps(fn)
     def inner(*args, **kwargs):
-        session_id = kwargs.get("session_id")
-        sess, network = _session_network(session_id)
-        if network is None:
-            return E_NO_NET
-        kwargs["sess"] = sess
-        kwargs["network"] = network
-        return fn(*args, **kwargs)
+        arguments = public_signature.bind_partial(*args, **kwargs).arguments
+        session_id = arguments.get("session_id")
+        with session_manager.session_scope(session_id):
+            sess, network = _session_network(session_id)
+            if network is None:
+                raise RuntimeError(E_NO_NET)
+            kwargs["sess"] = sess
+            kwargs["network"] = network
+            return fn(*args, **kwargs)
+
+    # These are internal injected values, not caller-controlled MCP inputs.
+    inner.__signature__ = public_signature
     return inner
 
 # ── Graph helpers ──────────────────────────────────────────────────────────────
@@ -195,6 +222,8 @@ def sanitize_bnet_file(path: str) -> dict:
     Returns:
         dict with keys:
             ``cleaned_names`` (set[str]) — original names that were renamed.
+            ``name_mapping`` (dict[str, str]) — renamed originals mapped to
+            their sanitized MaBoSS node names.
             ``duplicates_removed`` (list[str]) — cleaned names whose extra rows were dropped.
     """
     _clean = lambda name: re.sub(r"[^A-Za-z0-9_]", "_", name)
@@ -253,7 +282,15 @@ def sanitize_bnet_file(path: str) -> dict:
     with open(path, "w") as fh:
         fh.writelines(new_lines)
 
-    return {"cleaned_names": cleaned_names, "duplicates_removed": duplicates_removed}
+    return {
+        "cleaned_names": cleaned_names,
+        "name_mapping": {
+            original: cleaned
+            for original, cleaned in name_map.items()
+            if original != cleaned
+        },
+        "duplicates_removed": duplicates_removed,
+    }
 
 
 # Keep the old name as a thin alias so existing callers don't break immediately.

@@ -1,4 +1,4 @@
-# MCP Bio‑Modelling Servers
+# MCP Bio-Modelling Servers
 
 <!-- mcp-name: io.github.marcorusc/NeKo -->
 <!-- mcp-name: io.github.marcorusc/MaBoSS -->
@@ -7,78 +7,79 @@
 [![PyPI](https://img.shields.io/pypi/v/mcp-biomodelling-servers)](https://pypi.org/project/mcp-biomodelling-servers/)
 [![MCP Registry](https://img.shields.io/badge/MCP_Registry-active-brightgreen)](https://registry.modelcontextprotocol.io)
 
-This repository centralizes **Model Context Protocol (MCP)** servers that wrap Python‑based *mechanistic / systems biology* modelling tools. Each subfolder contains a `server.py` entrypoint plus a README describing the specific tool interface.
+This package provides three stateful
+[Model Context Protocol](https://modelcontextprotocol.io/) servers for
+mechanistic and systems-biology modelling:
 
-Current servers (see their own READMEs & upstream docs):
+| Server | Modelling role | Upstream project | MCP Registry name |
+|---|---|---|---|
+| MaBoSS | Configure, simulate, and analyze stochastic Boolean models | [pyMaBoSS](https://github.com/colomoto/pyMaBoSS) | `io.github.marcorusc/MaBoSS` |
+| NeKo | Build and analyze signalling networks from interaction databases | [NeKo](https://github.com/sysbio-curie/Neko) | `io.github.marcorusc/NeKo` |
+| PhysiCell | Build, inspect, and export PhysiCell and PhysiBoSS configuration files | [PhysiCell-settings](https://github.com/marcorusc/PhysiCell_Settings) | `io.github.marcorusc/PhysiCell` |
 
-| Tool | Folder | Upstream Documentation | MCP Registry |
-|------|--------|------------------------|--------------|
-| MaBoSS | `MaBoSS/` | https://github.com/colomoto/pyMaBoSS | `io.github.marcorusc/MaBoSS` |
-| NeKo | `NeKo/` | https://github.com/sysbio-curie/Neko | `io.github.marcorusc/NeKo` |
-| PhysiCell (settings wrapper) | `PhysiCell/` | https://github.com/marcorusc/PhysiCell_Settings | `io.github.marcorusc/PhysiCell` |
+All three servers use MCP over stdio and are distributed together as
+`mcp-biomodelling-servers`.
 
-All servers are Python processes speaking MCP over stdio.
----
 ## Publication
 
 For more details, please check the related article:
 
-> **"Intelligent tool orchestration for rapid mechanistic model prototyping: MCP servers as AI-biology interfaces"**  
-> Marco Ruscone, Miguel Vazquez & Alfonso Valencia, *npj Systems Biology and Applications* (2026)  
+> **"Intelligent tool orchestration for rapid mechanistic model prototyping: MCP servers as AI-biology interfaces"**<br>
+> Marco Ruscone, Miguel Vazquez & Alfonso Valencia, *npj Systems Biology and Applications* (2026)<br>
 > [https://doi.org/10.1038/s41540-026-00767-3](https://doi.org/10.1038/s41540-026-00767-3)
----
-## Installation
 
-### Option A — pip (recommended)
+## Requirements
+
+- Python 3.10–3.14.
+- MCP Python SDK 2.x, installed automatically with this package.
+- The modelling-package dependencies declared in `pyproject.toml`, installed
+  automatically by `pip` or `uvx`.
+- The Graphviz system runtime for NeKo history diagrams. The Python `graphviz`
+  package is not a replacement for the external `dot` renderer.
+
+Check whether Graphviz is available with:
+
 ```bash
-pip install mcp-biomodelling-servers
+dot -V
 ```
 
-Then run any server directly:
+If this command is missing, install Graphviz using your operating system or
+environment package manager. See the
+[Graphviz installation guide](https://graphviz.org/download/) for
+platform-specific instructions.
+
+## Installation
+
+### Install with pip
+
+```bash
+python -m pip install mcp-biomodelling-servers
+```
+
+The installation provides three console entry points:
+
 ```bash
 mcp-neko-server
 mcp-maboss-server
 mcp-physicell-server
 ```
 
-### Option B — uvx (no install needed)
+### Run in an isolated environment with uvx
+
 ```bash
 uvx --from mcp-biomodelling-servers mcp-neko-server
 uvx --from mcp-biomodelling-servers mcp-maboss-server
 uvx --from mcp-biomodelling-servers mcp-physicell-server
 ```
 
-### Option C — from source (Conda, full control)
-Clone this repo and set up a Conda environment with all dependencies (see [Environment Assumption](#environment-assumption) below).
+Conda is optional. It remains useful when you want one explicitly managed
+environment for local development or additional native scientific software,
+but it is not required for the packaged entry points.
 
----
-## MCP Background
-The Model Context Protocol standardizes how external tools expose *tools* and *resources* to AI assistants / IDEs. Spec & introduction: https://modelcontextprotocol.io/docs/getting-started/intro
+## Configure an MCP client
 
-Each `server.py` advertises modelling actions (e.g. run simulations, manage sessions) to any MCP‑aware client (e.g. VS Code with GitHub Copilot Chat MCP support).
-
----
-## Repository Layout
-```
-MaBoSS/    # MaBoSS MCP server (Boolean / stochastic models)
-NeKo/      # NeKo MCP server
-PhysiCell/ # PhysiCell settings / sessions MCP server
-README.md
-```
-Consult the README within each tool folder for: purpose, required Python packages, and any model/data file expectations. Installation instructions for the modelling tools themselves live *there* (or in the upstream project links above) — they are intentionally not duplicated here.
-
----
-## Environment Assumption
-All tools are Python‑based. Create (and manage) a single Conda environment that contains the dependencies for MaBoSS, NeKo, and PhysiCell. The exact creation commands are up to you (not prescribed here). Once created, note the absolute path to its Python interpreter (e.g. `/home/you/miniforge3/envs/mcp_modelling/bin/python`).
-
----
-## Configure in VS Code (GitHub Copilot Chat / MCP)
-1. Open VS Code and ensure the Copilot Chat (or other MCP-capable) extension is installed.
-2. Press `Ctrl + Shift + P` → "MCP: Open Configuration" (or edit `~/.config/Code/User/mcp.json` directly).
-3. Add entries for each server.
-
-### Simple setup (uvx / pip install)
-If you installed via pip or want to use uvx, no paths are needed:
+The following example uses `uvx` and works with clients that accept the common
+`mcp.json` stdio configuration:
 
 ```jsonc
 {
@@ -86,84 +87,115 @@ If you installed via pip or want to use uvx, no paths are needed:
     "neko": {
       "type": "stdio",
       "command": "uvx",
-      "args": ["--from", "mcp-biomodelling-servers", "mcp-neko-server"]
+      "args": [
+        "--from",
+        "mcp-biomodelling-servers",
+        "mcp-neko-server"
+      ]
     },
     "maboss": {
       "type": "stdio",
       "command": "uvx",
-      "args": ["--from", "mcp-biomodelling-servers", "mcp-maboss-server"]
+      "args": [
+        "--from",
+        "mcp-biomodelling-servers",
+        "mcp-maboss-server"
+      ]
     },
     "physicell": {
       "type": "stdio",
       "command": "uvx",
-      "args": ["--from", "mcp-biomodelling-servers", "mcp-physicell-server"]
+      "args": [
+        "--from",
+        "mcp-biomodelling-servers",
+        "mcp-physicell-server"
+      ]
     }
   }
 }
 ```
 
-### Advanced setup (Conda environment, from source)
-Use this if you need a custom Conda environment (e.g. for native MaBoSS binaries or local development):
+If the package is already installed in the client environment, each entry can
+instead use its console script directly:
 
 ```jsonc
 {
   "servers": {
-    "maboss": {
-      "type": "stdio",
-      "command": "/home/you/miniforge3/envs/mcp_modelling/bin/python",
-      "args": [
-        "/absolute/path/to/mcp-biomodelling-servers/MaBoSS/server.py"
-      ],
-      "env": {
-        "PATH": "/home/you/miniforge3/envs/mcp_modelling/bin:${Path}",
-        "CONDA_PREFIX": "/home/you/miniforge3/envs/mcp_modelling"
-      }
-    },
     "neko": {
       "type": "stdio",
-      "command": "/home/you/miniforge3/envs/mcp_modelling/bin/python",
-      "args": [
-        "/absolute/path/to/mcp-biomodelling-servers/NeKo/server.py"
-      ]
+      "command": "mcp-neko-server"
+    },
+    "maboss": {
+      "type": "stdio",
+      "command": "mcp-maboss-server"
     },
     "physicell": {
       "type": "stdio",
-      "command": "/home/you/miniforge3/envs/mcp_modelling/bin/python",
-      "args": [
-        "/absolute/path/to/mcp-biomodelling-servers/PhysiCell/server.py"
-      ]
+      "command": "mcp-physicell-server"
     }
   }
 }
 ```
 
-Replace `/home/you/...` and `/absolute/path/to/...` with your actual directories. Keep all three servers referencing the *same* Conda interpreter to share installed libraries.
+Refer to your MCP client's documentation for its configuration-file location
+and reload procedure. For Visual Studio Code, see
+[Use MCP servers in VS Code](https://code.visualstudio.com/docs/copilot/chat/mcp-servers).
 
-After saving, reload / restart VS Code so the MCP client reconnects.
+## Sessions, artifacts, and errors
 
-Activation / usage guidance in VS Code: https://code.visualstudio.com/docs/copilot/chat/mcp-servers
+Each server can maintain multiple isolated modelling sessions. Tools that
+create or load a model return a session identifier; pass that identifier to
+subsequent operations when more than one session is active.
 
-You should then see the servers' tools listed in the Copilot Chat "/tools" (or similar) UI. Invoke them by name with required parameters.
+Generated models, configuration files, plots, and other outputs are kept in
+session-scoped artifact directories. Artifact-listing tools return the paths
+needed to inspect or hand files to another modelling server.
 
-## Adding Another Server
-1. Create a new folder with `server.py` and a README describing the underlying modelling tool and dependencies.
-2. Follow existing server structure for registering MCP tools.
-3. Update your `mcp.json` with a new block (use the same Conda Python path).
-4. Document any additional env vars in that folder README.
+Under MCP SDK 2.x, failures to execute a tool are returned as tool errors so
+the client and model can distinguish them from successful scientific results.
+Validation tools may still return a successful result describing an invalid
+model or configuration when validity itself is the requested result.
 
----
+## Run from source
+
+Clone the repository and install it with its development dependencies:
+
+```bash
+git clone https://github.com/marcorusc/mcp-biomodelling-servers.git
+cd mcp-biomodelling-servers
+python -m pip install ".[dev]"
+```
+
+You can then run the same console entry points or invoke a server module
+directly with the selected Python interpreter:
+
+```bash
+python MaBoSS/server.py
+python NeKo/server.py
+python PhysiCell/server.py
+```
+
+## Repository layout
+
+```text
+MaBoSS/                     MaBoSS server, manual, and Registry manifest
+NeKo/                       NeKo server, manual, and Registry manifest
+PhysiCell/                  PhysiCell server, manual, and Registry manifest
+mcp_biomodelling_servers/   Installed package namespace and entry points
+tests/                      Protocol, runtime, concurrency, and package tests
+```
+
+The server-specific READMEs describe the modelling workflows and exposed tool
+families in more detail.
+
+## MCP SDK and protocol compatibility
+
+The package uses the stable MCP Python SDK 2.x API. The SDK negotiates the
+appropriate MCP protocol revision with the connected client; the protocol
+revision is independent of the MCP Registry schema used by each `server.json`.
+
 ## License
-Project is MIT (see existing LICENSE file). Underlying tools retain their own licenses — consult upstream repositories.
 
----
-## Quick Reference
-| Action | What to Do |
-|--------|-----------|
-| Get tool install steps | Open the tool’s subfolder README or upstream link |
-| Ensure deps present | Install into your chosen Conda env (user‑defined) |
-| Configure MCP | Edit `~/.config/Code/User/mcp.json` as above |
-| Reload servers | Reload VS Code window |
-| Learn MCP | Spec: modelcontextprotocol.io; VS Code guide link above |
-
----
-Happy modelling!
+The package metadata declares the project under the MIT license. The wrapped
+modelling packages retain their own licenses; consult their upstream projects
+for details.

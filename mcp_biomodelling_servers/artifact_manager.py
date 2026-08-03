@@ -27,7 +27,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 METADATA_FILENAME = "session_meta.json"
 
@@ -74,14 +74,14 @@ def safe_artifact_path(artifact_dir: Path, filename: str) -> Path:
     target = (artifact_dir / safe_name).resolve()
     try:
         target.relative_to(artifact_dir.resolve())
-    except ValueError:
+    except ValueError as error:
         raise ValueError(
             f"Path traversal detected: {filename!r} resolves outside the artifact sandbox."
-        )
+        ) from error
     return target
 
 
-def list_artifacts(server_root: Path, session_id: Optional[str] = None) -> List[Path]:
+def list_artifacts(server_root: Path, session_id: str | None = None) -> list[Path]:
     """List artifact files for a session (or all sessions).
 
     Args:
@@ -101,7 +101,7 @@ def list_artifacts(server_root: Path, session_id: Optional[str] = None) -> List[
             return []
         return sorted(p for p in session_dir.iterdir() if p.is_file())
     # All sessions
-    files: List[Path] = []
+    files: list[Path] = []
     for entry in base.iterdir():
         if entry.is_dir():
             files.extend(p for p in entry.iterdir() if p.is_file())
@@ -142,7 +142,7 @@ def write_session_meta(
     server_root: Path,
     session_id: str,
     server_name: str,
-    label: Optional[str] = None,
+    label: str | None = None,
 ) -> None:
     """Write a ``session_meta.json`` file into the session artifact directory.
 
@@ -156,7 +156,7 @@ def write_session_meta(
         label:       Optional free-text label supplied by the user/LLM.
     """
     art_dir = get_artifact_dir(server_root, session_id)
-    meta: Dict[str, Any] = {
+    meta: dict[str, Any] = {
         "session_id": session_id,
         "server": server_name,
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -166,7 +166,7 @@ def write_session_meta(
     meta_path.write_text(json.dumps(meta, indent=2))
 
 
-def read_session_meta(server_root: Path, session_id: str) -> Optional[Dict[str, Any]]:
+def read_session_meta(server_root: Path, session_id: str) -> dict[str, Any] | None:
     """Read the metadata dict for *session_id*, or ``None`` if not found.
 
     Args:
@@ -181,14 +181,14 @@ def read_session_meta(server_root: Path, session_id: str) -> Optional[Dict[str, 
         return None
     try:
         return json.loads(meta_path.read_text())
-    except Exception:
+    except (OSError, UnicodeError, json.JSONDecodeError):
         return None
 
 
 def list_artifact_sessions(
     server_root: Path,
-    server_name: Optional[str] = None,
-) -> List[Dict[str, Any]]:
+    server_name: str | None = None,
+) -> list[dict[str, Any]]:
     """Scan the artifacts directory and return metadata for every session found on disk.
 
     Sessions that have a ``session_meta.json`` are returned with full metadata;
@@ -209,7 +209,7 @@ def list_artifact_sessions(
     if not base.exists():
         return []
 
-    results: List[Dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
     for entry in sorted(base.iterdir()):
         if not entry.is_dir():
             continue
@@ -235,4 +235,3 @@ def list_artifact_sessions(
     # Sort newest-first (empty created_at sorts to the end)
     results.sort(key=lambda m: m.get("created_at") or "", reverse=True)
     return results
-

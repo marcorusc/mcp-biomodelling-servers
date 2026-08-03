@@ -2,25 +2,71 @@ name: CI
 
 on:
   push:
-    branches: ["main"]
+    branches: ["main", "development_v2"]
   pull_request:
     branches: ["main"]
+
+permissions:
+  contents: read
 
 jobs:
   test:
     name: Lint · Type-check · Test
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: pyproject.toml
 
-      - name: Install dev tooling
-        run: pip install pytest ruff mypy
+      - name: Install Graphviz runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends graphviz
+          dot -V
+
+      - name: Install project and development dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            ".[dev]" \
+            "pandas>=2.2,<4"
+          python -m pip check
+
+      - name: Verify NeKo release and report runtime versions
+        run: |
+          python - <<'PY'
+          import sys
+          from importlib.metadata import version
+
+          from packaging.version import Version
+
+          neko_version = Version(version("nekomata"))
+          if not Version("1.9.0") <= neko_version < Version("2"):
+              raise SystemExit(
+                  "Expected NeKo >=1.9.0,<2, "
+                  f"got {neko_version}."
+              )
+
+          print(f"Python {sys.version}")
+          for package in (
+              "mcp",
+              "anyio",
+              "pydantic",
+              "pandas",
+              "nekomata",
+              "maboss",
+              "cmaboss",
+              "physicell-settings",
+          ):
+              print(f"{package}=={version(package)}")
+          PY
 
       # ------------------------------------------------------------------ #
       # Lint (ruff)                                                          #
@@ -29,10 +75,27 @@ jobs:
         run: |
           python -m ruff check \
             artifact_manager.py \
+            mcp_biomodelling_servers/artifact_manager.py \
+            mcp_biomodelling_servers/handoff.py \
+            mcp_biomodelling_servers/structured_outputs.py \
+            MaBoSS/scientific_outputs.py \
             MaBoSS/session_manager.py \
+            NeKo/src/history.py \
+            NeKo/src/structured_outputs.py \
             NeKo/session_manager.py \
+            PhysiCell/physicell_guidance.py \
+            PhysiCell/physicell_outputs.py \
             PhysiCell/session_manager.py \
             tests/
+
+      - name: Check server syntax
+        run: |
+          python -m ruff check \
+            --isolated \
+            --select E9,F63,F7,F82 \
+            MaBoSS/server.py \
+            NeKo/server.py \
+            PhysiCell/server.py
 
       # ------------------------------------------------------------------ #
       # Type-check (mypy) – only our pure-Python modules, not server.py     #
@@ -44,8 +107,15 @@ jobs:
             --ignore-missing-imports \
             --strict-optional \
             artifact_manager.py \
+            mcp_biomodelling_servers/handoff.py \
+            mcp_biomodelling_servers/structured_outputs.py \
+            MaBoSS/scientific_outputs.py \
             MaBoSS/session_manager.py \
+            NeKo/src/history.py \
+            NeKo/src/structured_outputs.py \
             NeKo/session_manager.py \
+            PhysiCell/physicell_guidance.py \
+            PhysiCell/physicell_outputs.py \
             PhysiCell/session_manager.py
 
       # ------------------------------------------------------------------ #
@@ -54,3 +124,189 @@ jobs:
       - name: Run pytest
         run: python -m pytest tests/ -v
 
+      # ------------------------------------------------------------------ #
+      # Distribution safety                                                  #
+      # ------------------------------------------------------------------ #
+      - name: Build and inspect distributions
+        run: |
+          python -m build
+          python - <<'PY'
+          from email.parser import BytesParser
+          from email.policy import default
+          from pathlib import Path, PurePosixPath
+          import tarfile
+          import zipfile
+
+          from packaging.requirements import Requirement
+          from packaging.utils import canonicalize_name
+
+          def is_forbidden_environment_file(member: str) -> bool:
+              name = PurePosixPath(member).name
+              return name == ".env" or (
+                  name.startswith(".env.") and name != ".env.example"
+              )
+
+          archives = sorted(
+              [*Path("dist").glob("*.whl"), *Path("dist").glob("*.tar.gz")]
+          )
+          if not archives:
+              raise SystemExit("No distribution archives were built.")
+
+          failures: list[str] = []
+          for archive in archives:
+              if archive.suffix == ".whl":
+                  with zipfile.ZipFile(archive) as wheel:
+                      members = wheel.namelist()
+              elif archive.name.endswith(".tar.gz"):
+                  with tarfile.open(archive, "r:gz") as sdist:
+                      members = sdist.getnames()
+              else:
+                  continue
+
+              failures.extend(
+                  f"{archive.name}: {member}"
+                  for member in members
+                  if is_forbidden_environment_file(member)
+              )
+
+          if failures:
+              details = "\n".join(failures)
+              raise SystemExit(
+                  f"Environment files found in distributions:\n{details}"
+              )
+
+          wheels = [archive for archive in archives if archive.suffix == ".whl"]
+          if len(wheels) != 1:
+              raise SystemExit(
+                  f"Expected exactly one wheel archive, found {len(wheels)}."
+              )
+
+          with zipfile.ZipFile(wheels[0]) as wheel:
+              metadata_members = [
+                  member
+                  for member in wheel.namelist()
+                  if member.endswith(".dist-info/METADATA")
+              ]
+              if len(metadata_members) != 1:
+                  raise SystemExit(
+                      "Expected exactly one wheel METADATA file, found "
+                      f"{len(metadata_members)}."
+                  )
+              metadata = BytesParser(policy=default).parsebytes(
+                  wheel.read(metadata_members[0])
+              )
+
+          if metadata["Requires-Python"] != ">=3.10":
+              raise SystemExit(
+                  "Unexpected Requires-Python metadata: "
+                  f"{metadata['Requires-Python']!r}."
+              )
+
+          declared_dependencies = {
+              canonicalize_name(Requirement(requirement).name)
+              for requirement in metadata.get_all("Requires-Dist", [])
+          }
+          expected_dependencies = {
+              canonicalize_name(package)
+              for package in (
+                  "mcp",
+                  "anyio",
+                  "pydantic",
+                  "pandas",
+                  "matplotlib",
+                  "nekomata",
+                  "maboss",
+                  "physicell-settings",
+                  "requests",
+                  "tabulate",
+              )
+          }
+          missing_dependencies = sorted(
+              expected_dependencies - declared_dependencies
+          )
+          if missing_dependencies:
+              raise SystemExit(
+                  "Wheel metadata is missing direct dependencies: "
+                  + ", ".join(missing_dependencies)
+              )
+
+          print(
+              f"Checked {len(archives)} distribution archives: "
+              "no environment files found and package metadata is complete."
+          )
+          PY
+
+  compatibility:
+    name: Compatibility · ${{ matrix.label }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Python 3.10 · pandas 2
+            python_version: "3.10"
+            pandas_spec: "pandas>=2.2,<3"
+          - label: Python 3.14 · pandas 3
+            python_version: "3.14"
+            pandas_spec: "pandas>=3,<4"
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python ${{ matrix.python_version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python_version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install Graphviz runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends graphviz
+          dot -V
+
+      - name: Install project with published NeKo release
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install \
+            "." \
+            "pytest>=8" \
+            "${{ matrix.pandas_spec }}"
+          python -m pip check
+
+      - name: Verify NeKo release and report runtime versions
+        run: |
+          python - <<'PY'
+          import sys
+          from importlib.metadata import version
+
+          from packaging.version import Version
+
+          neko_version = Version(version("nekomata"))
+          if not Version("1.9.0") <= neko_version < Version("2"):
+              raise SystemExit(
+                  "Expected NeKo >=1.9.0,<2, "
+                  f"got {neko_version}."
+              )
+
+          print(f"Python {sys.version}")
+          for package in (
+              "mcp",
+              "anyio",
+              "pydantic",
+              "pandas",
+              "nekomata",
+              "maboss",
+              "cmaboss",
+              "physicell-settings",
+          ):
+              print(f"{package}=={version(package)}")
+          PY
+
+      - name: Run real modelling-package smoke tests
+        run: python -m pytest tests/test_runtime_compatibility.py -v
+
+      - name: Run complete compatibility suite
+        run: python -m pytest tests/ -q

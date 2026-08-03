@@ -202,11 +202,13 @@ def clean_for_markdown(df: pd.DataFrame) -> pd.DataFrame:
     3. Replace 'nan' or entirely-blank cells with an empty string.
     4. Drop columns and rows that end up completely empty.
     """
-    # 1) Make sure everything is a string so strip/regex-replace works
-    df_str = df.astype(str)
-
-    # 2) Strip leading/trailing whitespace, then collapse any run of whitespace/newlines to a single space
-    df_str = df_str.map(lambda val: " ".join(val.split()))
+    # 1-2) Normalize non-missing cells as strings while preserving pandas'
+    # missing-value sentinels until they can be replaced explicitly.  In
+    # pandas 3, astype(str) intentionally leaves missing values as NaN.
+    df_str = df.map(
+        lambda val: " ".join(str(val).split()),
+        na_action="ignore",
+    ).fillna("")
 
     # 3) Replace the literal string 'nan' (that pandas sometimes shows for NaNs) with an actual empty string
     df_str = df_str.replace("nan", "", regex=False)

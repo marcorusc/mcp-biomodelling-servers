@@ -10,6 +10,8 @@ __pycache__/
 venv/
 env/
 .env
+.env.*
+!.env.example
 
 # Distribution / packaging
 dist/
@@ -35,6 +37,9 @@ NeKo/artifacts/
 MaBoSS/artifacts/
 PhysiCell/artifacts/
 
+# Local upgrade tracking
+MCP_V2_UPGRADE_PLAN.md
+
 # IDE
 .idea/
 .vscode/
@@ -44,4 +49,3 @@ PhysiCell/artifacts/
 # OS
 .DS_Store
 Thumbs.db
-

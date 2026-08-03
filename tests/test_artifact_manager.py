@@ -1,17 +1,17 @@
 """Unit tests for the shared artifact_manager module."""
-import pytest
+import sys
 from pathlib import Path
 
-import sys
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from artifact_manager import (
-    get_artifact_dir,
-    safe_artifact_path,
-    list_artifacts,
     clean_artifacts,
+    get_artifact_dir,
+    list_artifacts,
+    safe_artifact_path,
 )
-
 
 # ---------------------------------------------------------------------------
 # get_artifact_dir
