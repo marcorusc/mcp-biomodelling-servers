@@ -74,15 +74,6 @@ class NeKoPathSearchResult(NeKoScientificResult):
     path_output_lines: list[str]
 
 
-class NeKoDisconnectedNodesResult(NeKoScientificResult):
-    """Isolated nodes that do not participate in any interaction."""
-
-    total_node_count: int = Field(ge=0)
-    disconnected_count: int = Field(ge=0)
-    all_nodes_have_interactions: bool
-    disconnected_nodes: list[NeKoNodeRecord]
-
-
 class NeKoReferenceQueryResult(NeKoScientificResult):
     """Literature evidence for interactions matching one or two nodes."""
 
@@ -114,9 +105,13 @@ class NeKoComponentRecord(StructuredOutputModel):
     nodes: list[NeKoNodeRecord]
 
 
-class NeKoComponentListResult(NeKoScientificResult):
-    """Complete component membership and summary statistics."""
+class NeKoConnectivityResult(NeKoScientificResult):
+    """Isolated nodes and full connected-component membership for the network."""
 
+    total_node_count: int = Field(ge=0)
+    disconnected_count: int = Field(ge=0)
+    all_nodes_have_interactions: bool
+    disconnected_nodes: list[NeKoNodeRecord]
     component_count: int = Field(ge=0)
     largest_component_size: int = Field(ge=0)
     components: list[NeKoComponentRecord]
@@ -139,8 +134,8 @@ class NeKoConnectorSimulation(StructuredOutputModel):
     simulated_only_signed: bool | None = None
 
 
-class NeKoConnectorCandidateResult(NeKoScientificResult):
-    """Candidates or simulation results returned by ``candidate_connectors``."""
+class NeKoConnectionPreviewResult(NeKoScientificResult):
+    """Candidates or simulation results returned by ``preview_connection_impact``."""
 
     method: ConnectorMethod
     rationale: str

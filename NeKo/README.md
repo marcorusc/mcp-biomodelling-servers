@@ -60,7 +60,7 @@ the ID.
 - `delete_session` permanently removes the in-memory session.
 
 `set_default_params()` stores connection defaults per session. They are reused
-by `extend_network(autoconnect=true)` and `add_gene(autoconnect=true)`.
+by `add_nodes(autoconnect=true)`.
 
 ## Recommended workflow
 
@@ -72,9 +72,9 @@ Use this order for a database-backed network:
 3. Build the network with `create_network(...)`.
 4. Curate ambiguous edges with `remove_bimodal_interactions()` and, when
    appropriate, `remove_undefined_interactions()`.
-5. Check isolated nodes with `check_disconnected_nodes()`.
-6. Inspect all connected components with `list_components()`.
-7. If repair is needed, call `candidate_connectors()` before selecting a
+5. Check connectivity with `analyze_connectivity()` (isolated nodes and the
+   full component partition).
+6. If repair is needed, call `preview_connection_impact()` before selecting a
    mutating connection strategy.
 8. Inspect the resulting topology and evidence.
 9. Use the history tools to compare the new state with earlier alternatives.
@@ -142,8 +142,9 @@ in the session.
 
 ### Add or remove nodes and interactions
 
-- `add_gene` adds one gene and can optionally reconnect the network.
-- `extend_network` adds several genes and reconnects once after all additions.
+- `add_nodes` adds one or more genes in a single call and, by default,
+  autoconnects each new gene to any direct neighbour already in the network
+  (cheap; does not search multi-step paths). Set `autoconnect=false` to skip.
 - `remove_gene` removes a node and all incident edges.
 - `remove_interaction` removes only the requested directed edge.
 
@@ -203,15 +204,14 @@ the tool's structured result remains available independently.
 
 ## Auditing and repairing connectivity
 
-`check_disconnected_nodes()` reports isolated nodes—nodes with no incident
-edges. It does not prove that all non-isolated nodes belong to one component.
-Use `list_components()` to inspect the complete component structure before a
-BNET or handoff export.
+`analyze_connectivity()` reports isolated nodes—nodes with no incident
+edges—together with the complete connected-component partition of the
+network. Use it before a BNET or handoff export.
 
 ### Scout candidate changes
 
-`candidate_connectors()` evaluates possible repair directions without changing
-the active network:
+`preview_connection_impact()` evaluates possible repair directions without
+changing the active network:
 
 | Method | Result |
 |---|---|
@@ -249,24 +249,31 @@ committed to the session.
 }
 ```
 
+`comp_a`/`comp_b` must be Gene Symbols (e.g. from a component's `nodes` list
+in `analyze_connectivity()`'s output), never the numeric `component_id` that
+`analyze_connectivity()` reports for each component - that ID is a report
+label, not a valid gene name.
+
 `mode` is `OUT`, `IN`, or `ALL`.
 
 `connect_targeted_nodes()` supports:
 
 - `connect_to_upstream_nodes`;
-- `connect_subgroup`;
-- `connect_as_atopo`.
-
-For `connect_as_atopo`, use `strategy_mode="radial"` or `"complete"` and supply
-`outputs` when output anchors are required by the intended topology.
+- `connect_subgroup`.
 
 `apply_global_connection()` supports:
 
 - `complete_connection`, with `algorithm` and `minimal`;
-- `connect_network_radially`, with `direction="OUT"` or `"IN"`.
+- `connect_network_radially`, with `direction="OUT"` or `"IN"`;
+- `connect_as_atopo`, with `strategy_mode="radial"` or `"complete"` and an
+  optional `outputs` list of gene symbols to anchor the topology. This
+  strategy loops until the network is connected to every declared output, so
+  its cost is open-ended on large networks.
 
-The database-backed connection tools can be expensive. Reinspect components
-and compare history states after every selected strategy.
+The database-backed connection tools can be expensive — `complete_connection`
+is O(N^2) over every node pair, and `connect_as_atopo` cost is open-ended.
+Reinspect components and compare history states after every selected
+strategy.
 
 ## Branching network history
 
@@ -399,10 +406,10 @@ route does not preserve the typed scientific context and provenance manifest.
 | Category | Tools |
 |---|---|
 | Sessions | `create_session`, `list_sessions`, `list_artifact_sessions`, `set_default_session`, `status`, `reset_network`, `delete_session` |
-| Construction and editing | `create_network`, `set_default_params`, `add_gene`, `extend_network`, `remove_gene`, `remove_interaction` |
+| Construction and editing | `create_network`, `set_default_params`, `add_nodes`, `remove_gene`, `remove_interaction` |
 | Curation | `remove_bimodal_interactions`, `remove_undefined_interactions` |
-| Inspection and evidence | `list_genes_and_interactions`, `filter_interactions`, `find_paths`, `get_references`, `check_disconnected_nodes`, `list_components` |
-| Connection strategies | `candidate_connectors`, `bridge_components`, `connect_targeted_nodes`, `apply_global_connection` |
+| Inspection and evidence | `list_genes_and_interactions`, `filter_interactions`, `find_paths`, `get_references`, `analyze_connectivity` |
+| Connection strategies | `preview_connection_impact`, `bridge_components`, `connect_targeted_nodes`, `apply_global_connection` |
 | Branching history | `list_network_history`, `navigate_network_history`, `compare_network_states`, `set_network_history_limit` |
 | Export and artifacts | `export_network`, `export_neko_handoff`, `list_bnet_files`, `clean_generated_files` |
 

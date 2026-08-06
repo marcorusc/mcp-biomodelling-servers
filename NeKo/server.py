@@ -53,11 +53,10 @@ from src.history import (
     summarize_history,
 )
 from src.structured_outputs import (
-    NeKoComponentListResult,
     NeKoComponentRecord,
-    NeKoConnectorCandidateResult,
+    NeKoConnectionPreviewResult,
+    NeKoConnectivityResult,
     NeKoConnectorSimulation,
-    NeKoDisconnectedNodesResult,
     NeKoHubCandidate,
     NeKoInteractionFilterResult,
     NeKoInteractionRecord,
@@ -93,8 +92,8 @@ _stdout_capture_lock = Lock()
 NEKO_SERVER_INSTRUCTIONS = (
     "Create a session before building a signalling network, and pass "
     "`session_id` explicitly when working with multiple networks. Run "
-    "`candidate_connectors()` before applying expensive connection strategies, "
-    "inspect network history after topology changes, and prefer "
+    "`preview_connection_impact()` before applying expensive connection "
+    "strategies, inspect network history after topology changes, and prefer "
     "`verbosity='summary'` during iterative work. Export with `format='bnet'` "
     "for a standalone Boolean file, or use `export_neko_handoff` to preserve "
     "typed MaBoSS provenance. Read `docs://neko/agent_manual` or use "
@@ -158,10 +157,13 @@ BridgeMode = Literal["OUT", "IN", "ALL"]
 TargetStrategy = Literal[
     "connect_to_upstream_nodes",
     "connect_subgroup",
-    "connect_as_atopo",
 ]
 AtopoStrategy = Literal["radial", "complete"]
-GlobalStrategy = Literal["complete_connection", "connect_network_radially"]
+GlobalStrategy = Literal[
+    "complete_connection",
+    "connect_network_radially",
+    "connect_as_atopo",
+]
 RadialDirection = Literal["OUT", "IN"]
 
 _READ_ONLY_CLOSED = ToolAnnotations(
@@ -433,8 +435,10 @@ NEKO_AGENT_MANUAL = """
 1. **Initialize:** `create_session()` -> `set_default_params(max_len=2, only_signed=True, consensus=True)`
 2. **Build:** `create_network([...list_of_initial_genes...], database='omnipath')`
 3. **Curate:** `remove_bimodal_interactions()` -> `remove_undefined_interactions()`
-4. **Audit Connectivity:** `check_disconnected_nodes()`
-   - *If disconnected:* `list_components()` -> `candidate_connectors()` -> Apply a connection tool.
+4. **Audit Connectivity:** `analyze_connectivity()` reports both isolated
+   (0-edge) nodes and the full connected-component partition in one call.
+   - *If disconnected:* `preview_connection_impact()` -> Apply a connection tool
+     (see the cost guide below before choosing one).
 5. **Inspect history:** `list_network_history()` after topology changes. Use
    `compare_network_states(state_a, state_b)` before deciding whether to
    `navigate_network_history(action='checkout', state_id=...)`.
@@ -445,20 +449,49 @@ NEKO_AGENT_MANUAL = """
 
 ## 2. Tool Categories
 * **Sessions:** `create_session`, `list_sessions`, `set_default_session`, `delete_session`, `status`, `reset_network`
-* **Connection Solvers:** `bridge_components`, `connect_targeted_nodes`, `apply_global_connection`
+* **Construction:** `create_network`, `add_nodes` (batch add, optional cheap
+  direct-neighbour autoconnect), `remove_gene`, `remove_interaction`
+* **Connectivity diagnostics:** `analyze_connectivity` (isolated nodes + full
+  component partition), `preview_connection_impact` (non-mutating scout: hub
+  ranking or a simulated parameter-relaxation preview)
+* **Connection strategies:** `connect_targeted_nodes` (integrate specific
+  nodes), `bridge_components` (connect group A <-> group B),
+  `apply_global_connection` (whole-network closure)
 * **Inspection:** `list_genes_and_interactions`, `find_paths`, `get_references`, `filter_interactions`
 * **History:** `list_network_history`, `navigate_network_history`, `compare_network_states`, `set_network_history_limit`
 * **Handoff:** `export_neko_handoff` records exact sanitized Boolean nodes,
   declared outputs, package versions, history state, and artifact digests.
 
-## 3. Critical Operating Rules
+## 3. Connection Strategy Cost Guide
+Choose the cheapest strategy that can plausibly close the gap; escalate only
+if it fails. All costs assume seed/group sizes of a few dozen genes.
+
+| Tool | Strategy | Cardinality | Relative cost | Notes |
+|---|---|---|---|---|
+| `add_nodes` | `autoconnect=True` | new node(s) -> existing network | Very low | Direct-neighbour edges only (equivalent to maxlen=1); no multi-step path search |
+| `connect_targeted_nodes` | `connect_to_upstream_nodes` | specific node(s) | Low, bounded by `depth` | Cascades upstream from the given nodes only |
+| `connect_targeted_nodes` | `connect_subgroup` | one node list | Moderate, ~O(pairs in group) | Pairwise path search within the group only |
+| `bridge_components` | `connect_component` (A, B) | group A <-> group B | Moderate-high | Also silently runs `connect_subgroup` on every node NOT in A or B as a side effect |
+| `apply_global_connection` | `connect_network_radially` | whole network | Moderate-high, bounded by `max_len` hops | Expands outward/inward from existing seed nodes only, not all pairs |
+| `apply_global_connection` | `connect_as_atopo` | whole network, output-anchored | High, open-ended | Runs `connect_network_radially` or `complete_connection` first, then loops upstream search until the network is fully connected - the loop is not bounded by `max_len` alone |
+| `apply_global_connection` | `complete_connection` | whole network | **Highest - O(N^2) over every node pair** | Searches paths between every pair of nodes in the network; this is almost certainly the cause of a network exploding in size (e.g. `max_len=2` with 20+ seed genes producing hundreds of edges) |
+
+**Large-network warning:** before calling `complete_connection` or
+`connect_as_atopo`, check the current node count (via `status()`). Above
+roughly 50 nodes, prefer `connect_targeted_nodes` or `bridge_components` to
+close specific gaps instead, or run `preview_connection_impact()` first to see
+the predicted edge-count delta without committing.
+
+## 4. Critical Operating Rules
 * **Session First:** Always call `create_session` before `create_network`.
-* **Scout Before You Shoot:** Always run `candidate_connectors()` before heavy connection tools.
+* **Scout Before You Shoot:** Always run `preview_connection_impact()` before
+  heavy connection tools, and check the cost guide above.
 * **Output Names:** Handoff output nodes may use original NeKo names; export
   translates renamed symbols to the exact names stored in the sanitized BNET.
   If outputs are omitted, MaBoSS must select a small output set before running.
 * **Token Frugality:** In iterative loops, ALWAYS use `verbosity='summary'`. 
 """
+
 
 # 2. Expose it as an MCP Prompt (For smart clients that pull system prompts)
 @mcp.prompt(name="neko_workflow_prompt", description="System prompt and operating manual for the NeKo agent.")
@@ -521,7 +554,7 @@ async def create_network(
     """Build a NeKo gene regulatory network from seed genes and/or a SIF file.
 
     Calls complete_connection internally to bridge genes via the chosen database.
-    After creation, run remove_bimodal_interactions() and check_disconnected_nodes()
+    After creation, run remove_bimodal_interactions() and analyze_connectivity()
     before exporting. Always call create_session() first.
     """
     verbosity = normalize_verbosity(verbosity)
@@ -650,8 +683,8 @@ async def create_network(
                 return (
                     f"Network created: session={sess.session_id} "
                     f"nodes={num_nodes} edges={num_edges}. "
-                    "Disconnected components check via "
-                    f"check_disconnected_nodes(). {SUMMARY_HINT}"
+                    "Check connectivity via "
+                    f"analyze_connectivity(). {SUMMARY_HINT}"
                 )
 
             preview_df = df_edges[
@@ -689,36 +722,51 @@ async def create_network(
 
 @mcp.tool(annotations=_NON_IDEMPOTENT_OPEN)
 @requires_network
-def add_gene(
-        gene: Annotated[NonEmptyString, Field(description="Gene symbol to add (e.g. 'TP53'). Case-sensitive; use uppercase HGNC symbols.")],
+def add_nodes(
+        genes: Annotated[NonEmptyStringList, Field(description="Gene symbols to add (e.g. ['TP53'] or ['EGFR', 'AKT1']).")],
         session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session."),
-        autoconnect: bool = Field(False, description="Re-run complete_connection after adding the gene to integrate it into the network topology."),
+        autoconnect: bool = Field(True, description="After adding, connect each new gene to any direct (single-edge) neighbour already in the network. Cheap - does not search multi-step paths. Use connect_targeted_nodes() or apply_global_connection() afterwards for deeper integration."),
+        only_signed: Optional[bool] = Field(None, description="Override the session default and keep only signed autoconnect edges."),
+        consensus: Optional[bool] = Field(None, description="Override the session default and require consensus-supported autoconnect edges."),
         sess=None, network=None) -> str:
-    """Add a single gene node to the current network.
+    """Add one or more gene nodes to the current network in a single call.
 
-    To add multiple genes at once use extend_network().
+    autoconnect uses direct-neighbour lookup only (equivalent to maxlen=1),
+    which is far cheaper than complete_connection. For multi-step bridging use
+    connect_targeted_nodes() or apply_global_connection() after adding nodes.
     """
-    try:
-        network.add_node(gene)
-        if autoconnect:
-            try:
-                # Attempt to complete connections again using session defaults
-                params = sess.get_completion_params()
-                network.complete_connection(**params)
-            except Exception as e:
-                _invalidate(sess)
-                raise RuntimeError(
-                    f"Gene {gene} was added, but autoconnect failed: {e}"
-                ) from e
+    added = 0
+    failed_genes = []
+    for gene in genes:
+        try:
+            network.add_node(gene)
+            added += 1
+        except Exception as e:
+            failed_genes.append(f"{gene}: {e}")
+    if failed_genes:
         _invalidate(sess)
-        return f"Gene added: {gene}.{' Autoconnect attempted.' if autoconnect else ''} {SUMMARY_HINT}"
-    except RuntimeError:
-        raise
-    except Exception as e:
         raise RuntimeError(
-            f"Error adding gene {gene}: {e}\n"
-            "**Tip:** Ensure gene symbol is valid (e.g., 'TP53', not 'tp53')."
-        ) from e
+            f"Added {added}/{len(genes)} genes, but these additions failed: "
+            f"{'; '.join(failed_genes)}"
+        )
+
+    if autoconnect:
+        params = sess.get_completion_params()
+        osgn = only_signed if only_signed is not None else params.get('only_signed', True)
+        cons = consensus if consensus is not None else params.get('consensus', True)
+        try:
+            network.connect_nodes(only_signed=osgn, consensus_only=cons)
+        except Exception as e:
+            _invalidate(sess)
+            raise RuntimeError(
+                f"Added {added}/{len(genes)} genes, but autoconnect failed: {e}"
+            ) from e
+
+    _invalidate(sess)
+    autoconnect_note = (
+        "Autoconnected direct neighbours." if autoconnect else "No autoconnect."
+    )
+    return f"Added {added}/{len(genes)} genes. {autoconnect_note} {SUMMARY_HINT}"
 
 @mcp.tool(annotations=_DESTRUCTIVE_NON_IDEMPOTENT_CLOSED)
 @requires_network
@@ -825,7 +873,7 @@ def export_network(
     """Export the current network to SIF or BNET format.
 
     After BNET export, hand the file path to the MaBoSS server via bnet_to_bnd_and_cfg().
-    BNET export fails if the network is not fully connected — run check_disconnected_nodes() first.
+    BNET export fails if the network is not fully connected — run analyze_connectivity() first.
     """
     verbosity = normalize_verbosity(verbosity)
     export_format = format.lower()
@@ -1526,62 +1574,6 @@ def list_bnet_files(
 
 @mcp.tool(annotations=_READ_ONLY_CLOSED)
 @session_locked
-def check_disconnected_nodes(
-        session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session.")) -> Annotated[CallToolResult, NeKoDisconnectedNodesResult]:
-    """List any nodes in the network that have no edges (isolated nodes)."""
-    sess, network = _session_network(session_id)
-    if network is None:
-        raise RuntimeError(E_NO_NET)
-
-    u2s, s2u = _get_translators(network)
-    del s2u
-
-    all_nodes = {
-        node
-        for node in network.nodes["Uniprot"].tolist()
-        if _optional_text(node) is not None
-    }
-    connected_nodes = (
-        set(network.edges["source"].tolist())
-        | set(network.edges["target"].tolist())
-    )
-    disconnected_uniprot = all_nodes - connected_nodes
-    node_index = _node_record_index(network)
-    disconnected_nodes = [
-        _node_record_for_identifier(
-            node,
-            node_index=node_index,
-            uniprot_to_symbol=u2s,
-        )
-        for node in disconnected_uniprot
-    ]
-    disconnected_nodes.sort(
-        key=lambda record: record.gene_symbol or record.uniprot or ""
-    )
-    payload = NeKoDisconnectedNodesResult(
-        server="NeKo",
-        session_id=sess.session_id,
-        total_node_count=len(all_nodes),
-        disconnected_count=len(disconnected_nodes),
-        all_nodes_have_interactions=not disconnected_nodes,
-        disconnected_nodes=disconnected_nodes,
-    )
-
-    if not disconnected_nodes:
-        return structured_report("All nodes are connected.", payload)
-
-    disconnected_labels = [
-        record.gene_symbol or record.uniprot or "(unknown)"
-        for record in disconnected_nodes
-    ]
-    text = (
-        "Disconnected nodes (Gene Symbols):\n"
-        + "\n".join(disconnected_labels)
-    )
-    return structured_report(text, payload)
-
-@mcp.tool(annotations=_READ_ONLY_CLOSED)
-@session_locked
 def get_references(
         node1: Annotated[NonEmptyString, Field(description="Gene symbol. Returns all edges where this gene is source or target.")],
         node2: Optional[NonEmptyString] = Field(None, description="Second gene symbol. When provided, returns only edges between node1 and node2 (either direction)."),
@@ -1661,49 +1653,6 @@ def get_references(
     )
     return structured_report(md, payload)
 
-@mcp.tool(annotations=_NON_IDEMPOTENT_OPEN)
-@session_locked
-def extend_network(
-        genes: Annotated[NonEmptyStringList, Field(description="Gene symbols to add (e.g. ['EGFR', 'AKT1']).")],
-        session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session."),
-        verbosity: NormalizedVerbosity = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary', 'preview', or 'full'."),
-        autoconnect: bool = Field(True, description="Re-run complete_connection with session defaults after adding all genes.")) -> str:
-    """Add multiple genes to the network in one call, optionally re-running connection completion.
-
-    More efficient than calling add_gene() in a loop.
-    """
-    verbosity = normalize_verbosity(verbosity)
-    sess, network = _session_network(session_id)
-    if network is None:
-        raise RuntimeError(E_NO_NET)
-    added = 0
-    failed_genes = []
-    for g in genes:
-        try:
-            network.add_node(g)
-            added += 1
-        except Exception as e:
-            failed_genes.append(f"{g}: {e}")
-    if failed_genes:
-        _invalidate(sess)
-        raise RuntimeError(
-            f"Added {added}/{len(genes)} genes, but these additions failed: "
-            f"{'; '.join(failed_genes)}"
-        )
-    if autoconnect:
-        try:
-            params = sess.get_completion_params()
-            network.complete_connection(**params)
-        except Exception as e:
-            _invalidate(sess)
-            raise RuntimeError(
-                f"Added {added}/{len(genes)} genes, but autoconnect failed: {e}"
-            ) from e
-    _invalidate(sess)
-    if verbosity == 'summary':
-        return f"Added {added}/{len(genes)} genes. {SUMMARY_HINT}"
-    return f"Added {added}/{len(genes)} genes. Autoconnect={'yes' if autoconnect else 'no'}."
-
 @mcp.tool(annotations=_IDEMPOTENT_CLOSED)
 @session_locked
 def set_default_params(
@@ -1713,7 +1662,7 @@ def set_default_params(
         connect_with_bias: Optional[bool] = Field(None, description="Default activation-bias preference."),
         consensus: Optional[bool] = Field(None, description="Default multi-source consensus requirement."),
         session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session.")) -> str:
-    """Persist completion parameters in the session so extend_network() and add_gene(autoconnect=True) reuse them."""
+    """Persist completion parameters in the session so add_nodes(autoconnect=True) reuses them."""
     sess = ensure_session(session_id)
     sess.update_default_params(max_len=max_len, algorithm=algorithm, only_signed=only_signed,
                                connect_with_bias=connect_with_bias, consensus=consensus)
@@ -1946,20 +1895,51 @@ def status(
 # ===== Component & Strategy Tools =====
 @mcp.tool(annotations=_READ_ONLY_CLOSED)
 @session_locked
-def list_components(
+def analyze_connectivity(
         session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session."),
-        verbosity: NormalizedVerbosity = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary' (counts), 'preview'/'full' (per-component stats)."),
-        format: OutputFormat = Field("markdown", description="Output format: 'markdown' (default) or 'json'.")) -> Annotated[CallToolResult, NeKoComponentListResult]:
-    """List connected components with size, average degree, and sample nodes.
+        verbosity: NormalizedVerbosity = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary' (counts only), 'preview'/'full' (isolated node list and per-component stats)."),
+        format: OutputFormat = Field("markdown", description="Output format: 'markdown' (default) or 'json'.")) -> Annotated[CallToolResult, NeKoConnectivityResult]:
+    """Report isolated (0-edge) nodes AND the full connected-component partition.
 
-    Use this after check_disconnected_nodes() to understand the component structure
-    before choosing a strategy in apply_strategy().
+    A network can have zero isolated nodes yet still be fragmented into
+    several disconnected multi-node clusters (e.g. two unrelated 10-node
+    islands). This tool reports both facets together, so "all_nodes_have_interactions"
+    plus "component_count == 1" together confirm the network is fully connected.
+    Use before choosing a connection strategy (see preview_connection_impact()).
+    Each component's `component_id` is a report label only - to bridge two
+    components with bridge_components(), pass the Gene Symbols listed in
+    their `nodes`, not the `component_id` integers.
     """
     verbosity = normalize_verbosity(verbosity)
     sess, network = _session_network(session_id)
     if network is None:
         raise RuntimeError(E_NO_NET)
-    
+
+    u2s, _ = _get_translators(network)
+    node_index = _node_record_index(network)
+
+    all_nodes = {
+        node
+        for node in network.nodes["Uniprot"].tolist()
+        if _optional_text(node) is not None
+    }
+    connected_nodes = (
+        set(network.edges["source"].tolist())
+        | set(network.edges["target"].tolist())
+    )
+    disconnected_uniprot = all_nodes - connected_nodes
+    disconnected_nodes = [
+        _node_record_for_identifier(
+            node,
+            node_index=node_index,
+            uniprot_to_symbol=u2s,
+        )
+        for node in disconnected_uniprot
+    ]
+    disconnected_nodes.sort(
+        key=lambda record: record.gene_symbol or record.uniprot or ""
+    )
+
     comps = _compute_components(network)
 
     deg = {}
@@ -1976,8 +1956,6 @@ def list_components(
     except Exception:
         pass
 
-    u2s, _ = _get_translators(network)
-    node_index = _node_record_index(network)
     components = []
     for idx, comp in enumerate(comps):
         dvals = [deg.get(n, 0) for n in comp]
@@ -2001,59 +1979,78 @@ def list_components(
         (component.size for component in components),
         default=0,
     )
-    payload = NeKoComponentListResult(
+    payload = NeKoConnectivityResult(
         server="NeKo",
         session_id=sess.session_id,
+        total_node_count=len(all_nodes),
+        disconnected_count=len(disconnected_nodes),
+        all_nodes_have_interactions=not disconnected_nodes,
+        disconnected_nodes=disconnected_nodes,
         component_count=len(components),
         largest_component_size=largest_component_size,
         components=components,
     )
 
     if format == "json":
-        text = json.dumps(
-            [component.model_dump(mode="json") for component in components],
-            separators=(",", ":"),
-        )
+        text = json.dumps(payload.model_dump(mode="json"), separators=(",", ":"))
         return structured_report(text, payload)
-    if not components:
-        return structured_report("No components (empty network).", payload)
     if verbosity == "summary":
         text = (
-            f"Components={len(components)} "
-            f"largest={largest_component_size}. {SUMMARY_HINT}"
+            f"Isolated nodes: {len(disconnected_nodes)}/{len(all_nodes)}. "
+            f"Components={len(components)} largest={largest_component_size}. "
+            f"{SUMMARY_HINT}"
         )
         return structured_report(text, payload)
 
-    lines = ["Components:"]
-    for component in components:
-        visible_nodes = (
-            component.nodes[:5]
-            if verbosity == "preview"
-            else component.nodes
-        )
+    lines = []
+    if disconnected_nodes:
         labels = [
-            node.gene_symbol or node.uniprot or "(unknown)"
-            for node in visible_nodes
+            record.gene_symbol or record.uniprot or "(unknown)"
+            for record in disconnected_nodes
         ]
-        label = "sample" if verbosity == "preview" else "nodes"
-        lines.append(
-            f"- {component.component_id}: size={component.size} "
-            f"avg_deg={component.average_degree} {label}={labels}"
-        )
-    return structured_report("\n".join(lines), payload)
+        lines.append("Isolated nodes (Gene Symbols):\n" + "\n".join(labels))
+    else:
+        lines.append("No isolated nodes.")
+
+    if not components:
+        lines.append("No components (empty network).")
+    else:
+        component_lines = ["Components:"]
+        for component in components:
+            visible_nodes = (
+                component.nodes[:5]
+                if verbosity == "preview"
+                else component.nodes
+            )
+            node_labels = [
+                node.gene_symbol or node.uniprot or "(unknown)"
+                for node in visible_nodes
+            ]
+            label = "sample" if verbosity == "preview" else "nodes"
+            component_lines.append(
+                f"- {component.component_id}: size={component.size} "
+                f"avg_deg={component.average_degree} {label}={node_labels}"
+            )
+        lines.append("\n".join(component_lines))
+
+    return structured_report("\n\n".join(lines), payload)
 
 @mcp.tool(annotations=_READ_ONLY_OPEN)
 @session_locked
-def candidate_connectors(
+def preview_connection_impact(
         method: NormalizedConnectorMethod = Field("hubs", description="Suggestion strategy: 'hubs' (rank high-degree nodes), 'relax_max_len' (simulate +1 max_len), 'unsigned' (simulate allowing unsigned interactions)."),
         top_k: int = Field(10, ge=1, description="Number of hub genes to report when method='hubs'."),
         session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session."),
         format: OutputFormat = Field("markdown", description="Output format: 'markdown' (default) or 'json'."),
-        verbosity: NormalizedVerbosity = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary', 'preview', or 'full'.")) -> Annotated[CallToolResult, NeKoConnectorCandidateResult]:
-    """Suggest nodes or parameter relaxations that could bridge disconnected components.
+        verbosity: NormalizedVerbosity = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary', 'preview', or 'full'.")) -> Annotated[CallToolResult, NeKoConnectionPreviewResult]:
+    """Preview possible repairs for a disconnected network without mutating it.
 
-    Run before applying a connection strategy to estimate the benefit without committing to changes.
-    Outputs Gene Symbols for readability.
+    Non-mutating scout: rank hub genes by degree, or simulate a parameter
+    relaxation (relax_max_len/unsigned) on an in-memory copy to preview the
+    predicted edge-count delta. Run before applying a connection strategy
+    (connect_targeted_nodes, bridge_components, apply_global_connection) to
+    estimate the benefit without committing to changes. Outputs Gene Symbols
+    for readability.
     """
     verbosity = normalize_verbosity(verbosity)
     sess, network = _session_network(session_id)
@@ -2082,7 +2079,7 @@ def candidate_connectors(
             pass
             
         if not deg:
-            payload = NeKoConnectorCandidateResult(
+            payload = NeKoConnectionPreviewResult(
                 server="NeKo",
                 session_id=sess.session_id,
                 method=method,
@@ -2157,7 +2154,7 @@ def candidate_connectors(
     suggestion_count = len(hub_candidates) if method == "hubs" else int(
         simulation is not None
     )
-    payload = NeKoConnectorCandidateResult(
+    payload = NeKoConnectionPreviewResult(
         server="NeKo",
         session_id=sess.session_id,
         method=method,
@@ -2200,14 +2197,20 @@ def candidate_connectors(
 @mcp.tool(annotations=_NON_IDEMPOTENT_OPEN)
 @session_locked
 def bridge_components(
-        comp_a: NonEmptyStringList = Field(..., description="First non-empty list of nodes (Gene Symbols) to bridge."),
-        comp_b: NonEmptyStringList = Field(..., description="Second non-empty list of nodes (Gene Symbols) to bridge."),
+        comp_a: NonEmptyStringList = Field(..., description="First group: a list of actual Gene Symbols already present in the network (e.g. ['TP53', 'MDM2']). This is NOT the integer 'component_id' reported by analyze_connectivity() - pass the gene names belonging to that component instead."),
+        comp_b: NonEmptyStringList = Field(..., description="Second group: a list of actual Gene Symbols already present in the network (e.g. ['EGFR', 'AKT1']). This is NOT the integer 'component_id' reported by analyze_connectivity() - pass the gene names belonging to that component instead."),
         max_len: int = Field(2, ge=1, description="Maximum path length for connecting edges."),
         mode: BridgeMode = Field("OUT", description="Edge direction mode: 'OUT', 'IN', or 'ALL'."),
         only_signed: Optional[bool] = Field(None, description="Restrict to signed interactions."),
         consensus: Optional[bool] = Field(None, description="Require multi-source consensus."),
         session_id: Optional[NonEmptyString] = Field(None, description="Session ID.")) -> str:
-    """Connect two specific disconnected components or subgroups of genes together."""
+    """Connect two named groups of genes (e.g. two disconnected components) together.
+
+    comp_a/comp_b must be the Gene Symbols themselves (as found in
+    list_genes_and_interactions() or analyze_connectivity()'s `nodes` lists),
+    never the numeric `component_id` that analyze_connectivity() reports for
+    each component - that ID is a label for humans, not a valid gene name.
+    """
     sess, network = _session_network(session_id)
     if network is None:
         raise RuntimeError(E_NO_NET)
@@ -2243,13 +2246,16 @@ def bridge_components(
 def connect_targeted_nodes(
         strategy: Annotated[TargetStrategy, Field(description="Targeted strategy.")],
         nodes: NonEmptyStringList = Field(..., description="Non-empty target genes (Gene Symbols) to connect or expand."),
-        outputs: Optional[NonEmptyStringList] = Field(None, description="[connect_as_atopo] Non-empty output gene symbols to anchor topology."),
         max_len: int = Field(1, ge=1, description="Max path length or upstream depth."),
-        strategy_mode: Optional[AtopoStrategy] = Field(None, description="[connect_as_atopo] ATOPO connection strategy: 'radial' or 'complete'."),
         only_signed: Optional[bool] = Field(None, description="Override the session default and keep only signed interactions."),
         consensus: Optional[bool] = Field(None, description="Override the session default and require consensus-supported interactions."),
         session_id: Optional[NonEmptyString] = Field(None, description="Session ID to update; omit to use the active/default session.")) -> str:
-    """Apply strategies targeting specific genes (upstream regulators, dense subgroups, or topological mapping)."""
+    """Integrate specific gene(s) into the existing network (upstream regulators or a dense subgroup).
+
+    For whole-network closure strategies (including output-anchored topology
+    mapping) use apply_global_connection() instead. See the cost guide in
+    docs://neko/agent_manual before choosing a strategy on a large network.
+    """
     sess, network = _session_network(session_id)
     if network is None:
         raise RuntimeError(E_NO_NET)
@@ -2261,7 +2267,6 @@ def connect_targeted_nodes(
     # 1. TRANSLATION LAYER: Gene Symbols -> Uniprot
     _, s2u = _get_translators(network)
     uniprot_nodes = [s2u.get(n, n) for n in nodes]
-    uniprot_outputs = [s2u.get(o, o) for o in outputs] if outputs else None
 
     # 2. BACKEND MATH
     try:
@@ -2279,19 +2284,10 @@ def connect_targeted_nodes(
                 only_signed=osgn,
                 consensus=cons,
             )
-        elif strategy == "connect_as_atopo":
-            network.connect_as_atopo(
-                strategy=strategy_mode,
-                max_len=max_len,
-                outputs=uniprot_outputs,
-                only_signed=osgn,
-                consensus=cons,
-            )
         else:
             raise ValueError(
                 "Unsupported targeted strategy. Use "
-                "'connect_to_upstream_nodes', 'connect_subgroup', or "
-                "'connect_as_atopo'."
+                "'connect_to_upstream_nodes' or 'connect_subgroup'."
             )
 
         _invalidate(sess)
@@ -2309,10 +2305,20 @@ def apply_global_connection(
         algorithm: SearchAlgorithm = Field("bfs", description="[complete_connection] Search algorithm: 'bfs' or 'dfs'."),
         minimal: bool = Field(True, description="[complete_connection] Add only minimum required edges."),
         direction: RadialDirection = Field("OUT", description="[connect_network_radially] Growth direction ('OUT' or 'IN')."),
+        strategy_mode: Optional[AtopoStrategy] = Field(None, description="[connect_as_atopo] Underlying closure strategy to run first: 'radial' or 'complete'."),
+        outputs: Optional[NonEmptyStringList] = Field(None, description="[connect_as_atopo] Non-empty output gene symbols to anchor the topology; the network is grown until connected to every output."),
         only_signed: Optional[bool] = Field(None, description="Override the session default and keep only signed interactions."),
         consensus: Optional[bool] = Field(None, description="Override the session default and require consensus-supported interactions."),
         session_id: Optional[NonEmptyString] = Field(None, description="Session ID to update; omit to use the active/default session.")) -> str:
-    """Apply a global connection strategy across the entire network to resolve missing edges."""
+    """Apply a whole-network closure strategy to resolve missing edges.
+
+    'complete_connection' is the most expensive strategy (O(N^2) over every
+    node pair) and is the most likely cause of runaway network growth on large
+    seed sets. 'connect_as_atopo' loops until the network is fully connected
+    to the declared outputs, so its cost is open-ended. Prefer
+    connect_targeted_nodes() or bridge_components() to close specific gaps on
+    large networks. See the cost guide in docs://neko/agent_manual.
+    """
     sess, network = _session_network(session_id)
     if network is None:
         raise RuntimeError(E_NO_NET)
@@ -2321,7 +2327,10 @@ def apply_global_connection(
     osgn = only_signed if only_signed is not None else params.get('only_signed', True)
     cons = consensus if consensus is not None else params.get('consensus', True)
 
-    # BACKEND MATH (No translation needed for global functions)
+    # TRANSLATION LAYER (only needed for output-anchored atopo)
+    _, s2u = _get_translators(network)
+    uniprot_outputs = [s2u.get(o, o) for o in outputs] if outputs else None
+
     try:
         if strategy == "complete_connection":
             network.complete_connection(
@@ -2338,10 +2347,18 @@ def apply_global_connection(
                 only_signed=osgn,
                 consensus=cons,
             )
+        elif strategy == "connect_as_atopo":
+            network.connect_as_atopo(
+                strategy=strategy_mode,
+                max_len=max_len,
+                outputs=uniprot_outputs,
+                only_signed=osgn,
+                consensus=cons,
+            )
         else:
             raise ValueError(
-                "Unsupported global strategy. "
-                "Use 'complete_connection' or 'connect_network_radially'."
+                "Unsupported global strategy. Use 'complete_connection', "
+                "'connect_network_radially', or 'connect_as_atopo'."
             )
 
         _invalidate(sess)
@@ -2354,3 +2371,4 @@ def apply_global_connection(
 
 if __name__ == "__main__":
     mcp.run()
+
