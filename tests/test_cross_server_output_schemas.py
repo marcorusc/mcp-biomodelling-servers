@@ -38,14 +38,13 @@ EXPECTED_NAMED_OUTPUTS = {
         "set_network_history_limit": "HistoryRetentionResult",
         "clean_generated_files": "NeKoArtifactCleanupResult",
         "list_bnet_files": "NeKoArtifactFileListResult",
-        "check_disconnected_nodes": "NeKoDisconnectedNodesResult",
+        "analyze_connectivity": "NeKoConnectivityResult",
         "get_references": "NeKoReferenceQueryResult",
         "filter_interactions": "NeKoInteractionFilterResult",
         "list_sessions": "NeKoSessionListResult",
         "list_artifact_sessions": "NeKoArtifactSessionListResult",
         "status": "NeKoNetworkStatusResult",
-        "list_components": "NeKoComponentListResult",
-        "candidate_connectors": "NeKoConnectorCandidateResult",
+        "preview_connection_impact": "NeKoConnectionPreviewResult",
     },
     "PhysiCell": {
         "list_sessions": "PhysiCellSessionListResult",
@@ -71,7 +70,7 @@ EXPECTED_NAMED_OUTPUTS = {
 
 EXPECTED_TOOL_COUNTS = {
     "MaBoSS": 24,
-    "NeKo": 33,
+    "NeKo": 31,
     "PhysiCell": 34,
 }
 TOOL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
@@ -111,7 +110,7 @@ async def _list_all_tools() -> dict[str, dict[str, Any]]:
 def test_all_servers_publish_complete_input_and_annotation_contracts() -> None:
     tool_maps = asyncio.run(_list_all_tools())
 
-    assert sum(len(tools) for tools in tool_maps.values()) == 91
+    assert sum(len(tools) for tools in tool_maps.values()) == 89
     for server_name, tools in tool_maps.items():
         assert len(tools) == EXPECTED_TOOL_COUNTS[server_name]
         for tool_name, tool in tools.items():

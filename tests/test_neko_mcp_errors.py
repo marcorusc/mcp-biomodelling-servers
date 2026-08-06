@@ -441,11 +441,10 @@ def test_scientific_tools_publish_named_structured_output_schemas() -> None:
         "status": "NeKoNetworkStatusResult",
         "list_genes_and_interactions": "NeKoNetworkInventoryResult",
         "find_paths": "NeKoPathSearchResult",
-        "check_disconnected_nodes": "NeKoDisconnectedNodesResult",
+        "analyze_connectivity": "NeKoConnectivityResult",
         "get_references": "NeKoReferenceQueryResult",
         "filter_interactions": "NeKoInteractionFilterResult",
-        "list_components": "NeKoComponentListResult",
-        "candidate_connectors": "NeKoConnectorCandidateResult",
+        "preview_connection_impact": "NeKoConnectionPreviewResult",
     }.items():
         schema = tools[tool_name].output_schema
         assert schema is not None
@@ -623,8 +622,8 @@ def test_disconnected_nodes_return_both_biological_identifiers() -> None:
 
     result = _run(
         _call_tool(
-            "check_disconnected_nodes",
-            {"session_id": session_id},
+            "analyze_connectivity",
+            {"session_id": session_id, "verbosity": "full"},
         )
     )
 
@@ -648,12 +647,12 @@ def test_disconnected_nodes_return_both_biological_identifiers() -> None:
     }
     connected_result = _run(
         _call_tool(
-            "check_disconnected_nodes",
-            {"session_id": session_id},
+            "analyze_connectivity",
+            {"session_id": session_id, "verbosity": "full"},
         )
     )
     assert connected_result.is_error is False
-    assert connected_result.content[0].text == "All nodes are connected."
+    assert "No isolated nodes." in connected_result.content[0].text
     assert connected_result.structured_content["disconnected_count"] == 0
     assert connected_result.structured_content["all_nodes_have_interactions"] is True
     assert connected_result.structured_content["disconnected_nodes"] == []
@@ -788,7 +787,7 @@ def test_component_output_contains_complete_gene_symbol_membership() -> None:
 
     result = _run(
         _call_tool(
-            "list_components",
+            "analyze_connectivity",
             {
                 "session_id": session_id,
                 "verbosity": "full",
@@ -798,7 +797,7 @@ def test_component_output_contains_complete_gene_symbol_membership() -> None:
     )
 
     assert result.is_error is False
-    assert isinstance(json.loads(result.content[0].text), list)
+    assert isinstance(json.loads(result.content[0].text), dict)
     assert result.structured_content["component_count"] == 2
     assert result.structured_content["largest_component_size"] == 2
     memberships = [
@@ -834,7 +833,7 @@ def test_hub_candidates_return_typed_identifiers_and_scores() -> None:
 
     result = _run(
         _call_tool(
-            "candidate_connectors",
+            "preview_connection_impact",
             {
                 "session_id": session_id,
                 "method": "hubs",
@@ -893,7 +892,7 @@ def test_connector_simulations_return_typed_predictions(
 
     result = _run(
         _call_tool(
-            "candidate_connectors",
+            "preview_connection_impact",
             {
                 "session_id": session_id,
                 "method": method,
@@ -1267,7 +1266,7 @@ def test_network_guard_is_tool_error() -> None:
     session_id = _create_session()
 
     result = _run(
-        _call_tool("add_gene", {"gene": "TP53", "session_id": session_id})
+        _call_tool("add_nodes", {"genes": ["TP53"], "session_id": session_id})
     )
 
     assert result.is_error is True
@@ -1393,7 +1392,7 @@ def test_invalid_targeted_strategy_is_tool_error() -> None:
     assert "validation error" in result.content[0].text.lower()
 
 
-def test_partial_add_gene_failure_is_reported_as_tool_error() -> None:
+def test_partial_add_nodes_failure_is_reported_as_tool_error() -> None:
     added_genes: list[str] = []
 
     def add_node(gene: str) -> None:
@@ -1405,23 +1404,23 @@ def test_partial_add_gene_failure_is_reported_as_tool_error() -> None:
 
     network = _network_stub(
         add_node=add_node,
-        complete_connection=fail_autoconnect,
+        connect_nodes=fail_autoconnect,
     )
     session_id = _create_session(network)
 
     result = _run(
         _call_tool(
-            "add_gene",
+            "add_nodes",
             {
                 "session_id": session_id,
-                "gene": "TP53",
+                "genes": ["TP53"],
                 "autoconnect": True,
             },
         )
     )
 
     assert result.is_error is True
-    assert "TP53 was added, but autoconnect failed" in result.content[0].text
+    assert "autoconnect failed" in result.content[0].text
     assert added_genes == ["TP53"]
 
 
@@ -1729,7 +1728,7 @@ def test_session_locking_preserves_public_tool_schemas() -> None:
     tools = {tool.name: tool for tool in listed_tools.tools}
     session_backed_tools = {
         "create_network",
-        "add_gene",
+        "add_nodes",
         "remove_gene",
         "remove_interaction",
         "export_network",
@@ -1745,14 +1744,12 @@ def test_session_locking_preserves_public_tool_schemas() -> None:
         "remove_bimodal_interactions",
         "remove_undefined_interactions",
         "list_bnet_files",
-        "check_disconnected_nodes",
+        "analyze_connectivity",
         "get_references",
-        "extend_network",
         "set_default_params",
         "filter_interactions",
         "status",
-        "list_components",
-        "candidate_connectors",
+        "preview_connection_impact",
         "bridge_components",
         "connect_targeted_nodes",
         "apply_global_connection",
@@ -1803,15 +1800,14 @@ def test_all_neko_tools_publish_safety_annotations() -> None:
         "list_network_history",
         "compare_network_states",
         "list_bnet_files",
-        "check_disconnected_nodes",
+        "analyze_connectivity",
         "get_references",
         "filter_interactions",
         "list_sessions",
         "list_artifact_sessions",
         "status",
-        "list_components",
     }
-    read_only_open = {"candidate_connectors"}
+    read_only_open = {"preview_connection_impact"}
     idempotent_closed = {
         "export_network",
         "set_default_params",
@@ -1823,8 +1819,7 @@ def test_all_neko_tools_publish_safety_annotations() -> None:
         "navigate_network_history",
     }
     non_idempotent_open = {
-        "add_gene",
-        "extend_network",
+        "add_nodes",
         "bridge_components",
         "connect_targeted_nodes",
         "apply_global_connection",
@@ -1924,7 +1919,7 @@ def test_neko_tool_schemas_publish_stable_enums_and_bounds() -> None:
     assert filter_schema["format"]["enum"] == ["markdown", "json"]
     assert filter_schema["max_rows"]["minimum"] == 1
 
-    candidate_schema = tools["candidate_connectors"].input_schema["properties"]
+    candidate_schema = tools["preview_connection_impact"].input_schema["properties"]
     assert candidate_schema["method"]["enum"] == [
         "hubs",
         "relax_max_len",
@@ -1942,25 +1937,27 @@ def test_neko_tool_schemas_publish_stable_enums_and_bounds() -> None:
     assert targeted_schema["strategy"]["enum"] == [
         "connect_to_upstream_nodes",
         "connect_subgroup",
-        "connect_as_atopo",
     ]
-    atopo_schema = next(
-        option
-        for option in targeted_schema["strategy_mode"]["anyOf"]
-        if option.get("type") == "string"
-    )
-    assert atopo_schema["enum"] == ["radial", "complete"]
     assert targeted_schema["nodes"]["minItems"] == 1
-    assert targeted_schema["outputs"]["anyOf"][0]["minItems"] == 1
+    assert "strategy_mode" not in targeted_schema
+    assert "outputs" not in targeted_schema
 
     global_schema = tools["apply_global_connection"].input_schema["properties"]
     assert global_schema["strategy"]["enum"] == [
         "complete_connection",
         "connect_network_radially",
+        "connect_as_atopo",
     ]
     assert global_schema["algorithm"]["enum"] == ["bfs", "dfs"]
     assert global_schema["direction"]["enum"] == ["OUT", "IN"]
     assert global_schema["max_len"]["minimum"] == 1
+    atopo_schema = next(
+        option
+        for option in global_schema["strategy_mode"]["anyOf"]
+        if option.get("type") == "string"
+    )
+    assert atopo_schema["enum"] == ["radial", "complete"]
+    assert global_schema["outputs"]["anyOf"][0]["minItems"] == 1
 
     navigation_schema = tools[
         "navigate_network_history"
@@ -1998,12 +1995,12 @@ def test_neko_tool_schemas_publish_stable_enums_and_bounds() -> None:
             {"action": "checkout", "state_id": -1},
         ),
         ("compare_network_states", {"state_a": -1, "state_b": 0}),
-        ("extend_network", {"genes": []}),
+        ("add_nodes", {"genes": []}),
         ("set_default_params", {"max_len": 0}),
         ("set_default_params", {"algorithm": "astar"}),
         ("filter_interactions", {"effect": [""]}),
         ("filter_interactions", {"format": "xml"}),
-        ("candidate_connectors", {"top_k": 0}),
+        ("preview_connection_impact", {"top_k": 0}),
         ("bridge_components", {"comp_a": [], "comp_b": ["MDM2"]}),
         (
             "bridge_components",
@@ -2014,18 +2011,16 @@ def test_neko_tool_schemas_publish_stable_enums_and_bounds() -> None:
             {"strategy": "connect_subgroup", "nodes": []},
         ),
         (
-            "connect_targeted_nodes",
+            "apply_global_connection",
             {
                 "strategy": "connect_as_atopo",
-                "nodes": ["TP53"],
                 "outputs": [],
             },
         ),
         (
-            "connect_targeted_nodes",
+            "apply_global_connection",
             {
                 "strategy": "connect_as_atopo",
-                "nodes": ["TP53"],
                 "strategy_mode": "hierarchy",
             },
         ),
@@ -2097,7 +2092,7 @@ def test_case_insensitive_public_options_remain_compatible(
         )
     connector_result = _run(
         _call_tool(
-            "candidate_connectors",
+            "preview_connection_impact",
             {
                 "session_id": session_id,
                 "method": "HUBS",
@@ -2144,7 +2139,7 @@ def test_list_bnet_files_does_not_create_artifact_directory(
 @pytest.mark.parametrize(
     "handler_name",
     [
-        "add_gene",
+        "add_nodes",
         "remove_gene",
         "remove_interaction",
         "export_network",
@@ -2160,14 +2155,12 @@ def test_list_bnet_files_does_not_create_artifact_directory(
         "remove_bimodal_interactions",
         "remove_undefined_interactions",
         "list_bnet_files",
-        "check_disconnected_nodes",
+        "analyze_connectivity",
         "get_references",
-        "extend_network",
         "set_default_params",
         "filter_interactions",
         "status",
-        "list_components",
-        "candidate_connectors",
+        "preview_connection_impact",
         "bridge_components",
         "connect_targeted_nodes",
         "apply_global_connection",
@@ -2206,8 +2199,12 @@ def test_same_session_status_waits_for_mutation() -> None:
         async with Client(mcp) as mutation_client, Client(mcp) as status_client:
             mutation_task = asyncio.create_task(
                 mutation_client.call_tool(
-                    "add_gene",
-                    {"session_id": session_id, "gene": "EGFR"},
+                    "add_nodes",
+                    {
+                        "session_id": session_id,
+                        "genes": ["EGFR"],
+                        "autoconnect": False,
+                    },
                 )
             )
             assert await asyncio.to_thread(mutation_started.wait, 2)
@@ -2396,10 +2393,9 @@ def test_failed_rebuild_preserves_existing_network(
             "connect_subgroup",
         ),
         (
-            "connect_targeted_nodes",
+            "apply_global_connection",
             {
                 "strategy": "connect_as_atopo",
-                "nodes": ["TP53"],
                 "strategy_mode": "radial",
             },
             "connect_as_atopo",
