@@ -10,6 +10,8 @@ from mcp_biomodelling_servers.structured_outputs import StructuredOutputModel
 
 Verbosity = Literal["summary", "preview", "full"]
 ConnectorMethod = Literal["hubs", "relax_max_len", "unsigned"]
+PathPolicy = Literal["one_shortest", "all_shortest", "all_bounded"]
+ReusePolicy = Literal["none", "discovered_paths", "induced_subgraph"]
 
 
 class NeKoScientificResult(StructuredOutputModel):
@@ -132,6 +134,8 @@ class NeKoConnectorSimulation(StructuredOutputModel):
     predicted_new_edges: int = Field(ge=0)
     simulated_max_length: int | None = Field(default=None, ge=1)
     simulated_only_signed: bool | None = None
+    simulated_path_policy: PathPolicy | None = None
+    simulated_reuse_policy: ReusePolicy | None = None
 
 
 class NeKoConnectionPreviewResult(NeKoScientificResult):

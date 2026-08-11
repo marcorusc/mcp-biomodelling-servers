@@ -127,7 +127,8 @@ def _lower_string(value):
 
 
 Database = Literal["omnipath", "signor"]
-SearchAlgorithm = Literal["bfs", "dfs"]
+PathPolicy = Literal["one_shortest", "all_shortest", "all_bounded"]
+ReusePolicy = Literal["none", "discovered_paths", "induced_subgraph"]
 NormalizedVerbosity = Annotated[
     Literal["summary", "preview", "full"],
     BeforeValidator(_lower_string),
@@ -432,7 +433,9 @@ NEKO_AGENT_MANUAL = """
 # NeKo to MaBoSS Workflow Manual
 
 ## 1. Recommended Execution Order
-1. **Initialize:** `create_session()` -> `set_default_params(max_len=2, only_signed=True, consensus=True)`
+1. **Initialize:** `create_session()` -> `set_default_params(max_len=2,
+   path_policy='one_shortest', reuse_policy='discovered_paths',
+   only_signed=True, consensus=True)`
 2. **Build:** `create_network([...list_of_initial_genes...], database='omnipath')`
 3. **Curate:** `remove_bimodal_interactions()` -> `remove_undefined_interactions()`
 4. **Audit Connectivity:** `analyze_connectivity()` reports both isolated
@@ -457,6 +460,8 @@ NEKO_AGENT_MANUAL = """
 * **Connection strategies:** `connect_targeted_nodes` (integrate specific
   nodes), `bridge_components` (connect group A <-> group B),
   `apply_global_connection` (whole-network closure)
+  - See https://github.com/sysbio-curie/Neko/blob/development/docs_mkdocs/strategies/index.md
+    for the concise strategy and path/reuse policy semantics.
 * **Inspection:** `list_genes_and_interactions`, `find_paths`, `get_references`, `filter_interactions`
 * **History:** `list_network_history`, `navigate_network_history`, `compare_network_states`, `set_network_history_limit`
 * **Handoff:** `export_neko_handoff` records exact sanitized Boolean nodes,
@@ -545,9 +550,9 @@ async def create_network(
                    database: Database = Field("omnipath", description="Knowledge-base to query. 'omnipath' (default) or 'signor'."),
                    sif_file: Optional[NonEmptyString] = Field(None, description="Absolute path to an existing SIF file to bootstrap the network from. Combined with list_of_initial_genes when both are given."),
                    max_len: int = Field(2, ge=1, le=4, description="Maximum path length used by complete_connection to bridge seed genes (1-4; larger = denser but slower)."),
-                   algorithm: SearchAlgorithm = Field("bfs", description="Search algorithm for path completion: 'bfs' (breadth-first, default) or 'dfs' (depth-first)."),
+                   path_policy: PathPolicy = Field("one_shortest", description="Path selection for complete_connection: 'one_shortest' (compact), 'all_shortest' (all equal shortest alternatives), or 'all_bounded' (all paths through max_len)."),
+                   reuse_policy: ReusePolicy = Field("discovered_paths", description="Topology reuse during complete_connection: 'none', 'discovered_paths', or 'induced_subgraph'."),
                    only_signed: bool = Field(True, description="Restrict to signed (+/-) interactions only. Set False to allow unsigned interactions when network is sparse."),
-                   connect_with_bias: bool = Field(False, description="Avoids looking for paths between pairs of nodes that are already connected by another path previously found."),
                    consensus: bool = Field(True, description="Require interactions supported by multiple curated sources (higher confidence)."),
                    session_id: Optional[NonEmptyString] = Field(None, description="Session ID to write the network into. Omit to use the active/default session."),
                    verbosity: NormalizedVerbosity = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary' (default, token-frugal), 'preview' (truncated tables), 'full'.")) -> str:
@@ -618,15 +623,18 @@ async def create_network(
                     resources=resources,
                 )
                 logger.info(
-                    "Running complete_connection (max_len=%s, only_signed=%s)",
+                    "Running complete_connection (max_len=%s, "
+                    "path_policy=%s, reuse_policy=%s, only_signed=%s)",
                     max_len,
+                    path_policy,
+                    reuse_policy,
                     only_signed,
                 )
                 new_network.complete_connection(
                     maxlen=max_len,
-                    algorithm=algorithm,
+                    path_policy=path_policy,
+                    reuse_policy=reuse_policy,
                     only_signed=only_signed,
-                    connect_with_bias=connect_with_bias,
                     consensus=consensus,
                 )
 
@@ -711,7 +719,8 @@ async def create_network(
                 )
                 lines.append(
                     f"Parameters: database={database} max_len={max_len} "
-                    f"algorithm={algorithm} only_signed={only_signed} "
+                    f"path_policy={path_policy} reuse_policy={reuse_policy} "
+                    f"only_signed={only_signed} "
                     f"consensus={consensus}"
                 )
             return "\n".join(lines)
@@ -1657,15 +1666,20 @@ def get_references(
 @session_locked
 def set_default_params(
         max_len: Optional[int] = Field(None, ge=1, le=4, description="Default maximum path length for complete_connection calls (1-4)."),
-        algorithm: Optional[SearchAlgorithm] = Field(None, description="Default path-search algorithm: 'bfs' or 'dfs'."),
+        path_policy: Optional[PathPolicy] = Field(None, description="Default complete_connection path selection: 'one_shortest', 'all_shortest', or 'all_bounded'."),
+        reuse_policy: Optional[ReusePolicy] = Field(None, description="Default complete_connection topology reuse: 'none', 'discovered_paths', or 'induced_subgraph'."),
         only_signed: Optional[bool] = Field(None, description="Default signed-only filter for complete_connection."),
-        connect_with_bias: Optional[bool] = Field(None, description="Default activation-bias preference."),
         consensus: Optional[bool] = Field(None, description="Default multi-source consensus requirement."),
         session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session.")) -> str:
-    """Persist completion parameters in the session so add_nodes(autoconnect=True) reuses them."""
+    """Persist completion defaults used by previews and later connection calls."""
     sess = ensure_session(session_id)
-    sess.update_default_params(max_len=max_len, algorithm=algorithm, only_signed=only_signed,
-                               connect_with_bias=connect_with_bias, consensus=consensus)
+    sess.update_default_params(
+        max_len=max_len,
+        path_policy=path_policy,
+        reuse_policy=reuse_policy,
+        only_signed=only_signed,
+        consensus=consensus,
+    )
     return "Defaults updated." 
 
 @mcp.tool(annotations=_READ_ONLY_CLOSED)
@@ -2141,6 +2155,8 @@ def preview_connection_impact(
                 predicted_new_edges=max(after_e - before_e, 0),
                 simulated_max_length=params.get("maxlen"),
                 simulated_only_signed=params.get("only_signed"),
+                simulated_path_policy=params.get("path_policy"),
+                simulated_reuse_policy=params.get("reuse_policy"),
             )
             
         except Exception as e:
@@ -2186,7 +2202,9 @@ def preview_connection_impact(
         lines.append(
             "- Parameters simulated: "
             f"max_len={simulation.simulated_max_length}, "
-            f"only_signed={simulation.simulated_only_signed}"
+            f"only_signed={simulation.simulated_only_signed}, "
+            f"path_policy={simulation.simulated_path_policy}, "
+            f"reuse_policy={simulation.simulated_reuse_policy}"
         )
             
     if rationale:
@@ -2301,9 +2319,9 @@ def connect_targeted_nodes(
 @session_locked
 def apply_global_connection(
         strategy: Annotated[GlobalStrategy, Field(description="Global connection strategy.")],
-        max_len: int = Field(2, ge=1, description="Maximum path length to search for connections."),
-        algorithm: SearchAlgorithm = Field("bfs", description="[complete_connection] Search algorithm: 'bfs' or 'dfs'."),
-        minimal: bool = Field(True, description="[complete_connection] Add only minimum required edges."),
+        max_len: Optional[int] = Field(None, ge=1, description="Maximum path length to search; omit to use the session default."),
+        path_policy: Optional[PathPolicy] = Field(None, description="[complete_connection] Path selection; omit to use the session default."),
+        reuse_policy: Optional[ReusePolicy] = Field(None, description="[complete_connection] Topology reuse; omit to use the session default."),
         direction: RadialDirection = Field("OUT", description="[connect_network_radially] Growth direction ('OUT' or 'IN')."),
         strategy_mode: Optional[AtopoStrategy] = Field(None, description="[connect_as_atopo] Underlying closure strategy to run first: 'radial' or 'complete'."),
         outputs: Optional[NonEmptyStringList] = Field(None, description="[connect_as_atopo] Non-empty output gene symbols to anchor the topology; the network is grown until connected to every output."),
@@ -2324,8 +2342,19 @@ def apply_global_connection(
         raise RuntimeError(E_NO_NET)
     
     params = sess.get_completion_params()
+    selected_max_len = max_len if max_len is not None else params.get("maxlen", 2)
     osgn = only_signed if only_signed is not None else params.get('only_signed', True)
     cons = consensus if consensus is not None else params.get('consensus', True)
+    selected_path_policy = (
+        path_policy
+        if path_policy is not None
+        else params.get("path_policy", "one_shortest")
+    )
+    selected_reuse_policy = (
+        reuse_policy
+        if reuse_policy is not None
+        else params.get("reuse_policy", "discovered_paths")
+    )
 
     # TRANSLATION LAYER (only needed for output-anchored atopo)
     _, s2u = _get_translators(network)
@@ -2334,15 +2363,15 @@ def apply_global_connection(
     try:
         if strategy == "complete_connection":
             network.complete_connection(
-                maxlen=max_len,
-                algorithm=algorithm,
-                minimal=minimal,
+                maxlen=selected_max_len,
+                path_policy=selected_path_policy,
+                reuse_policy=selected_reuse_policy,
                 only_signed=osgn,
                 consensus=cons,
             )
         elif strategy == "connect_network_radially":
             network.connect_network_radially(
-                max_len=max_len,
+                max_len=selected_max_len,
                 direction=direction,
                 only_signed=osgn,
                 consensus=cons,
@@ -2350,7 +2379,7 @@ def apply_global_connection(
         elif strategy == "connect_as_atopo":
             network.connect_as_atopo(
                 strategy=strategy_mode,
-                max_len=max_len,
+                max_len=selected_max_len,
                 outputs=uniprot_outputs,
                 only_signed=osgn,
                 consensus=cons,
@@ -2371,4 +2400,3 @@ def apply_global_connection(
 
 if __name__ == "__main__":
     mcp.run()
-

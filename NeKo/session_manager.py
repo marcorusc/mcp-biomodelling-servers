@@ -44,9 +44,9 @@ class NeKoSession:
     default_params: dict = field(
         default_factory=lambda: {
             "max_len": 2,
-            "algorithm": "bfs",
+            "path_policy": "one_shortest",
+            "reuse_policy": "discovered_paths",
             "only_signed": True,
-            "connect_with_bias": False,
             "consensus": True,
             "database": "omnipath",
         }
@@ -97,9 +97,12 @@ class NeKoSession:
             params = self.default_params.copy()
             return {
                 "maxlen": params.get("max_len", 2),
-                "algorithm": params.get("algorithm", "bfs"),
+                "path_policy": params.get("path_policy", "one_shortest"),
+                "reuse_policy": params.get(
+                    "reuse_policy",
+                    "discovered_paths",
+                ),
                 "only_signed": params.get("only_signed", True),
-                "connect_with_bias": params.get("connect_with_bias", False),
                 "consensus": params.get("consensus", True),
             }
 

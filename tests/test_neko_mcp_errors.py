@@ -869,6 +869,8 @@ def test_connector_simulations_return_typed_predictions(
     expected_max_length: int,
     expected_only_signed: bool,
 ) -> None:
+    completion_calls: list[dict[str, Any]] = []
+
     class SimulatedNetwork:
         def __init__(self) -> None:
             self.nodes = pd.DataFrame(
@@ -882,7 +884,7 @@ def test_connector_simulations_return_typed_predictions(
             )
 
         def complete_connection(self, **kwargs: Any) -> None:
-            del kwargs
+            completion_calls.append(kwargs)
             self.edges.loc[len(self.edges)] = {
                 "source": "Q00987",
                 "target": "P04637",
@@ -902,12 +904,23 @@ def test_connector_simulations_return_typed_predictions(
     )
 
     assert result.is_error is False
+    assert completion_calls == [
+        {
+            "maxlen": expected_max_length,
+            "path_policy": "one_shortest",
+            "reuse_policy": "discovered_paths",
+            "only_signed": expected_only_signed,
+            "consensus": True,
+        }
+    ]
     assert json.loads(result.content[0].text)["method"] == method
     assert result.structured_content["hub_candidates"] == []
     assert result.structured_content["simulation"] == {
         "predicted_new_edges": 1,
         "simulated_max_length": expected_max_length,
         "simulated_only_signed": expected_only_signed,
+        "simulated_path_policy": "one_shortest",
+        "simulated_reuse_policy": "discovered_paths",
     }
 
 
@@ -1873,7 +1886,18 @@ def test_neko_tool_schemas_publish_stable_enums_and_bounds() -> None:
 
     create_schema = tools["create_network"].input_schema["properties"]
     assert create_schema["database"]["enum"] == ["omnipath", "signor"]
-    assert create_schema["algorithm"]["enum"] == ["bfs", "dfs"]
+    assert create_schema["path_policy"]["enum"] == [
+        "one_shortest",
+        "all_shortest",
+        "all_bounded",
+    ]
+    assert create_schema["reuse_policy"]["enum"] == [
+        "none",
+        "discovered_paths",
+        "induced_subgraph",
+    ]
+    assert "algorithm" not in create_schema
+    assert "connect_with_bias" not in create_schema
     assert create_schema["verbosity"]["enum"] == [
         "summary",
         "preview",
@@ -1908,12 +1932,28 @@ def test_neko_tool_schemas_publish_stable_enums_and_bounds() -> None:
     )
     assert max_len_schema["minimum"] == 1
     assert max_len_schema["maximum"] == 4
-    algorithm_schema = next(
+    path_policy_schema = next(
         option
-        for option in parameter_schema["algorithm"]["anyOf"]
+        for option in parameter_schema["path_policy"]["anyOf"]
         if option.get("type") == "string"
     )
-    assert algorithm_schema["enum"] == ["bfs", "dfs"]
+    assert path_policy_schema["enum"] == [
+        "one_shortest",
+        "all_shortest",
+        "all_bounded",
+    ]
+    reuse_policy_schema = next(
+        option
+        for option in parameter_schema["reuse_policy"]["anyOf"]
+        if option.get("type") == "string"
+    )
+    assert reuse_policy_schema["enum"] == [
+        "none",
+        "discovered_paths",
+        "induced_subgraph",
+    ]
+    assert "algorithm" not in parameter_schema
+    assert "connect_with_bias" not in parameter_schema
 
     filter_schema = tools["filter_interactions"].input_schema["properties"]
     assert filter_schema["format"]["enum"] == ["markdown", "json"]
@@ -1948,9 +1988,35 @@ def test_neko_tool_schemas_publish_stable_enums_and_bounds() -> None:
         "connect_network_radially",
         "connect_as_atopo",
     ]
-    assert global_schema["algorithm"]["enum"] == ["bfs", "dfs"]
+    global_path_policy = next(
+        option
+        for option in global_schema["path_policy"]["anyOf"]
+        if option.get("type") == "string"
+    )
+    assert global_path_policy["enum"] == [
+        "one_shortest",
+        "all_shortest",
+        "all_bounded",
+    ]
+    global_reuse_policy = next(
+        option
+        for option in global_schema["reuse_policy"]["anyOf"]
+        if option.get("type") == "string"
+    )
+    assert global_reuse_policy["enum"] == [
+        "none",
+        "discovered_paths",
+        "induced_subgraph",
+    ]
+    assert "algorithm" not in global_schema
+    assert "minimal" not in global_schema
     assert global_schema["direction"]["enum"] == ["OUT", "IN"]
-    assert global_schema["max_len"]["minimum"] == 1
+    global_max_len = next(
+        option
+        for option in global_schema["max_len"]["anyOf"]
+        if option.get("type") == "integer"
+    )
+    assert global_max_len["minimum"] == 1
     atopo_schema = next(
         option
         for option in global_schema["strategy_mode"]["anyOf"]
@@ -1983,7 +2049,11 @@ def test_neko_tool_schemas_publish_stable_enums_and_bounds() -> None:
         ("create_network", {"list_of_initial_genes": ["TP53"], "max_len": 5}),
         (
             "create_network",
-            {"list_of_initial_genes": ["TP53"], "algorithm": "astar"},
+            {"list_of_initial_genes": ["TP53"], "path_policy": "astar"},
+        ),
+        (
+            "create_network",
+            {"list_of_initial_genes": ["TP53"], "reuse_policy": "all"},
         ),
         ("list_genes_and_interactions", {"max_rows": 0}),
         (
@@ -1997,7 +2067,8 @@ def test_neko_tool_schemas_publish_stable_enums_and_bounds() -> None:
         ("compare_network_states", {"state_a": -1, "state_b": 0}),
         ("add_nodes", {"genes": []}),
         ("set_default_params", {"max_len": 0}),
-        ("set_default_params", {"algorithm": "astar"}),
+        ("set_default_params", {"path_policy": "astar"}),
+        ("set_default_params", {"reuse_policy": "all"}),
         ("filter_interactions", {"effect": [""]}),
         ("filter_interactions", {"format": "xml"}),
         ("preview_connection_impact", {"top_k": 0}),
@@ -2027,6 +2098,14 @@ def test_neko_tool_schemas_publish_stable_enums_and_bounds() -> None:
         (
             "apply_global_connection",
             {"strategy": "complete_connection", "direction": "SIDEWAYS"},
+        ),
+        (
+            "apply_global_connection",
+            {"strategy": "complete_connection", "path_policy": "astar"},
+        ),
+        (
+            "apply_global_connection",
+            {"strategy": "complete_connection", "reuse_policy": "all"},
         ),
     ],
 )
@@ -2237,6 +2316,7 @@ def test_create_network_runs_backend_in_worker_thread(
 ) -> None:
     caller_thread = threading.get_ident()
     constructor_threads: list[int] = []
+    completion_calls: list[dict[str, Any]] = []
 
     class WorkerNetwork:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -2250,7 +2330,7 @@ def test_create_network_runs_backend_in_worker_thread(
             )
 
         def complete_connection(self, **kwargs: Any) -> None:
-            del kwargs
+            completion_calls.append(kwargs)
 
         def convert_edgelist_into_genesymbol(self) -> pd.DataFrame:
             return pd.DataFrame(
@@ -2279,6 +2359,15 @@ def test_create_network_runs_backend_in_worker_thread(
     assert result.is_error is False
     assert constructor_threads
     assert constructor_threads[0] != caller_thread
+    assert completion_calls == [
+        {
+            "maxlen": 2,
+            "path_policy": "one_shortest",
+            "reuse_policy": "discovered_paths",
+            "only_signed": True,
+            "consensus": True,
+        }
+    ]
 
 
 def test_create_network_applies_session_history_limit(
@@ -2447,3 +2536,76 @@ def test_connection_tools_use_history_aware_network_methods(
 
     assert result.is_error is False
     assert calls == [expected_method]
+
+
+def test_global_completion_uses_session_policies_and_explicit_overrides() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def complete_connection(**kwargs: Any) -> None:
+        calls.append(kwargs)
+
+    network = _network_stub(
+        convert_edgelist_into_genesymbol=lambda: pd.DataFrame(
+            columns=["source", "target", "Effect"]
+        ),
+        complete_connection=complete_connection,
+    )
+    session_id = _create_session(network)
+
+    configured = _run(
+        _call_tool(
+            "set_default_params",
+            {
+                "session_id": session_id,
+                "max_len": 4,
+                "path_policy": "all_shortest",
+                "reuse_policy": "none",
+                "only_signed": False,
+                "consensus": False,
+            },
+        )
+    )
+    assert configured.is_error is False
+
+    inherited = _run(
+        _call_tool(
+            "apply_global_connection",
+            {
+                "session_id": session_id,
+                "strategy": "complete_connection",
+            },
+        )
+    )
+    overridden = _run(
+        _call_tool(
+            "apply_global_connection",
+            {
+                "session_id": session_id,
+                "strategy": "complete_connection",
+                "max_len": 3,
+                "path_policy": "all_bounded",
+                "reuse_policy": "induced_subgraph",
+                "only_signed": True,
+                "consensus": True,
+            },
+        )
+    )
+
+    assert inherited.is_error is False
+    assert overridden.is_error is False
+    assert calls == [
+        {
+            "maxlen": 4,
+            "path_policy": "all_shortest",
+            "reuse_policy": "none",
+            "only_signed": False,
+            "consensus": False,
+        },
+        {
+            "maxlen": 3,
+            "path_policy": "all_bounded",
+            "reuse_policy": "induced_subgraph",
+            "only_signed": True,
+            "consensus": True,
+        },
+    ]
