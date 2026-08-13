@@ -36,9 +36,11 @@ def test_neko_runtime_exposes_server_and_history_contracts() -> None:
         """
         from neko._outputs.exports import Exports
         from neko.core.network import Network
+        from neko.core.strategy_options import ConnectionStrategyMigrationWarning
         from neko.core.tools import is_connected
         from neko.inputs import Universe, signor
         import pandas as pd
+        import warnings
         from pathlib import Path
         from tempfile import TemporaryDirectory
 
@@ -86,7 +88,13 @@ def test_neko_runtime_exposes_server_and_history_contracts() -> None:
             initial_nodes=["P04637", "P38398"],
             resources=resources,
         )
-        export_network.complete_connection(maxlen=1)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", ConnectionStrategyMigrationWarning)
+            export_network.complete_connection(
+                maxlen=1,
+                path_policy="one_shortest",
+                reuse_policy="discovered_paths",
+            )
         with TemporaryDirectory() as temporary_directory:
             prefix = Path(temporary_directory) / "runtime"
             Exports(export_network).export_bnet(str(prefix))

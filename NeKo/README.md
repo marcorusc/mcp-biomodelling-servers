@@ -59,8 +59,9 @@ the ID.
   its settings.
 - `delete_session` permanently removes the in-memory session.
 
-`set_default_params()` stores connection defaults per session. They are reused
-by `add_nodes(autoconnect=true)`.
+`set_default_params()` stores completion defaults per session. Previews and
+global completion reuse all defaults; `add_nodes(autoconnect=true)` reuses the
+sign and consensus filters.
 
 ## Recommended workflow
 
@@ -98,9 +99,9 @@ Create a network from seed genes:
   "list_of_initial_genes": ["EGFR", "KRAS", "TP53", "AKT1"],
   "database": "omnipath",
   "max_len": 2,
-  "algorithm": "bfs",
+  "path_policy": "one_shortest",
+  "reuse_policy": "discovered_paths",
   "only_signed": true,
-  "connect_with_bias": false,
   "consensus": true,
   "session_id": "SESSION_ID",
   "verbosity": "summary"
@@ -112,9 +113,9 @@ The construction parameters are:
 | Parameter | Contract |
 |---|---|
 | `max_len` | Maximum path length, from 1 to 4 |
-| `algorithm` | `bfs` or `dfs` |
+| `path_policy` | `one_shortest`, `all_shortest`, or `all_bounded` |
+| `reuse_policy` | `none`, `discovered_paths`, or `induced_subgraph` |
 | `only_signed` | Keep only signed interactions when true |
-| `connect_with_bias` | Avoid some already-connected node pairs |
 | `consensus` | Require support from multiple curated sources when true |
 | `verbosity` | `summary`, `preview`, or `full` |
 
@@ -235,6 +236,10 @@ committed to the session.
 
 ### Apply a selected strategy
 
+See NeKo's concise
+[connection-strategy guide](https://github.com/sysbio-curie/Neko/blob/development/docs_mkdocs/strategies/index.md)
+to choose the topology and path/reuse policies that match the research question.
+
 `bridge_components()` connects two explicit groups:
 
 ```json
@@ -263,7 +268,7 @@ label, not a valid gene name.
 
 `apply_global_connection()` supports:
 
-- `complete_connection`, with `algorithm` and `minimal`;
+- `complete_connection`, with explicit `path_policy` and `reuse_policy`;
 - `connect_network_radially`, with `direction="OUT"` or `"IN"`;
 - `connect_as_atopo`, with `strategy_mode="radial"` or `"complete"` and an
   optional `outputs` list of gene symbols to anchor the topology. This

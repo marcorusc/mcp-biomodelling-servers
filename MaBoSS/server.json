@@ -8,12 +8,12 @@
     "source": "github",
     "subfolder": "MaBoSS"
   },
-  "version": "2.1.0",
+  "version": "2.2.0",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "mcp-biomodelling-servers",
-      "version": "2.1.0",
+      "version": "2.2.0",
       "runtimeHint": "uvx",
       "runtimeArguments": [
         { "type": "named",     "name": "--from", "value": "mcp-biomodelling-servers" },

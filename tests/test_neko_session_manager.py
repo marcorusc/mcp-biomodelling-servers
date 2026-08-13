@@ -56,8 +56,15 @@ class TestNeKoSession:
 
     def test_update_default_params(self):
         s = NeKoSession(session_id="s1")
-        s.update_default_params(max_len=5, only_signed=False)
+        s.update_default_params(
+            max_len=5,
+            path_policy="all_shortest",
+            reuse_policy="none",
+            only_signed=False,
+        )
         assert s.default_params["max_len"] == 5
+        assert s.default_params["path_policy"] == "all_shortest"
+        assert s.default_params["reuse_policy"] == "none"
         assert s.default_params["only_signed"] is False
 
     def test_update_default_params_ignores_none(self):
@@ -70,8 +77,11 @@ class TestNeKoSession:
         s = NeKoSession(session_id="s1")
         params = s.get_completion_params()
         assert "maxlen" in params
-        assert "algorithm" in params
+        assert params["path_policy"] == "one_shortest"
+        assert params["reuse_policy"] == "discovered_paths"
         assert "only_signed" in params
+        assert "algorithm" not in params
+        assert "connect_with_bias" not in params
 
     def test_get_edges_df_returns_none_without_network(self):
         s = NeKoSession(session_id="s1")
