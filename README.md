@@ -4,7 +4,7 @@
 <!-- mcp-name: io.github.marcorusc/MaBoSS -->
 <!-- mcp-name: io.github.marcorusc/PhysiCell -->
 
-[![PyPI](https://img.shields.io/pypi/v/mcp-biomodelling-servers)](https://pypi.org/project/mcp-biomodelling-servers/)
+[![PyPI](https://img.shields.io/pypi/v/mcp-biomodelling-servers?cacheSeconds=300)](https://pypi.org/project/mcp-biomodelling-servers/)
 [![MCP Registry](https://img.shields.io/badge/MCP_Registry-active-brightgreen)](https://registry.modelcontextprotocol.io)
 
 This package provides three stateful
