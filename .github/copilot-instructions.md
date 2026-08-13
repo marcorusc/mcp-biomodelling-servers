@@ -255,7 +255,7 @@ Important declared ranges include:
 - `mcp>=2,<3`;
 - `pydantic>=2.12`;
 - `pandas>=2.2,<4`;
-- `nekomata>=1.9.0,<2`;
+- `nekomata>=1.10.0,<2`;
 - `maboss>=0.8.15,<0.9`;
 - `physicell-settings>=0.6.2,<0.7`.
 
