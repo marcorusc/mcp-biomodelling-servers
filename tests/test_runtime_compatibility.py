@@ -7,8 +7,10 @@ doubles cannot hide an incompatible installed package.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
+import tempfile
 import textwrap
 
 import pytest
@@ -16,12 +18,18 @@ import pytest
 
 def _run_in_clean_interpreter(source: str) -> None:
     """Execute a runtime contract check without pytest's import stubs."""
-    completed = subprocess.run(
-        [sys.executable, "-c", textwrap.dedent(source)],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    with tempfile.TemporaryDirectory() as config_directory:
+        environment = os.environ.copy()
+        environment["XDG_CONFIG_HOME"] = config_directory
+        if os.name == "nt":
+            environment["USERPROFILE"] = config_directory
+        completed = subprocess.run(
+            [sys.executable, "-c", textwrap.dedent(source)],
+            check=False,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
     if completed.returncode != 0:
         pytest.fail(
             "Runtime compatibility subprocess failed.\n"

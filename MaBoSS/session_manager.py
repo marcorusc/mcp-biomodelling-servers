@@ -128,6 +128,8 @@ class MaBoSSSessionManager:
 
     def _resolve_session_id(self, session_id: str) -> str | None:
         """Resolve an exact or unique prefix session ID to a full UUID."""
+        if not isinstance(session_id, str):
+            return None
         if session_id in self._sessions:
             return session_id
 
@@ -208,6 +210,9 @@ class MaBoSSSessionManager:
                 session = self._sessions[resolved_id]
                 session.last_accessed = time.time()
                 return session
+
+            if session_id is not None:
+                raise KeyError(f"Unknown MaBoSS session: {session_id}")
 
             new_id = self._create_session_unlocked(set_as_default=True)
             return self._sessions[new_id]
@@ -311,6 +316,8 @@ session_manager = MaBoSSSessionManager()
 
 def ensure_session(session_id: str | None = None) -> MaBoSSSession:
     """Return the requested session, auto-creating a default if none exists."""
+    if not isinstance(session_id, str):
+        session_id = None
     active_session = _active_session.get()
     if active_session is not None and (
         session_id is None

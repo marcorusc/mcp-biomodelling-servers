@@ -1,5 +1,21 @@
 """Editable workflow guidance shared by the PhysiCell MCP surfaces."""
 
+PHYSICELL_SERVER_INSTRUCTIONS = (
+    "Create one session per PhysiCell model and pass `session_id` explicitly "
+    "when multiple configurations are active. For a new model, create the "
+    "domain before adding substrates and cell types; for existing XML, "
+    "validate, load, and analyze it before editing. When revising "
+    "`configure_cell_parameters()`, `set_substrate_interaction()`, or "
+    "`configure_physiboss_settings()`, provide only the values that should "
+    "change; omitted configuration values are preserved. Prefer "
+    "`import_maboss_handoff()` for an integrity-checked "
+    "PhysiBoSS model transfer, then configure its timing and biologically "
+    "justified signal/node mappings. Inspect session resources or "
+    "`get_simulation_summary()` before export. Read "
+    "`docs://physicell/agent_manual` or use "
+    "`physicell_workflow_prompt` for the complete workflow."
+)
+
 PHYSICELL_AGENT_MANUAL = """# PhysiCell Agent Operations Manual
 
 ## 1. Choose the workflow

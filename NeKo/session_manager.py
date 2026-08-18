@@ -257,6 +257,9 @@ class NeKoSessionManager:
                 session.last_accessed = time.time()
                 return session
 
+            if session_id is not None:
+                raise KeyError(f"Unknown NeKo session: {session_id}")
+
             new_id = self._create_session_unlocked(set_as_default=True)
             return self._sessions[new_id]
 

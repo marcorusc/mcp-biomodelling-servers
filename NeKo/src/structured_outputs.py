@@ -12,6 +12,8 @@ Verbosity = Literal["summary", "preview", "full"]
 ConnectorMethod = Literal["hubs", "relax_max_len", "unsigned"]
 PathPolicy = Literal["one_shortest", "all_shortest", "all_bounded"]
 ReusePolicy = Literal["none", "discovered_paths", "induced_subgraph"]
+InteractionNodeScope = Literal["incident", "internal", "boundary"]
+ConnectivityMode = Literal["weak", "strong"]
 
 
 class NeKoScientificResult(StructuredOutputModel):
@@ -92,10 +94,44 @@ class NeKoInteractionFilterResult(NeKoScientificResult):
     effect_filter: list[str] | None = None
     source_filter: str | None = None
     target_filter: str | None = None
+    node_filter: list[str] | None = None
+    node_scope: InteractionNodeScope | None = None
     total_match_count: int = Field(ge=0)
     returned_count: int = Field(ge=0)
     truncated: bool
     interactions: list[NeKoInteractionRecord]
+
+
+class NeKoGeneSetComponent(StructuredOutputModel):
+    """One connected component of a requested-gene induced subgraph."""
+
+    component_id: int = Field(ge=0)
+    size: int = Field(ge=1)
+    genes: list[str]
+
+
+class NeKoGeneSetAnalysisResult(NeKoScientificResult):
+    """Deterministic audit of a requested set against the current network."""
+
+    connectivity: ConnectivityMode
+    requested_genes: list[str]
+    resolved_genes: list[str]
+    missing_genes: list[str]
+    requested_count: int = Field(ge=0)
+    resolved_count: int = Field(ge=0)
+    missing_count: int = Field(ge=0)
+    internal_edge_count: int = Field(ge=0)
+    boundary_edge_count: int = Field(ge=0)
+    induced_isolate_count: int = Field(ge=0)
+    induced_isolates: list[str]
+    component_count: int = Field(ge=0)
+    largest_component_size: int = Field(ge=0)
+    components: list[NeKoGeneSetComponent]
+    returned_internal_edge_count: int = Field(ge=0)
+    returned_boundary_edge_count: int = Field(ge=0)
+    truncated: bool
+    internal_edges: list[NeKoInteractionRecord]
+    boundary_edges: list[NeKoInteractionRecord]
 
 
 class NeKoComponentRecord(StructuredOutputModel):

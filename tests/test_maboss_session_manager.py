@@ -118,6 +118,14 @@ class TestMaBoSSSessionManager:
         mgr = self._fresh()
         assert mgr.get_session("nonexistent") is None
 
+    def test_ensure_unknown_explicit_session_raises_without_creating(self):
+        mgr = self._fresh()
+
+        with pytest.raises(KeyError, match="Unknown MaBoSS session: nonexistent"):
+            mgr.ensure_session("nonexistent")
+
+        assert mgr.list_sessions() == {}
+
     def test_list_sessions_returns_all(self):
         mgr = self._fresh()
         mgr.create_session()

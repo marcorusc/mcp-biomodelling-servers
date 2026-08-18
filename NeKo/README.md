@@ -413,7 +413,7 @@ route does not preserve the typed scientific context and provenance manifest.
 | Sessions | `create_session`, `list_sessions`, `list_artifact_sessions`, `set_default_session`, `status`, `reset_network`, `delete_session` |
 | Construction and editing | `create_network`, `set_default_params`, `add_nodes`, `remove_gene`, `remove_interaction` |
 | Curation | `remove_bimodal_interactions`, `remove_undefined_interactions` |
-| Inspection and evidence | `list_genes_and_interactions`, `filter_interactions`, `find_paths`, `get_references`, `analyze_connectivity` |
+| Inspection and evidence | `list_genes_and_interactions`, `filter_interactions`, `find_paths`, `get_references`, `analyze_connectivity`, `analyze_gene_set` |
 | Connection strategies | `preview_connection_impact`, `bridge_components`, `connect_targeted_nodes`, `apply_global_connection` |
 | Branching history | `list_network_history`, `navigate_network_history`, `compare_network_states`, `set_network_history_limit` |
 | Export and artifacts | `export_network`, `export_neko_handoff`, `list_bnet_files`, `clean_generated_files` |

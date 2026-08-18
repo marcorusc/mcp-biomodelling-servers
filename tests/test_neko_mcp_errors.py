@@ -72,22 +72,14 @@ def _install_neko_import_stubs() -> None:
     )
 
 
-NEKO_DIR = Path(__file__).parent.parent / "NeKo"
-sys.path.insert(0, str(NEKO_DIR))
 _install_neko_import_stubs()
 
-# Other in-memory server tests use the same launcher-style module name.
-# Remove any previously collected server's alias before importing NeKo.
-for module_name in ("session_manager", "utils", "src", "src.helpers"):
-    sys.modules.pop(module_name, None)
-
-# These imports intentionally follow the launcher-compatible sys.path setup.
-from session_manager import session_manager  # noqa: E402
-from src import helpers as neko_helpers  # noqa: E402
-
 from NeKo import server as neko_server  # noqa: E402
+from NeKo import session_manager as neko_session_manager  # noqa: E402
+from NeKo.src import helpers as neko_helpers  # noqa: E402
 
 mcp = neko_server.mcp
+session_manager = neko_session_manager.session_manager
 
 
 def _run(coroutine: Coroutine[Any, Any, Any]) -> Any:
@@ -102,6 +94,26 @@ async def _call_tool(name: str, arguments: dict[str, Any] | None = None) -> Any:
 async def _list_tools() -> Any:
     async with Client(mcp) as client:
         return await client.list_tools()
+
+
+async def _list_prompts() -> Any:
+    async with Client(mcp) as client:
+        return await client.list_prompts()
+
+
+async def _get_prompt(name: str) -> Any:
+    async with Client(mcp) as client:
+        return await client.get_prompt(name)
+
+
+async def _list_resources() -> Any:
+    async with Client(mcp) as client:
+        return await client.list_resources()
+
+
+async def _list_resource_templates() -> Any:
+    async with Client(mcp) as client:
+        return await client.list_resource_templates()
 
 
 async def _read_resource(uri: str) -> Any:
@@ -433,6 +445,38 @@ def test_neko_guidance_prefers_typed_handoff_for_maboss_transfer() -> None:
     assert "export_network(format='bnet')" in neko_server.NEKO_AGENT_MANUAL
 
 
+def test_neko_prompt_and_resources_publish_exact_contracts() -> None:
+    prompts = _run(_list_prompts()).prompts
+    resources = _run(_list_resources()).resources
+    templates = _run(_list_resource_templates()).resource_templates
+    rendered_prompt = _run(_get_prompt("neko_workflow_prompt"))
+    manual = _run(_read_resource("docs://neko/agent_manual"))
+
+    assert len(prompts) == 1
+    assert prompts[0].name == "neko_workflow_prompt"
+    assert prompts[0].title == "NeKo modelling workflow"
+    assert prompts[0].arguments == []
+
+    assert len(resources) == 1
+    assert str(resources[0].uri) == "docs://neko/agent_manual"
+    assert resources[0].name == "NeKo Agent Operations Manual"
+    assert resources[0].title == "NeKo agent operations manual"
+    assert resources[0].mime_type == "text/markdown"
+
+    assert len(templates) == 1
+    assert str(templates[0].uri_template) == (
+        "neko://session/{session_id}/history"
+    )
+    assert templates[0].name == "Network History"
+    assert templates[0].title == "NeKo network history"
+    assert templates[0].mime_type == "text/html"
+
+    expected = neko_server.NEKO_AGENT_MANUAL
+    assert rendered_prompt.messages[0].content.text == expected
+    assert manual.contents[0].mime_type == "text/markdown"
+    assert manual.contents[0].text == expected
+
+
 def test_scientific_tools_publish_named_structured_output_schemas() -> None:
     listed_tools = _run(_list_tools())
     tools = {tool.name: tool for tool in listed_tools.tools}
@@ -442,6 +486,7 @@ def test_scientific_tools_publish_named_structured_output_schemas() -> None:
         "list_genes_and_interactions": "NeKoNetworkInventoryResult",
         "find_paths": "NeKoPathSearchResult",
         "analyze_connectivity": "NeKoConnectivityResult",
+        "analyze_gene_set": "NeKoGeneSetAnalysisResult",
         "get_references": "NeKoReferenceQueryResult",
         "filter_interactions": "NeKoInteractionFilterResult",
         "preview_connection_impact": "NeKoConnectionPreviewResult",
@@ -762,6 +807,134 @@ def test_filter_interactions_returns_typed_records_and_valid_json() -> None:
     assert json.loads(empty_result.content[0].text) == []
     assert empty_result.structured_content["total_match_count"] == 0
     assert empty_result.structured_content["interactions"] == []
+
+
+def test_filter_interactions_supports_internal_and_boundary_node_sets() -> None:
+    edges = pd.DataFrame(
+        [
+            {"source": "TP53", "target": "MDM2", "Effect": "inhibition"},
+            {"source": "MDM2", "target": "AKT1", "Effect": "stimulation"},
+            {"source": "EGFR", "target": "AKT1", "Effect": "stimulation"},
+        ]
+    )
+    network = _network_stub(
+        nodes=pd.DataFrame(
+            [
+                {"Uniprot": "P04637", "Genesymbol": "TP53"},
+                {"Uniprot": "Q00987", "Genesymbol": "MDM2"},
+                {"Uniprot": "P31749", "Genesymbol": "AKT1"},
+                {"Uniprot": "P00533", "Genesymbol": "EGFR"},
+            ]
+        ),
+        convert_edgelist_into_genesymbol=lambda: edges.copy(),
+    )
+    session_id = _create_session(network)
+
+    internal = _run(
+        _call_tool(
+            "filter_interactions",
+            {
+                "session_id": session_id,
+                "nodes": ["TP53", "MDM2"],
+                "node_scope": "internal",
+                "format": "json",
+            },
+        )
+    )
+    boundary = _run(
+        _call_tool(
+            "filter_interactions",
+            {
+                "session_id": session_id,
+                "nodes": ["P04637", "MDM2"],
+                "node_scope": "boundary",
+                "format": "json",
+            },
+        )
+    )
+
+    assert internal.is_error is False
+    assert internal.structured_content["node_scope"] == "internal"
+    assert internal.structured_content["total_match_count"] == 1
+    assert internal.structured_content["interactions"] == [
+        {"source": "TP53", "target": "MDM2", "effect": "inhibition"}
+    ]
+    assert boundary.is_error is False
+    assert boundary.structured_content["node_scope"] == "boundary"
+    assert boundary.structured_content["total_match_count"] == 1
+    assert boundary.structured_content["interactions"] == [
+        {"source": "MDM2", "target": "AKT1", "effect": "stimulation"}
+    ]
+
+
+def test_analyze_gene_set_reports_induced_components_and_boundary_edges() -> None:
+    edges = pd.DataFrame(
+        [
+            {"source": "TP53", "target": "MDM2", "Effect": "inhibition"},
+            {"source": "MDM2", "target": "COMPLEX:X", "Effect": "stimulation"},
+            {"source": "COMPLEX:Y", "target": "AKT1", "Effect": "stimulation"},
+            {"source": "COMPLEX:X", "target": "COMPLEX:Y", "Effect": "stimulation"},
+        ]
+    )
+    network = _network_stub(
+        nodes=pd.DataFrame(
+            [
+                {"Uniprot": "P04637", "Genesymbol": "TP53"},
+                {"Uniprot": "Q00987", "Genesymbol": "MDM2"},
+                {"Uniprot": "P31749", "Genesymbol": "AKT1"},
+                {"Uniprot": "COMPLEX:X", "Genesymbol": "COMPLEX:X"},
+                {"Uniprot": "COMPLEX:Y", "Genesymbol": "COMPLEX:Y"},
+            ]
+        ),
+        convert_edgelist_into_genesymbol=lambda: edges.copy(),
+    )
+    session_id = _create_session(network)
+
+    result = _run(
+        _call_tool(
+            "analyze_gene_set",
+            {
+                "session_id": session_id,
+                "genes": ["p04637", "MDM2", "AKT1", "MISSING"],
+                "connectivity": "weak",
+                "verbosity": "full",
+                "format": "json",
+            },
+        )
+    )
+
+    assert result.is_error is False
+    payload = result.structured_content
+    assert json.loads(result.content[0].text) == payload
+    assert payload["resolved_genes"] == ["TP53", "MDM2", "AKT1"]
+    assert payload["missing_genes"] == ["MISSING"]
+    assert payload["internal_edge_count"] == 1
+    assert payload["boundary_edge_count"] == 2
+    assert payload["induced_isolates"] == ["AKT1"]
+    assert payload["component_count"] == 2
+    assert payload["largest_component_size"] == 2
+    assert payload["components"] == [
+        {"component_id": 0, "size": 2, "genes": ["MDM2", "TP53"]},
+        {"component_id": 1, "size": 1, "genes": ["AKT1"]},
+    ]
+    assert payload["boundary_edges"] == [
+        {"source": "MDM2", "target": "COMPLEX:X", "effect": "stimulation"},
+        {"source": "COMPLEX:Y", "target": "AKT1", "effect": "stimulation"},
+    ]
+
+    strong_result = _run(
+        _call_tool(
+            "analyze_gene_set",
+            {
+                "session_id": session_id,
+                "genes": ["TP53", "MDM2", "AKT1"],
+                "connectivity": "strong",
+            },
+        )
+    )
+    assert strong_result.is_error is False
+    assert strong_result.structured_content["component_count"] == 3
+    assert strong_result.structured_content["largest_component_size"] == 1
 
 
 def test_component_output_contains_complete_gene_symbol_membership() -> None:
@@ -1275,6 +1448,16 @@ def test_unknown_default_session_is_tool_error() -> None:
     assert "Session not found: missing-session" in result.content[0].text
 
 
+def test_unknown_explicit_tool_session_does_not_create_fallback() -> None:
+    result = _run(
+        _call_tool("status", {"session_id": "missing-session"})
+    )
+
+    assert result.is_error is True
+    assert "Unknown NeKo session: missing-session" in result.content[0].text
+    assert session_manager.list_sessions() == {}
+
+
 def test_network_guard_is_tool_error() -> None:
     session_id = _create_session()
 
@@ -1758,6 +1941,7 @@ def test_session_locking_preserves_public_tool_schemas() -> None:
         "remove_undefined_interactions",
         "list_bnet_files",
         "analyze_connectivity",
+        "analyze_gene_set",
         "get_references",
         "set_default_params",
         "filter_interactions",
@@ -1814,6 +1998,7 @@ def test_all_neko_tools_publish_safety_annotations() -> None:
         "compare_network_states",
         "list_bnet_files",
         "analyze_connectivity",
+        "analyze_gene_set",
         "get_references",
         "filter_interactions",
         "list_sessions",
@@ -1872,6 +2057,8 @@ def test_all_neko_tools_publish_safety_annotations() -> None:
     open_world = read_only_open | non_idempotent_open | destructive_open
 
     for tool_name, tool in tools.items():
+        assert tool.title is not None
+        assert tool.output_schema is not None
         annotations = tool.annotations
         assert annotations is not None
         assert annotations.read_only_hint is (tool_name in read_only)
@@ -1958,6 +2145,17 @@ def test_neko_tool_schemas_publish_stable_enums_and_bounds() -> None:
     filter_schema = tools["filter_interactions"].input_schema["properties"]
     assert filter_schema["format"]["enum"] == ["markdown", "json"]
     assert filter_schema["max_rows"]["minimum"] == 1
+    assert filter_schema["nodes"]["anyOf"][0]["minItems"] == 1
+    assert filter_schema["node_scope"]["enum"] == [
+        "incident",
+        "internal",
+        "boundary",
+    ]
+
+    gene_set_schema = tools["analyze_gene_set"].input_schema["properties"]
+    assert gene_set_schema["genes"]["minItems"] == 1
+    assert gene_set_schema["connectivity"]["enum"] == ["weak", "strong"]
+    assert gene_set_schema["max_rows"]["minimum"] == 1
 
     candidate_schema = tools["preview_connection_impact"].input_schema["properties"]
     assert candidate_schema["method"]["enum"] == [
@@ -2235,6 +2433,7 @@ def test_list_bnet_files_does_not_create_artifact_directory(
         "remove_undefined_interactions",
         "list_bnet_files",
         "analyze_connectivity",
+        "analyze_gene_set",
         "get_references",
         "set_default_params",
         "filter_interactions",

@@ -1,37 +1,28 @@
-import inspect
 import logging
-import math
 import os
-import sys
 import tempfile
-from functools import wraps
-from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
-from typing import Annotated, Literal
-
-# Make the repo root importable so we can use the shared artifact_manager
-sys.path.insert(0, str(Path(__file__).parent.parent))
+from typing import Annotated
 
 import io
 
 import anyio
-import maboss
 import matplotlib.pyplot as plt
 import pandas as pd
-from mcp.server.mcpserver import Context, Image, MCPServer
-from mcp.server.mcpserver.exceptions import ResourceNotFoundError
-from mcp.types import CallToolResult, TextContent, ToolAnnotations
-from pydantic import BaseModel, ConfigDict, Field
-from session_manager import ensure_session, session_manager
+from mcp.server.mcpserver import Context, Image
+from mcp.types import CallToolResult, TextContent
+from pydantic import Field
 
-from artifact_manager import (
+from mcp_biomodelling_servers.artifact_manager import (
     clean_artifacts,
     get_artifact_dir,
     list_artifacts,
     safe_artifact_path,
     write_session_meta,
 )
-from artifact_manager import list_artifact_sessions as _list_artifact_sessions_on_disk
+from mcp_biomodelling_servers.artifact_manager import (
+    list_artifact_sessions as _list_artifact_sessions_on_disk,
+)
 from mcp_biomodelling_servers import __version__
 from mcp_biomodelling_servers.handoff import (
     HandoffNetwork,
@@ -62,733 +53,101 @@ from mcp_biomodelling_servers.structured_outputs import (
     artifact_file_summary,
     structured_report,
 )
-from scientific_outputs import (
-    MaBoSSInitialStateGroup,
+from .app import mcp
+from .contracts import (
+    DESTRUCTIVE as _DESTRUCTIVE_TOOL,
+    IDEMPOTENT as _IDEMPOTENT_TOOL,
+    IDEMPOTENT_DESTRUCTIVE as _IDEMPOTENT_DESTRUCTIVE_TOOL,
+    NON_IDEMPOTENT as _NON_IDEMPOTENT_TOOL,
+    READ_ONLY as _READ_ONLY_TOOL,
+    HandoffArtifactPrefix,
+    InitialStateProbabilitySpecification,
+    MaBoSSParameterUpdates,
+    MutationState,
+    NonEmptyString,
+)
+from .guidance import MABOSS_AGENT_MANUAL, MABOSS_SERVER_INSTRUCTIONS
+from .external import pymaboss as maboss
+from .locking import (
+    resource_session_locked as _resource_session_locked,
+    session_locked as _session_locked,
+)
+from .services.artifacts import (
+    link_artifact_without_overwrite as _link_artifact_without_overwrite,
+    require_unused_artifact_paths as _require_unused_artifact_paths,
+    rollback_artifacts as _rollback_artifacts,
+)
+from .services.handoff import (
+    handoff_parameters as _handoff_parameters,
+    maboss_package_version as _maboss_package_version,
+)
+from .services.formatting import clean_for_markdown
+from .services.normalization import (
+    initial_state_groups as _initial_state_groups,
+    logical_rule_records as _logical_rule_records,
+    mutation_records as _mutation_records,
+    normalize_initial_state_probabilities as _normalize_initial_state_probabilities,
+    parameter_records as _parameter_records,
+    scientific_table as _scientific_table,
+)
+from .scientific_outputs import (
     MaBoSSInitialStateResult,
-    MaBoSSLogicalRuleRecord,
     MaBoSSLogicalRulesResult,
     MaBoSSMutationListResult,
     MaBoSSMutationRecord,
     MaBoSSMutationSimulationResult,
     MaBoSSNodeListResult,
-    MaBoSSParameterRecord,
     MaBoSSParameterResult,
-    MaBoSSScientificTable,
     MaBoSSSimulationResult,
     MaBoSSSimulationRunResult,
-    MaBoSSStateProbabilityRecord,
     MaBoSSTrajectoryPlotResult,
 )
+from .session_manager import ensure_session, session_manager
+from .tools.guidance import (
+    maboss_agent_manual_resource,
+    maboss_workflow_prompt,
+)
+from .tools.resources import (
+    resource_initial_state,
+    resource_logical_rules,
+    resource_mutations,
+    resource_network_nodes,
+    resource_parameters,
+    resource_simulation_result,
+)
+
+__all__ = [
+    "MABOSS_AGENT_MANUAL",
+    "MABOSS_SERVER_INSTRUCTIONS",
+    "maboss_agent_manual_resource",
+    "maboss_workflow_prompt",
+    "mcp",
+    "resource_initial_state",
+    "resource_logical_rules",
+    "resource_mutations",
+    "resource_network_nodes",
+    "resource_parameters",
+    "resource_simulation_result",
+]
 
 logger = logging.getLogger(__name__)
 
-MABOSS_SERVER_INSTRUCTIONS = (
-    "Create a session before loading or simulating a Boolean model, and pass "
-    "`session_id` explicitly when working with multiple models. Use "
-    "`import_neko_handoff` for a typed NeKo transfer, then inspect node names "
-    "and restrict output nodes to the smallest biologically meaningful set "
-    "before `run_simulation()` to control the exponential state space. Use "
-    "`export_maboss_handoff` for a provenance-preserving PhysiCell transfer. "
-    "Read `docs://maboss/agent_manual` or use `maboss_workflow_prompt` for the "
-    "complete workflow."
-)
-
-mcp = MCPServer(
-    "MaBoSS",
-    title="MaBoSS Boolean Model Simulator",
-    description=(
-        "Configure, simulate, analyze, and visualize Boolean models with MaBoSS."
-    ),
-    instructions=MABOSS_SERVER_INSTRUCTIONS,
-    version=__version__,
-)
-
 _SERVER_ROOT = Path(__file__).parent
-
-NonEmptyString = Annotated[
-    str,
-    Field(
-        min_length=1,
-        pattern=r".*\S.*",
-        description="A non-empty string containing at least one non-whitespace character.",
-    ),
-]
-MutationState = Literal["ON", "OFF", "WT"]
-HandoffArtifactPrefix = Annotated[
-    str,
-    Field(
-        min_length=1,
-        max_length=128,
-        pattern=r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9_-])?$",
-        description=(
-            "Safe basename prefix for handoff artifacts. Directory components "
-            "and a trailing dot are forbidden."
-        ),
-    ),
-]
-
-_READ_ONLY_TOOL = ToolAnnotations(
-    read_only_hint=True,
-    destructive_hint=False,
-    idempotent_hint=True,
-    open_world_hint=False,
-)
-_IDEMPOTENT_TOOL = ToolAnnotations(
-    read_only_hint=False,
-    destructive_hint=False,
-    idempotent_hint=True,
-    open_world_hint=False,
-)
-_NON_IDEMPOTENT_TOOL = ToolAnnotations(
-    read_only_hint=False,
-    destructive_hint=False,
-    idempotent_hint=False,
-    open_world_hint=False,
-)
-_DESTRUCTIVE_TOOL = ToolAnnotations(
-    read_only_hint=False,
-    destructive_hint=True,
-    idempotent_hint=False,
-    open_world_hint=False,
-)
-_IDEMPOTENT_DESTRUCTIVE_TOOL = ToolAnnotations(
-    read_only_hint=False,
-    destructive_hint=True,
-    idempotent_hint=True,
-    open_world_hint=False,
-)
-
-
-class MaBoSSParameterUpdates(BaseModel):
-    """Schema for common MaBoSS parameters with support for backend extensions."""
-
-    model_config = ConfigDict(extra="allow")
-
-    sample_count: int | None = Field(default=None, ge=1)
-    max_time: float | None = Field(default=None, gt=0, allow_inf_nan=False)
-    time_tick: float | None = Field(default=None, gt=0, allow_inf_nan=False)
-    discrete_time: Literal[0, 1] | None = None
-    thread_count: int | None = Field(default=None, ge=1)
-
-
-InitialStateProbability = Annotated[
-    float,
-    Field(ge=0, le=1, allow_inf_nan=False),
-]
-SingleNodeProbabilityList = Annotated[
-    list[InitialStateProbability],
-    Field(min_length=2, max_length=2),
-]
-JointStateVector = Annotated[
-    list[Literal[0, 1]],
-    Field(min_length=1),
-]
-
-
-class MaBoSSJointStateProbability(BaseModel):
-    """One JSON-native state/probability entry for a joint distribution."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    state: JointStateVector = Field(
-        description=(
-            "Boolean state vector in the same order as the requested nodes."
-        )
-    )
-    probability: InitialStateProbability = Field(
-        description="Probability assigned to this joint Boolean state."
-    )
-
-
-JointStateProbabilityList = Annotated[
-    list[MaBoSSJointStateProbability],
-    Field(min_length=1),
-]
-InitialStateProbabilitySpecification = (
-    SingleNodeProbabilityList
-    | JointStateProbabilityList
-    | dict
-)
-
-
-def _initial_state_probability(value, *, state: object) -> float:
-    """Validate a runtime probability, including legacy direct Python calls."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(
-            f"Probability for state {state!r} must be a finite number "
-            "between 0 and 1."
-        )
-    probability = float(value)
-    if not math.isfinite(probability) or not 0 <= probability <= 1:
-        raise ValueError(
-            f"Probability for state {state!r} must be a finite number "
-            "between 0 and 1."
-        )
-    return probability
-
-
-def _initial_state_key(
-    state: object,
-    *,
-    node_count: int,
-) -> int | tuple[int, ...]:
-    """Normalize one legacy or JSON-native Boolean state."""
-    if (
-        node_count == 1
-        and not isinstance(state, bool)
-        and state in (0, 1, "0", "1")
-    ):
-        return int(state)
-
-    if not isinstance(state, (list, tuple)):
-        if isinstance(state, str):
-            raise ValueError(
-                "Multi-node initial states cannot use JSON object keys. "
-                "Provide probDict as a list of records such as "
-                "[{'state': [0, 0], 'probability': 1.0}]."
-            )
-        raise ValueError(
-            "Each multi-node initial state must be a list or tuple of 0/1 "
-            "values."
-        )
-    if len(state) != node_count:
-        raise ValueError(
-            f"Initial state {state!r} has {len(state)} values, but "
-            f"{node_count} nodes were requested."
-        )
-    if any(
-        isinstance(value, bool) or value not in (0, 1)
-        for value in state
-    ):
-        raise ValueError(
-            f"Initial state {state!r} must contain only integer 0/1 values."
-        )
-
-    normalized = tuple(int(value) for value in state)
-    return normalized[0] if node_count == 1 else normalized
-
-
-def _normalize_initial_state_probabilities(
-    nodes: str | list[str],
-    probabilities: InitialStateProbabilitySpecification,
-) -> tuple[str | list[str], list[float] | dict[int | tuple[int, ...], float]]:
-    """Validate and convert initial-state inputs to pyMaBoSS's native form."""
-    node_names = [nodes] if isinstance(nodes, str) else list(nodes)
-    if not node_names:
-        raise ValueError("At least one node must be provided.")
-    if len(node_names) != len(set(node_names)):
-        raise ValueError("Initial-state node names must be unique.")
-
-    node_count = len(node_names)
-    node_arg: str | list[str] = (
-        node_names[0] if node_count == 1 else node_names
-    )
-
-    if isinstance(probabilities, list) and all(
-        isinstance(value, (int, float)) and not isinstance(value, bool)
-        for value in probabilities
-    ):
-        if node_count != 1:
-            raise ValueError(
-                "A numeric [P(OFF), P(ON)] list can configure only one node. "
-                "For multiple nodes, provide JSON state/probability records."
-            )
-        if len(probabilities) != 2:
-            raise ValueError(
-                "A single-node probability list must contain exactly "
-                "[P(OFF), P(ON)]."
-            )
-        normalized_list = [
-            _initial_state_probability(value, state=state)
-            for state, value in enumerate(probabilities)
-        ]
-        if not math.isclose(
-            sum(normalized_list),
-            1.0,
-            rel_tol=1e-9,
-            abs_tol=1e-9,
-        ):
-            raise ValueError("Initial-state probabilities must sum to 1.")
-        return node_arg, normalized_list
-
-    entries: list[tuple[object, object]]
-    if isinstance(probabilities, list):
-        if not probabilities:
-            raise ValueError(
-                "At least one initial-state probability record is required."
-            )
-        entries = []
-        for entry in probabilities:
-            if isinstance(entry, MaBoSSJointStateProbability):
-                entries.append((entry.state, entry.probability))
-            elif isinstance(entry, dict):
-                if set(entry) != {"state", "probability"}:
-                    raise ValueError(
-                        "Each initial-state record must contain exactly "
-                        "'state' and 'probability'."
-                    )
-                entries.append((entry["state"], entry["probability"]))
-            else:
-                raise ValueError(
-                    "Joint initial-state probabilities must be records with "
-                    "'state' and 'probability' fields."
-                )
-    elif isinstance(probabilities, dict):
-        if not probabilities:
-            raise ValueError(
-                "At least one initial-state probability is required."
-            )
-        entries = list(probabilities.items())
-    else:
-        raise ValueError(
-            "probDict must be [P(OFF), P(ON)], a legacy state mapping, or "
-            "a JSON-native list of state/probability records."
-        )
-
-    normalized_mapping: dict[int | tuple[int, ...], float] = {}
-    for state, value in entries:
-        normalized_state = _initial_state_key(
-            state,
-            node_count=node_count,
-        )
-        if normalized_state in normalized_mapping:
-            raise ValueError(
-                f"Initial state {state!r} is specified more than once."
-            )
-        normalized_mapping[normalized_state] = _initial_state_probability(
-            value,
-            state=state,
-        )
-
-    if not math.isclose(
-        sum(normalized_mapping.values()),
-        1.0,
-        rel_tol=1e-9,
-        abs_tol=1e-9,
-    ):
-        raise ValueError("Initial-state probabilities must sum to 1.")
-
-    return node_arg, normalized_mapping
-
-
-def _scientific_scalar(value):
-    """Convert a dataframe/backend scalar into a strict JSON-safe value."""
-    if value is None:
-        return None
-    try:
-        if bool(pd.isna(value)):
-            return None
-    except (TypeError, ValueError):
-        pass
-    if hasattr(value, "item"):
-        try:
-            value = value.item()
-        except (TypeError, ValueError):
-            pass
-    if isinstance(value, (str, bool, int)):
-        return value
-    if isinstance(value, float):
-        return value if math.isfinite(value) else str(value)
-    return str(value)
-
-
-def _scientific_table(df: pd.DataFrame) -> MaBoSSScientificTable:
-    """Preserve dataframe values and index without embedding them in Markdown."""
-    return MaBoSSScientificTable(
-        columns=[str(column) for column in df.columns],
-        index_name=(
-            str(df.index.name)
-            if df.index.name is not None
-            else None
-        ),
-        index=[_scientific_scalar(value) for value in df.index.tolist()],
-        row_count=len(df),
-        column_count=len(df.columns),
-        rows=[
-            [_scientific_scalar(value) for value in row]
-            for row in df.itertuples(index=False, name=None)
-        ],
-    )
-
-
-def _initial_state_groups(initial_state) -> list[MaBoSSInitialStateGroup]:
-    """Normalize tuple-keyed pyMaBoSS initial states into JSON records."""
-    groups = []
-    for binding, distribution in initial_state.items():
-        nodes = (
-            [str(node) for node in binding]
-            if isinstance(binding, (list, tuple))
-            else [str(binding)]
-        )
-        probabilities = []
-        for state, probability in distribution.items():
-            state_values = (
-                [int(value) for value in state]
-                if isinstance(state, (list, tuple))
-                else [int(state)]
-            )
-            normalized_probability = _scientific_scalar(probability)
-            if isinstance(normalized_probability, bool):
-                probability_value = float(normalized_probability)
-            elif isinstance(normalized_probability, (int, float)):
-                probability_value = float(normalized_probability)
-            elif isinstance(normalized_probability, str):
-                probability_value = normalized_probability
-            else:
-                raise ValueError(
-                    "Initial-state probabilities cannot be missing."
-                )
-            probabilities.append(
-                MaBoSSStateProbabilityRecord(
-                    state=state_values,
-                    probability=probability_value,
-                )
-            )
-        groups.append(
-            MaBoSSInitialStateGroup(
-                nodes=nodes,
-                probabilities=probabilities,
-            )
-        )
-    return groups
-
-
-def _logical_rule_records(logical_rules) -> list[MaBoSSLogicalRuleRecord]:
-    """Normalize pyMaBoSS's logical-rule mapping."""
-    return [
-        MaBoSSLogicalRuleRecord(node=str(node), rule=str(rule))
-        for node, rule in logical_rules.items()
-    ]
-
-
-def _mutation_records(mutations) -> list[MaBoSSMutationRecord]:
-    """Normalize pyMaBoSS's mutation mapping."""
-    return [
-        MaBoSSMutationRecord(node=str(node), state=str(state))
-        for node, state in mutations.items()
-    ]
-
-
-def _parameter_records(parameters) -> list[MaBoSSParameterRecord]:
-    """Normalize current MaBoSS parameters while preserving scalar types."""
-    return [
-        MaBoSSParameterRecord(
-            name=str(name),
-            value=_scientific_scalar(value),
-        )
-        for name, value in parameters.items()
-    ]
-
-
-def _maboss_package_version() -> str:
-    """Return the installed pyMaBoSS distribution version for provenance."""
-    try:
-        return package_version("maboss")
-    except PackageNotFoundError as exc:
-        raise RuntimeError(
-            "Cannot export a handoff because the installed `maboss` package "
-            "version is unavailable."
-        ) from exc
-
-
-def _handoff_parameters(parameters) -> dict[str, bool | int | float | str | None]:
-    """Return exact portable scalar parameters for a handoff manifest."""
-    normalized = {}
-    for raw_name, raw_value in parameters.items():
-        name = str(raw_name).strip()
-        if not name:
-            raise ValueError(
-                "MaBoSS contains an empty parameter name that cannot be exported."
-            )
-        if name in normalized:
-            raise ValueError(
-                f"MaBoSS parameter names collapse to duplicate key {name!r}."
-            )
-
-        value = raw_value
-        if hasattr(value, "item"):
-            try:
-                value = value.item()
-            except (TypeError, ValueError):
-                pass
-        if value is None or isinstance(value, (bool, int, str)):
-            normalized[name] = value
-        elif isinstance(value, float):
-            if not math.isfinite(value):
-                raise ValueError(
-                    f"MaBoSS parameter {name!r} must be finite for handoff."
-                )
-            normalized[name] = value
-        else:
-            raise ValueError(
-                f"MaBoSS parameter {name!r} has unsupported non-scalar type "
-                f"{type(value).__name__!r}."
-            )
-    return normalized
-
-
-def _require_unused_artifact_paths(paths: list[Path]) -> None:
-    """Reject a handoff prefix when any destination already exists."""
-    existing = [path for path in paths if path.exists()]
-    if existing:
-        raise FileExistsError(
-            "Refusing to overwrite existing MaBoSS handoff artifacts: "
-            + ", ".join(str(path) for path in existing)
-            + ". Choose a different artifact_prefix."
-        )
-
-
-def _link_artifact_without_overwrite(source: Path, destination: Path) -> None:
-    """Atomically publish one complete temporary artifact if absent."""
-    if not source.is_file():
-        raise FileNotFoundError(
-            f"Expected temporary handoff artifact was not created: {source}"
-        )
-    try:
-        os.link(source, destination)
-    except FileExistsError as exc:
-        raise FileExistsError(
-            "Refusing to overwrite a MaBoSS handoff artifact created "
-            f"concurrently: {destination}"
-        ) from exc
-
-
-def _rollback_artifacts(paths: list[Path]) -> None:
-    """Best-effort cleanup for an incomplete multi-file handoff."""
-    for path in reversed(paths):
-        try:
-            path.unlink(missing_ok=True)
-        except OSError:
-            logger.warning(
-                "Could not roll back incomplete handoff artifact %s",
-                path,
-                exc_info=True,
-            )
-
-
-def _session_locked(handler):
-    """Run a synchronous handler under its session's exclusive lease."""
-    signature = inspect.signature(handler)
-
-    @wraps(handler)
-    def locked_handler(*args, **kwargs):
-        arguments = signature.bind_partial(*args, **kwargs).arguments
-        with session_manager.session_scope(arguments.get("session_id")):
-            return handler(*args, **kwargs)
-
-    return locked_handler
-
-# ---------------------------------------------------------------------------
-# Agent manual — single source of truth for workflows and operating rules.
-# Exposed as an MCP prompt (for smart clients) and as a resource (for readers).
-# ---------------------------------------------------------------------------
-
-MABOSS_AGENT_MANUAL = """
-# MaBoSS Agent Operations Manual
-
-## 1. Recommended Workflow (in order)
-1. **Session:** `create_session()` — returns a session_id
-2. **Load a model:** Prefer `import_neko_handoff(manifest_path)` for a typed
-   NeKo transfer. For a standalone BNET, call
-   `bnet_to_bnd_and_cfg(bnet_path)` followed by `build_simulation()`.
-3. **Inspect nodes (MANDATORY):** `get_maboss_nodes()` — list ALL valid node names; always do this before any configuration step to avoid referencing non-existent nodes
-4. **Inspect parameters:** `update_maboss_parameters()` (no args) — review current defaults
-5. **Tune:** `update_maboss_parameters({"sample_count": 1000, "thread_count": 4})`
-6. **Reduce output nodes (IMPORTANT):** `set_maboss_output_nodes(["Apoptosis", "Proliferation"])` — restricts the result to only the nodes you care about. Without this, MaBoSS enumerates ALL 2^N Boolean states, which becomes exponentially expensive for large networks (>20 nodes). Always set output nodes to the smallest biologically meaningful subset before running.
-7. **Configure (optional):** `get_maboss_initial_state()` to inspect current state, then `set_maboss_initial_state(...)` if non-default probabilities are needed. For one node, use `[P(OFF), P(ON)]`. For multiple nodes, use JSON-native records such as `[{"state": [0, 0], "probability": 0.4}, {"state": [1, 0], "probability": 0.6}]`. State-vector order must match `nodes`, and probabilities must sum to 1. Only use node names returned by `get_maboss_nodes()`.
-8. **Run:** `run_simulation()` — executes the simulation and saves `result.csv` to the artifact directory
-9. **Analyse:** `get_simulation_result()` — returns the state probability table as a Markdown table
-10. **Visualise:** `visualize_network_trajectories()` — saves a PNG artifact
-11. **Mutate:** `simulate_mutation(nodes, state)` — runs a one-off mutant copy
-12. **PhysiCell handoff:** `export_maboss_handoff(target_cell_type=...)`
-    snapshots the current model, parameters, outputs, optional result, and
-    complete NeKo lineage.
-
-> **State space warning:** A network with N nodes produces up to 2^N possible Boolean states.
-> Always call `set_maboss_output_nodes` to restrict outputs before `run_simulation`.
-> For a 30-node network this reduces the result from >1 billion states to only the states
-> of the selected output nodes (typically 2-5 nodes).
-
-## 2. Tool Categories
-* **Session management:** `create_session`, `list_sessions`, `set_default_session`, `delete_session`
-* **Pipeline:** `import_neko_handoff`, `bnet_to_bnd_and_cfg`, `build_simulation`, `run_simulation`
-* **Handoff:** `import_neko_handoff`, `export_maboss_handoff`
-* **Inspection (read, no side effects):** `get_maboss_nodes`, `get_maboss_initial_state`, `get_maboss_logical_rules`, `get_maboss_mutations`, `update_maboss_parameters` (no args)
-* **Configuration:** `update_maboss_parameters`, `set_maboss_output_nodes`, `set_maboss_initial_state`
-* **Analysis:** `get_simulation_result`, `simulate_mutation`, `visualize_network_trajectories`
-* **Housekeeping:** `list_generated_files`, `clean_generated_files`
-
-## 4. Key Parameters for `update_maboss_parameters`
-| Parameter      | Type  | Description                                  |
-| -------------- | ----- | -------------------------------------------- |
-| `sample_count` | int   | Trajectories (larger = more precise, slower) |
-| `max_time`     | float | Simulation time horizon                      |
-| `time_tick`    | float | Discretisation step                          |
-| `discrete_time`| int   | 0/1 toggle for discrete time mode            |
-| `thread_count` | int   | Parallel threads (environment-dependent)     |
-
-## 5. Critical Rules
-* Always call `create_session()` before any simulation tool.
-* All file I/O is scoped to `<server>/artifacts/<session_id>/`.
-* Pass `session_id` explicitly when running multiple simulations in parallel.
-* Call `update_maboss_parameters` with no args to list all valid keys.
-* Set `thread_count` early to speed up iteration.
-* Keep an imported NeKo manifest and its BNET artifact until the MaBoSS
-  handoff has been exported; integrity is rechecked before lineage is emitted.
-* `export_maboss_bnd_cfg` is a standalone file export. Use
-  `export_maboss_handoff` when PhysiCell needs typed provenance and context.
-"""
-
-@mcp.prompt(name="maboss_workflow_prompt",
-            description="System prompt and operating manual for the MaBoSS agent.")
-def maboss_workflow_prompt() -> str:
-    return MABOSS_AGENT_MANUAL
-
-
-@mcp.resource(
-    uri="docs://maboss/agent_manual",
-    name="MaBoSS Agent Operations Manual",
-    description="Single source of truth for MaBoSS workflows, resources, tool categories, and rules.",
-    mime_type="text/markdown",
-)
-def maboss_agent_manual_resource() -> str:
-    return MABOSS_AGENT_MANUAL
 
 
 # ---------------------------------------------------------------------------
 # Read-only resources (URI templates — no side effects)
 # ---------------------------------------------------------------------------
 
-@mcp.resource(
-    uri="maboss://session/{session_id}/nodes",
-    name="Network Nodes",
-    description="Comma-separated list of node names in the loaded MaBoSS network.",
-    mime_type="text/plain",
-)
-@_session_locked
-def resource_network_nodes(session_id: str) -> str:
-    """Return the node names for the given session."""
-    sess = ensure_session(session_id)
-    if sess.sim is None:
-        raise ResourceNotFoundError(
-            "No simulation loaded. Call bnet_to_bnd_and_cfg then build_simulation first."
-        )
-    nodes_list = list(sess.sim.network.keys())
-    if not nodes_list:
-        return "No nodes found in the MaBoSS network."
-    return f"Nodes: {', '.join(nodes_list)}"
-
-
-@mcp.resource(
-    uri="maboss://session/{session_id}/parameters",
-    name="Simulation Parameters",
-    description="Current MaBoSS simulation parameters as a Markdown table. Use update_maboss_parameters to modify.",
-    mime_type="text/markdown",
-)
-@_session_locked
-def resource_parameters(session_id: str) -> str:
-    """Return current parameter table for the given session."""
-    sess = ensure_session(session_id)
-    if sess.sim is None:
-        raise ResourceNotFoundError(
-            "No simulation loaded. Call bnet_to_bnd_and_cfg then build_simulation first."
-        )
-    df = pd.DataFrame(
-        [[k, v] for k, v in sess.sim.param.items()],
-        columns=["parameter", "value"],
-    )
-    return df.to_markdown(index=False, tablefmt="plain")
-
-
-@mcp.resource(
-    uri="maboss://session/{session_id}/initial_state",
-    name="Initial State",
-    description="Initial state probability configuration of the MaBoSS simulation.",
-    mime_type="text/plain",
-)
-@_session_locked
-def resource_initial_state(session_id: str) -> str:
-    """Return the initial state for the given session."""
-    sess = ensure_session(session_id)
-    if sess.sim is None:
-        raise ResourceNotFoundError(
-            "No simulation loaded. Call bnet_to_bnd_and_cfg then build_simulation first."
-        )
-    return str(sess.sim.network.get_istate())
-
-
-@mcp.resource(
-    uri="maboss://session/{session_id}/logical_rules",
-    name="Logical Rules",
-    description="Boolean logical rules of the MaBoSS network.",
-    mime_type="text/plain",
-)
-@_session_locked
-def resource_logical_rules(session_id: str) -> str:
-    """Return the logical rules for the given session."""
-    sess = ensure_session(session_id)
-    if sess.sim is None:
-        raise ResourceNotFoundError(
-            "No simulation loaded. Call bnet_to_bnd_and_cfg then build_simulation first."
-        )
-    return str(sess.sim.get_logical_rules())
-
-
-@mcp.resource(
-    uri="maboss://session/{session_id}/mutations",
-    name="Mutations",
-    description="Mutation settings currently applied to the MaBoSS network.",
-    mime_type="text/plain",
-)
-@_session_locked
-def resource_mutations(session_id: str) -> str:
-    """Return mutation settings for the given session."""
-    sess = ensure_session(session_id)
-    if sess.sim is None:
-        raise ResourceNotFoundError(
-            "No simulation loaded. Call bnet_to_bnd_and_cfg then build_simulation first."
-        )
-    return str(sess.sim.get_mutations())
-
-
-@mcp.resource(
-    uri="maboss://session/{session_id}/result",
-    name="Simulation Result",
-    description=(
-        "Post-run state probability table as Markdown. "
-        "Columns = Boolean states (ON nodes joined by '--'); "
-        "rows = final timepoint snapshot (values sum to ~1). "
-        "Available only after run_simulation has been called."
-    ),
-    mime_type="text/markdown",
-)
-@_session_locked
-def resource_simulation_result(session_id: str) -> str:
-    """Return the last simulation result for the given session."""
-    sess = ensure_session(session_id)
-    if sess.result is None:
-        raise ResourceNotFoundError(
-            "No simulation has been run yet. Call run_simulation first."
-        )
-    df_prob = sess.result.get_last_states_probtraj()
-    if df_prob.empty:
-        return "_Simulation completed but returned no trajectory data._"
-    df_prob = clean_for_markdown(df_prob)
-    md_table = df_prob.to_markdown(index=False, tablefmt="plain")
-    return "\n".join([
-        "**MaBoSS Simulation: State Probability Trajectory**",
-        "",
-        md_table,
-    ])
-
 
 @mcp.resource(
     uri="maboss://session/{session_id}/files",
     name="Artifact Files",
+    title="MaBoSS artifact files",
     description="List of artifact files (BND, CFG, PNG, …) generated for a session.",
     mime_type="text/markdown",
 )
-@_session_locked
+@_resource_session_locked
 def resource_generated_files(session_id: str) -> str:
     """Return a Markdown list of artifact files for the given session."""
     sess = ensure_session(session_id)
@@ -802,7 +161,11 @@ def resource_generated_files(session_id: str) -> str:
 # Session management tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool(annotations=_NON_IDEMPOTENT_TOOL)
+@mcp.tool(
+    title="Create MaBoSS session",
+    annotations=_NON_IDEMPOTENT_TOOL,
+    structured_output=True,
+)
 def create_session(
     set_as_default: bool = Field(
         default=True,
@@ -827,7 +190,11 @@ def create_session(
     return f"Session created: {sid}{label_info}" + (" (set as default)" if set_as_default else "")
 
 
-@mcp.tool(annotations=_READ_ONLY_TOOL)
+@mcp.tool(
+    title="List MaBoSS sessions",
+    annotations=_READ_ONLY_TOOL,
+    structured_output=True,
+)
 def list_sessions() -> Annotated[CallToolResult, MaBoSSSessionListResult]:
     """List all active MaBoSS sessions with their simulation and result status."""
     sessions = session_manager.list_sessions()
@@ -870,7 +237,11 @@ def list_sessions() -> Annotated[CallToolResult, MaBoSSSessionListResult]:
     return structured_report("\n".join(lines), payload)
 
 
-@mcp.tool(annotations=_READ_ONLY_TOOL)
+@mcp.tool(
+    title="List MaBoSS artifact sessions",
+    annotations=_READ_ONLY_TOOL,
+    structured_output=True,
+)
 def list_artifact_sessions(
 ) -> Annotated[CallToolResult, MaBoSSArtifactSessionListResult]:
     """List all MaBoSS sessions that have artifact files on disk (including past server runs).
@@ -920,7 +291,11 @@ def list_artifact_sessions(
     return structured_report("\n".join(lines), payload)
 
 
-@mcp.tool(annotations=_IDEMPOTENT_TOOL)
+@mcp.tool(
+    title="Set default MaBoSS session",
+    annotations=_IDEMPOTENT_TOOL,
+    structured_output=True,
+)
 def set_default_session(
     session_id: Annotated[
         NonEmptyString,
@@ -933,7 +308,11 @@ def set_default_session(
     raise ValueError(f"Session not found: {session_id}")
 
 
-@mcp.tool(annotations=_DESTRUCTIVE_TOOL)
+@mcp.tool(
+    title="Delete MaBoSS session",
+    annotations=_DESTRUCTIVE_TOOL,
+    structured_output=True,
+)
 def delete_session(
     session_id: Annotated[
         NonEmptyString,
@@ -963,7 +342,11 @@ def delete_session(
 # Pipeline tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool(annotations=_NON_IDEMPOTENT_TOOL)
+@mcp.tool(
+    title="Import NeKo handoff",
+    annotations=_NON_IDEMPOTENT_TOOL,
+    structured_output=True,
+)
 @_session_locked
 def import_neko_handoff(
     manifest_path: Annotated[
@@ -1159,7 +542,11 @@ def import_neko_handoff(
     return structured_report(text, payload)
 
 
-@mcp.tool(annotations=_IDEMPOTENT_TOOL)
+@mcp.tool(
+    title="Convert BNET to MaBoSS files",
+    annotations=_IDEMPOTENT_TOOL,
+    structured_output=True,
+)
 @_session_locked
 def bnet_to_bnd_and_cfg(
     bnet_path: Annotated[
@@ -1212,7 +599,11 @@ def bnet_to_bnd_and_cfg(
     return structured_report(text, payload)
 
 
-@mcp.tool(annotations=_IDEMPOTENT_TOOL)
+@mcp.tool(
+    title="Build MaBoSS simulation",
+    annotations=_IDEMPOTENT_TOOL,
+    structured_output=True,
+)
 @_session_locked
 def build_simulation(
     session_id: NonEmptyString | None = Field(
@@ -1235,6 +626,10 @@ def build_simulation(
     After loading, inspect parameters via the maboss://session/{id}/parameters
     resource, tune with update_maboss_parameters, then call run_simulation.
     """
+    if not isinstance(bnd_path, str):
+        bnd_path = None
+    if not isinstance(cfg_path, str):
+        cfg_path = None
     sess = ensure_session(session_id)
     art_dir = get_artifact_dir(_SERVER_ROOT, sess.session_id)
 
@@ -1267,7 +662,11 @@ def build_simulation(
         )
 
 
-@mcp.tool(annotations=_NON_IDEMPOTENT_TOOL)
+@mcp.tool(
+    title="Run MaBoSS simulation",
+    annotations=_NON_IDEMPOTENT_TOOL,
+    structured_output=True,
+)
 async def run_simulation(
     ctx: Context,
     session_id: NonEmptyString | None = Field(
@@ -1310,6 +709,15 @@ async def run_simulation(
                 raise RuntimeError(
                     f"Error during MaBoSS simulation run: {e}"
                 ) from e
+
+            run_error = getattr(run_result, "_err", 0)
+            if run_error:
+                sess.clear()
+                raise RuntimeError(
+                    "MaBoSS simulation process failed with exit code "
+                    f"{run_error}. No result files were produced."
+                )
+
             sess.set_result(run_result)
 
             # Persist the result table so list_generated_files shows it.
@@ -1326,12 +734,24 @@ async def run_simulation(
                     df_result.to_csv(csv_path, index=False)
                     saved_csv_path = csv_path
                     logger.info("Result saved to %s", csv_path)
+            except FileNotFoundError as csv_err:
+                sess.result = None
+                logger.exception("MaBoSS result CSV was not produced")
+                raise RuntimeError(
+                    "MaBoSS simulation finished but did not produce the "
+                    f"expected probability trajectory file: {csv_err}"
+                ) from csv_err
             except Exception as csv_err:
+                sess.result = None
                 logger.warning(
                     "Could not save result CSV: %s",
                     csv_err,
                     exc_info=True,
                 )
+                raise RuntimeError(
+                    "MaBoSS simulation finished but the result table could "
+                    f"not be read: {csv_err}"
+                ) from csv_err
             return (
                 sess.session_id,
                 row_count,
@@ -1370,7 +790,11 @@ async def run_simulation(
     )
     return structured_report(text, payload)
 
-@mcp.tool(annotations=_NON_IDEMPOTENT_TOOL)
+@mcp.tool(
+    title="Export MaBoSS BND and CFG",
+    annotations=_NON_IDEMPOTENT_TOOL,
+    structured_output=True,
+)
 @_session_locked
 def export_maboss_bnd_cfg(
     prefix: Annotated[NonEmptyString, Field(
@@ -1468,7 +892,11 @@ def export_maboss_bnd_cfg(
         raise RuntimeError(f"Error exporting MaBoSS model: {e}") from e
 
 
-@mcp.tool(annotations=_NON_IDEMPOTENT_TOOL)
+@mcp.tool(
+    title="Export MaBoSS handoff",
+    annotations=_NON_IDEMPOTENT_TOOL,
+    structured_output=True,
+)
 @_session_locked
 def export_maboss_handoff(
     target_cell_type: Annotated[
@@ -1782,7 +1210,11 @@ def export_maboss_handoff(
 # Inspection tools (read-only, no side effects)
 # ---------------------------------------------------------------------------
 
-@mcp.tool(annotations=_READ_ONLY_TOOL)
+@mcp.tool(
+    title="Get MaBoSS nodes",
+    annotations=_READ_ONLY_TOOL,
+    structured_output=True,
+)
 @_session_locked
 def get_maboss_nodes(
     session_id: NonEmptyString | None = Field(
@@ -1815,7 +1247,11 @@ def get_maboss_nodes(
     return structured_report(text, payload)
 
 
-@mcp.tool(annotations=_READ_ONLY_TOOL)
+@mcp.tool(
+    title="Get MaBoSS initial state",
+    annotations=_READ_ONLY_TOOL,
+    structured_output=True,
+)
 @_session_locked
 def get_maboss_initial_state(
     session_id: NonEmptyString | None = Field(
@@ -1845,7 +1281,11 @@ def get_maboss_initial_state(
     except Exception as e:
         raise RuntimeError(f"Error retrieving initial state: {e}") from e
 
-@mcp.tool(annotations=_READ_ONLY_TOOL)
+@mcp.tool(
+    title="Get MaBoSS logical rules",
+    annotations=_READ_ONLY_TOOL,
+    structured_output=True,
+)
 @_session_locked
 def get_maboss_logical_rules(
     session_id: NonEmptyString | None = Field(
@@ -1873,7 +1313,11 @@ def get_maboss_logical_rules(
         raise RuntimeError(f"Error retrieving logical rules: {e}") from e
 
 
-@mcp.tool(annotations=_IDEMPOTENT_TOOL)
+@mcp.tool(
+    title="Change MaBoSS logical rule",
+    annotations=_IDEMPOTENT_TOOL,
+    structured_output=True,
+)
 @_session_locked
 def change_maboss_rule(
     node: Annotated[
@@ -1974,7 +1418,11 @@ def change_maboss_rule(
         raise RuntimeError(f"Error changing MaBoSS rule: {e}") from e
 
 
-@mcp.tool(annotations=_READ_ONLY_TOOL)
+@mcp.tool(
+    title="Get MaBoSS mutations",
+    annotations=_READ_ONLY_TOOL,
+    structured_output=True,
+)
 @_session_locked
 def get_maboss_mutations(
     session_id: NonEmptyString | None = Field(
@@ -2006,7 +1454,11 @@ def get_maboss_mutations(
 # Configuration tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool(annotations=_IDEMPOTENT_TOOL)
+@mcp.tool(
+    title="Update MaBoSS parameters",
+    annotations=_IDEMPOTENT_TOOL,
+    structured_output=True,
+)
 @_session_locked
 def update_maboss_parameters(
     parameters: MaBoSSParameterUpdates | None = Field(  # noqa: B008
@@ -2088,7 +1540,11 @@ def update_maboss_parameters(
         raise RuntimeError(f"Error updating MaBoSS parameters: {e}") from e
 
 
-@mcp.tool(annotations=_IDEMPOTENT_TOOL)
+@mcp.tool(
+    title="Set MaBoSS output nodes",
+    annotations=_IDEMPOTENT_TOOL,
+    structured_output=True,
+)
 @_session_locked
 def set_maboss_output_nodes(
     output_nodes: Annotated[
@@ -2124,7 +1580,11 @@ def set_maboss_output_nodes(
         raise RuntimeError(f"Error setting MaBoSS output nodes: {e}") from e
 
 
-@mcp.tool(annotations=_IDEMPOTENT_TOOL)
+@mcp.tool(
+    title="Set MaBoSS initial state",
+    annotations=_IDEMPOTENT_TOOL,
+    structured_output=True,
+)
 @_session_locked
 def set_maboss_initial_state(
     nodes: Annotated[
@@ -2212,7 +1672,11 @@ def set_maboss_initial_state(
 # Analysis tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool(annotations=_READ_ONLY_TOOL)
+@mcp.tool(
+    title="Simulate MaBoSS mutation",
+    annotations=_READ_ONLY_TOOL,
+    structured_output=True,
+)
 async def simulate_mutation(
     ctx: Context,
     nodes: Annotated[
@@ -2349,7 +1813,11 @@ async def simulate_mutation(
     return structured_report(text, payload)
 
 
-@mcp.tool(annotations=_IDEMPOTENT_TOOL)
+@mcp.tool(
+    title="Visualize MaBoSS trajectories",
+    annotations=_IDEMPOTENT_TOOL,
+    structured_output=True,
+)
 @_session_locked
 def visualize_network_trajectories(
     session_id: NonEmptyString | None = Field(
@@ -2443,7 +1911,11 @@ def visualize_network_trajectories(
             plt.close(fig)
 
 
-@mcp.tool(annotations=_READ_ONLY_TOOL)
+@mcp.tool(
+    title="Get MaBoSS simulation result",
+    annotations=_READ_ONLY_TOOL,
+    structured_output=True,
+)
 @_session_locked
 def get_simulation_result(
     session_id: NonEmptyString | None = Field(
@@ -2490,6 +1962,12 @@ def get_simulation_result(
             trajectory=trajectory,
         )
         return structured_report(text, payload)
+    except FileNotFoundError as e:
+        raise RuntimeError(
+            "MaBoSS result files are missing from the simulation workdir. "
+            "The backend likely crashed before writing the probability "
+            f"trajectory CSV: {e}"
+        ) from e
     except Exception as e:
         raise RuntimeError(f"Error retrieving simulation result: {e}") from e
 
@@ -2498,7 +1976,11 @@ def get_simulation_result(
 # Housekeeping tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool(annotations=_READ_ONLY_TOOL)
+@mcp.tool(
+    title="List MaBoSS generated files",
+    annotations=_READ_ONLY_TOOL,
+    structured_output=True,
+)
 def list_generated_files(
     session_id: NonEmptyString | None = Field(
         default=None,
@@ -2546,7 +2028,11 @@ def list_generated_files(
     return structured_report(text, payload)
 
 
-@mcp.tool(annotations=_IDEMPOTENT_DESTRUCTIVE_TOOL)
+@mcp.tool(
+    title="Clean MaBoSS generated files",
+    annotations=_IDEMPOTENT_DESTRUCTIVE_TOOL,
+    structured_output=True,
+)
 @_session_locked
 def clean_generated_files(
     session_id: NonEmptyString | None = Field(
@@ -2573,30 +2059,6 @@ def clean_generated_files(
     except Exception as e:
         logger.exception("Error during cleanup")
         raise RuntimeError(f"Error during cleanup: {e}") from e
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-def clean_for_markdown(df: pd.DataFrame) -> pd.DataFrame:
-    """Sanitise a DataFrame for safe Markdown rendering.
-
-    Converts all cells to strings, collapses whitespace, removes 'nan' literals,
-    and drops entirely-empty rows/columns.
-    """
-    # pandas 3 preserves missing values when casting to str, so normalize only
-    # non-missing cells and replace the preserved sentinels explicitly.
-    df_str = df.map(
-        lambda val: " ".join(str(val).split()),
-        na_action="ignore",
-    ).fillna("")
-    df_str = df_str.replace("nan", "", regex=False)
-    df_str = df_str.dropna(axis=1, how="all")
-    df_str = df_str.loc[:, (df_str != "").any(axis=0)]
-    df_str = df_str.dropna(axis=0, how="all")
-    df_str = df_str.loc[(df_str != "").any(axis=1), :]
-    return df_str
 
 
 if __name__ == "__main__":

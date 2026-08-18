@@ -4,7 +4,6 @@ import asyncio
 import base64
 import inspect
 import json
-import sys
 from collections.abc import Coroutine
 from pathlib import Path
 from threading import Event
@@ -29,15 +28,18 @@ from mcp_biomodelling_servers.handoff import (
     write_handoff_manifest,
 )
 
-MABOSS_DIR = Path(__file__).parent.parent / "MaBoSS"
-sys.path.insert(0, str(MABOSS_DIR))
-
-# These imports intentionally follow the launcher-compatible sys.path setup.
-from session_manager import session_manager  # noqa: E402
-
 from MaBoSS import server as maboss_server  # noqa: E402
+from MaBoSS.session_manager import session_manager  # noqa: E402
 
 mcp = maboss_server.mcp
+
+
+def test_server_loads_external_pymaboss_without_local_package_shadowing() -> None:
+    module_path = Path(maboss_server.maboss.__file__).resolve()
+    local_package = Path(maboss_server.__file__).resolve().parent
+
+    assert local_package not in module_path.parents
+    assert callable(maboss_server.maboss.load)
 
 
 class FakeTrajectoryResult:
@@ -194,6 +196,31 @@ async def _list_tools() -> Any:
         return await client.list_tools()
 
 
+async def _list_prompts() -> Any:
+    async with Client(mcp) as client:
+        return await client.list_prompts()
+
+
+async def _get_prompt(name: str) -> Any:
+    async with Client(mcp) as client:
+        return await client.get_prompt(name)
+
+
+async def _list_resources() -> Any:
+    async with Client(mcp) as client:
+        return await client.list_resources()
+
+
+async def _list_resource_templates() -> Any:
+    async with Client(mcp) as client:
+        return await client.list_resource_templates()
+
+
+async def _read_resource(uri: str) -> Any:
+    async with Client(mcp) as client:
+        return await client.read_resource(uri)
+
+
 async def _read_resource_error(uri: str) -> MCPError:
     async with Client(mcp) as client:
         try:
@@ -229,6 +256,77 @@ def test_clean_for_markdown_handles_missing_values_across_pandas_versions() -> N
     assert cleaned.to_dict(orient="records") == [
         {"state": "A B", "probability": "0.75"},
     ]
+
+
+def test_maboss_prompt_and_resources_publish_exact_contracts() -> None:
+    prompts = _run(_list_prompts()).prompts
+    resources = _run(_list_resources()).resources
+    templates = _run(_list_resource_templates()).resource_templates
+    rendered_prompt = _run(_get_prompt("maboss_workflow_prompt"))
+    manual = _run(_read_resource("docs://maboss/agent_manual"))
+
+    assert len(prompts) == 1
+    assert prompts[0].name == "maboss_workflow_prompt"
+    assert prompts[0].title == "MaBoSS modelling workflow"
+    assert prompts[0].arguments == []
+
+    assert len(resources) == 1
+    assert str(resources[0].uri) == "docs://maboss/agent_manual"
+    assert resources[0].name == "MaBoSS Agent Operations Manual"
+    assert resources[0].title == "MaBoSS agent operations manual"
+    assert resources[0].mime_type == "text/markdown"
+
+    expected_templates = {
+        "maboss://session/{session_id}/nodes": (
+            "Network Nodes",
+            "MaBoSS network nodes",
+            "text/plain",
+        ),
+        "maboss://session/{session_id}/parameters": (
+            "Simulation Parameters",
+            "MaBoSS simulation parameters",
+            "text/markdown",
+        ),
+        "maboss://session/{session_id}/initial_state": (
+            "Initial State",
+            "MaBoSS initial state",
+            "text/plain",
+        ),
+        "maboss://session/{session_id}/logical_rules": (
+            "Logical Rules",
+            "MaBoSS logical rules",
+            "text/plain",
+        ),
+        "maboss://session/{session_id}/mutations": (
+            "Mutations",
+            "MaBoSS mutations",
+            "text/plain",
+        ),
+        "maboss://session/{session_id}/result": (
+            "Simulation Result",
+            "MaBoSS simulation result",
+            "text/markdown",
+        ),
+        "maboss://session/{session_id}/files": (
+            "Artifact Files",
+            "MaBoSS artifact files",
+            "text/markdown",
+        ),
+    }
+    actual_templates = {
+        str(template.uri_template): (
+            template.name,
+            template.title,
+            template.mime_type,
+        )
+        for template in templates
+    }
+    assert actual_templates == expected_templates
+
+    expected_manual = maboss_server.MABOSS_AGENT_MANUAL
+    assert rendered_prompt.messages[0].content.text == expected_manual
+    assert manual.contents[0].mime_type == "text/markdown"
+    assert manual.contents[0].text == expected_manual
 
 
 def _create_simulation_session(simulation: object) -> str:
@@ -655,8 +753,16 @@ def test_bnet_conversion_returns_structured_artifact_metadata(
     monkeypatch.setattr(maboss_server, "_SERVER_ROOT", tmp_path)
 
     def convert(_input: str, bnd_path: str, cfg_path: str) -> None:
-        Path(bnd_path).write_text("node A\n", encoding="utf-8")
-        Path(cfg_path).write_text("max_time = 10;\n", encoding="utf-8")
+        Path(bnd_path).write_text(
+            "node A\n",
+            encoding="utf-8",
+            newline="",
+        )
+        Path(cfg_path).write_text(
+            "max_time = 10;\n",
+            encoding="utf-8",
+            newline="",
+        )
 
     monkeypatch.setattr(
         maboss_server.maboss,
@@ -1271,6 +1377,19 @@ def test_unknown_default_session_is_tool_error() -> None:
     assert "Session not found: missing-session" in result.content[0].text
 
 
+def test_unknown_explicit_tool_session_does_not_create_fallback() -> None:
+    result = _run(
+        _call_tool(
+            "get_maboss_nodes",
+            {"session_id": "missing-session"},
+        )
+    )
+
+    assert result.is_error is True
+    assert "Unknown MaBoSS session: missing-session" in result.content[0].text
+    assert session_manager.list_sessions() == {}
+
+
 def test_run_without_simulation_is_tool_error() -> None:
     result = _run(_call_tool("run_simulation"))
 
@@ -1302,7 +1421,7 @@ def test_visualize_without_result_is_tool_error() -> None:
 def test_missing_simulation_resource_is_protocol_error() -> None:
     error = _run(_read_resource_error("maboss://session/missing-session/parameters"))
 
-    assert "No simulation loaded" in str(error)
+    assert "Unknown MaBoSS session: missing-session" in str(error)
 
 
 def test_visualize_returns_uncropped_png_and_persists_same_bytes(
@@ -1677,6 +1796,8 @@ def test_all_maboss_tools_publish_safety_annotations() -> None:
         assert annotations.idempotent_hint is (
             tool_name in read_only | idempotent | idempotent_destructive
         )
+        assert tool.title
+        assert tool.output_schema is not None
 
 
 def test_maboss_tool_schemas_constrain_common_inputs() -> None:

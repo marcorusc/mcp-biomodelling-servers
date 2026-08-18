@@ -1,0 +1,1 @@
+"""MaBoSS MCP registration modules."""

@@ -160,6 +160,14 @@ class TestNeKoSessionManager:
         mgr = self._fresh()
         assert mgr.get_session("nope") is None
 
+    def test_ensure_unknown_explicit_session_raises_without_creating(self):
+        mgr = self._fresh()
+
+        with pytest.raises(KeyError, match="Unknown NeKo session: nope"):
+            mgr.ensure_session("nope")
+
+        assert mgr.list_sessions() == {}
+
     def test_list_sessions_count(self):
         mgr = self._fresh()
         mgr.create_session()

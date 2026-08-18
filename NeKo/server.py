@@ -1,31 +1,30 @@
-import io
 import copy
-import sys
-import os
-import glob
+import io
 import json
 import logging
-import re
-import tempfile
+import os
+import sys
 from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
 from threading import Lock
-from typing import Annotated, Literal, Optional, List
-from pydantic import BeforeValidator, Field
+from typing import Annotated, List, Optional
 
 import anyio
-from neko.core.network import Network
+import pandas as pd
 from neko._outputs.exports import Exports
-from neko.inputs import Universe, signor
+from neko.core.network import Network
 from neko.core.tools import is_connected
+from neko.inputs import signor
+from pydantic import Field
 
-from utils import *
-from session_manager import session_manager, ensure_session, normalize_verbosity, DEFAULT_VERBOSITY
-
-# Make the repo root importable so we can use the shared artifact_manager
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from artifact_manager import safe_artifact_path, list_artifacts, clean_artifacts, write_session_meta, list_artifact_sessions as _list_artifact_sessions_on_disk
 from mcp_biomodelling_servers import __version__
+from mcp_biomodelling_servers.artifact_manager import (
+    clean_artifacts,
+    list_artifact_sessions as _list_artifact_sessions_on_disk,
+    list_artifacts,
+    safe_artifact_path,
+    write_session_meta,
+)
 from mcp_biomodelling_servers.handoff import (
     HandoffNetwork,
     HandoffPackage,
@@ -36,44 +35,6 @@ from mcp_biomodelling_servers.handoff import (
     handoff_artifact,
     write_handoff_manifest,
 )
-
-from src.helpers import (
-    E_NO_NET, SUMMARY_HINT, _SERVER_ROOT,
-    _short_table, _export_dir, _session_network, _invalidate,
-    _compute_components, requires_network, session_locked,
-    sanitize_bnet_file, _get_translators
-)
-from src.history import (
-    HistoryNavigationResult,
-    HistoryRetentionResult,
-    NetworkHistorySummary,
-    NetworkStateComparison,
-    compare_history_states,
-    state_ids,
-    summarize_history,
-)
-from src.structured_outputs import (
-    NeKoComponentRecord,
-    NeKoConnectionPreviewResult,
-    NeKoConnectivityResult,
-    NeKoConnectorSimulation,
-    NeKoHubCandidate,
-    NeKoInteractionFilterResult,
-    NeKoInteractionRecord,
-    NeKoNetworkInventoryResult,
-    NeKoNetworkStatusResult,
-    NeKoNodeRecord,
-    NeKoPathSearchResult,
-    NeKoReferencedInteractionRecord,
-    NeKoReferenceQueryResult,
-)
-
-import pandas as pd
-
-
-from mcp.server.mcpserver import Context, MCPServer
-from mcp.server.mcpserver.exceptions import ResourceNotFoundError
-from mcp.types import CallToolResult, ToolAnnotations
 from mcp_biomodelling_servers.structured_outputs import (
     ArtifactSessionSummary,
     NeKoArtifactCleanupResult,
@@ -86,260 +47,119 @@ from mcp_biomodelling_servers.structured_outputs import (
     structured_report,
 )
 
+from .app import mcp
+from .contracts import (
+    AtopoStrategy,
+    BridgeMode,
+    Database,
+    DESTRUCTIVE_IDEMPOTENT_CLOSED as _DESTRUCTIVE_IDEMPOTENT_CLOSED,
+    DESTRUCTIVE_NON_IDEMPOTENT_CLOSED as _DESTRUCTIVE_NON_IDEMPOTENT_CLOSED,
+    DESTRUCTIVE_NON_IDEMPOTENT_OPEN as _DESTRUCTIVE_NON_IDEMPOTENT_OPEN,
+    GlobalStrategy,
+    HandoffArtifactPrefix,
+    IDEMPOTENT_CLOSED as _IDEMPOTENT_CLOSED,
+    NON_IDEMPOTENT_CLOSED as _NON_IDEMPOTENT_CLOSED,
+    NON_IDEMPOTENT_OPEN as _NON_IDEMPOTENT_OPEN,
+    NonEmptyString,
+    NonEmptyStringList,
+    NormalizedConnectorMethod,
+    NormalizedExportFormat,
+    NormalizedInteractionNodeScope,
+    NormalizedVerbosity,
+    OutputFormat,
+    PathPolicy,
+    RadialDirection,
+    READ_ONLY_CLOSED as _READ_ONLY_CLOSED,
+    READ_ONLY_OPEN as _READ_ONLY_OPEN,
+    ReusePolicy,
+    TargetStrategy,
+)
+from .guidance import NEKO_AGENT_MANUAL, NEKO_SERVER_INSTRUCTIONS
+from .services.exporting import export_sanitized_bnet
+from .services.network_analysis import (
+    edge_degrees as _edge_degrees,
+    interaction_records as _interaction_records,
+    node_records as _node_records,
+    optional_text as _optional_text,
+    partition_gene_set_edges as _partition_gene_set_edges,
+    reference_list as _reference_list,
+    referenced_interaction_records as _referenced_interaction_records,
+    required_text as _required_text,
+    resolve_requested_genes as _resolve_requested_genes,
+)
+from .session_manager import (
+    DEFAULT_VERBOSITY,
+    ensure_session,
+    normalize_verbosity,
+    session_manager,
+)
+from .src.helpers import (
+    E_NO_NET,
+    SUMMARY_HINT,
+    _SERVER_ROOT,
+    _export_dir,
+    _get_translators,
+    _invalidate,
+    _session_network,
+    _short_table,
+    requires_network,
+    sanitize_bnet_file,
+    session_locked,
+)
+from .src.structured_outputs import (
+    NeKoConnectionPreviewResult,
+    NeKoConnectorSimulation,
+    NeKoHubCandidate,
+    NeKoInteractionFilterResult,
+    NeKoNetworkInventoryResult,
+    NeKoNetworkStatusResult,
+    NeKoPathSearchResult,
+    NeKoReferenceQueryResult,
+)
+from .tools.analysis import analyze_connectivity, analyze_gene_set
+from .tools.guidance import (
+    neko_agent_manual_resource,
+    neko_workflow_prompt,
+)
+from .tools.history import (
+    compare_network_states,
+    list_network_history,
+    navigate_network_history,
+    network_history_resource,
+    set_network_history_limit,
+)
+from .utils import (
+    clean_for_markdown,
+    format_connectivity_guidance,
+    format_empty_network_response,
+    format_network_creation_error,
+    format_no_input_guidance,
+    format_no_network_guidance,
+    format_unsupported_format_guidance,
+)
+
+from mcp.server.mcpserver import Context
+from mcp.types import CallToolResult
+
 logger = logging.getLogger(__name__)
 _stdout_capture_lock = Lock()
 
-NEKO_SERVER_INSTRUCTIONS = (
-    "Create a session before building a signalling network, and pass "
-    "`session_id` explicitly when working with multiple networks. Run "
-    "`preview_connection_impact()` before applying expensive connection "
-    "strategies, inspect network history after topology changes, and prefer "
-    "`verbosity='summary'` during iterative work. Export with `format='bnet'` "
-    "for a standalone Boolean file, or use `export_neko_handoff` to preserve "
-    "typed MaBoSS provenance. Read `docs://neko/agent_manual` or use "
-    "`neko_workflow_prompt` for the complete workflow."
-)
-
-mcp = MCPServer(
-    "NeKo",
-    title="NeKo Signalling Network Builder",
-    description=(
-        "Build and analyze signalling networks from biological interaction databases."
-    ),
-    instructions=NEKO_SERVER_INSTRUCTIONS,
-    version=__version__,
-)
-
-NonEmptyString = Annotated[
-    str,
-    Field(
-        min_length=1,
-        pattern=r".*\S.*",
-        description="A non-empty string containing at least one non-whitespace character.",
-    ),
+# Compatibility facade for callers and tests that imported handlers directly
+# from NeKo.server before registration was split into focused modules.
+__all__ = [
+    "NEKO_AGENT_MANUAL",
+    "NEKO_SERVER_INSTRUCTIONS",
+    "analyze_connectivity",
+    "analyze_gene_set",
+    "compare_network_states",
+    "list_network_history",
+    "mcp",
+    "navigate_network_history",
+    "neko_agent_manual_resource",
+    "neko_workflow_prompt",
+    "network_history_resource",
+    "set_network_history_limit",
 ]
-NonEmptyStringList = Annotated[List[NonEmptyString], Field(min_length=1)]
-
-
-def _lower_string(value):
-    """Normalize values whose existing public contract is case-insensitive."""
-    return value.lower() if isinstance(value, str) else value
-
-
-Database = Literal["omnipath", "signor"]
-PathPolicy = Literal["one_shortest", "all_shortest", "all_bounded"]
-ReusePolicy = Literal["none", "discovered_paths", "induced_subgraph"]
-NormalizedVerbosity = Annotated[
-    Literal["summary", "preview", "full"],
-    BeforeValidator(_lower_string),
-]
-NormalizedExportFormat = Annotated[
-    Literal["sif", "bnet"],
-    BeforeValidator(_lower_string),
-]
-HandoffArtifactPrefix = Annotated[
-    str,
-    Field(
-        min_length=1,
-        max_length=128,
-        pattern=r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9_-])?$",
-        description=(
-            "Safe basename prefix for the paired .bnet and .handoff.json "
-            "artifacts. Directory components and a trailing dot are forbidden."
-        ),
-    ),
-]
-OutputFormat = Literal["markdown", "json"]
-NormalizedConnectorMethod = Annotated[
-    Literal["hubs", "relax_max_len", "unsigned"],
-    BeforeValidator(_lower_string),
-]
-BridgeMode = Literal["OUT", "IN", "ALL"]
-TargetStrategy = Literal[
-    "connect_to_upstream_nodes",
-    "connect_subgroup",
-]
-AtopoStrategy = Literal["radial", "complete"]
-GlobalStrategy = Literal[
-    "complete_connection",
-    "connect_network_radially",
-    "connect_as_atopo",
-]
-RadialDirection = Literal["OUT", "IN"]
-
-_READ_ONLY_CLOSED = ToolAnnotations(
-    read_only_hint=True,
-    destructive_hint=False,
-    idempotent_hint=True,
-    open_world_hint=False,
-)
-_READ_ONLY_OPEN = ToolAnnotations(
-    read_only_hint=True,
-    destructive_hint=False,
-    idempotent_hint=True,
-    open_world_hint=True,
-)
-_IDEMPOTENT_CLOSED = ToolAnnotations(
-    read_only_hint=False,
-    destructive_hint=False,
-    idempotent_hint=True,
-    open_world_hint=False,
-)
-_NON_IDEMPOTENT_CLOSED = ToolAnnotations(
-    read_only_hint=False,
-    destructive_hint=False,
-    idempotent_hint=False,
-    open_world_hint=False,
-)
-_NON_IDEMPOTENT_OPEN = ToolAnnotations(
-    read_only_hint=False,
-    destructive_hint=False,
-    idempotent_hint=False,
-    open_world_hint=True,
-)
-_DESTRUCTIVE_IDEMPOTENT_CLOSED = ToolAnnotations(
-    read_only_hint=False,
-    destructive_hint=True,
-    idempotent_hint=True,
-    open_world_hint=False,
-)
-_DESTRUCTIVE_NON_IDEMPOTENT_CLOSED = ToolAnnotations(
-    read_only_hint=False,
-    destructive_hint=True,
-    idempotent_hint=False,
-    open_world_hint=False,
-)
-_DESTRUCTIVE_NON_IDEMPOTENT_OPEN = ToolAnnotations(
-    read_only_hint=False,
-    destructive_hint=True,
-    idempotent_hint=False,
-    open_world_hint=True,
-)
-
-
-def _optional_text(value) -> str | None:
-    """Convert one dataframe scalar to a JSON-safe optional string."""
-    if value is None:
-        return None
-    try:
-        if bool(pd.isna(value)):
-            return None
-    except (TypeError, ValueError):
-        pass
-    text = str(value).strip()
-    return text or None
-
-
-def _required_text(value, *, field_name: str) -> str:
-    """Convert a required dataframe scalar or reject malformed network data."""
-    text = _optional_text(value)
-    if text is None:
-        raise ValueError(f"Network data contains an empty {field_name}.")
-    return text
-
-
-def _node_records(network) -> list[NeKoNodeRecord]:
-    """Return all network nodes in their stored order."""
-    nodes = getattr(network, "nodes", None)
-    if nodes is None or nodes.empty:
-        return []
-
-    records = []
-    for _, row in nodes.iterrows():
-        records.append(
-            NeKoNodeRecord(
-                gene_symbol=_optional_text(row.get("Genesymbol")),
-                uniprot=_optional_text(row.get("Uniprot")),
-                node_type=_optional_text(row.get("Type")),
-            )
-        )
-    return records
-
-
-def _node_record_index(network) -> dict[str, NeKoNodeRecord]:
-    """Index node records by both UniProt identifier and gene symbol."""
-    index = {}
-    for record in _node_records(network):
-        if record.uniprot is not None:
-            index[record.uniprot] = record
-        if record.gene_symbol is not None:
-            index.setdefault(record.gene_symbol, record)
-    return index
-
-
-def _node_record_for_identifier(
-        identifier,
-        *,
-        node_index: dict[str, NeKoNodeRecord],
-        uniprot_to_symbol: dict,
-) -> NeKoNodeRecord:
-    """Resolve an internal network identifier without losing its UniProt ID."""
-    identifier_text = _required_text(identifier, field_name="node identifier")
-    stored = node_index.get(identifier_text)
-    if stored is not None:
-        return stored
-    return NeKoNodeRecord(
-        gene_symbol=_optional_text(
-            uniprot_to_symbol.get(identifier, uniprot_to_symbol.get(identifier_text))
-        ),
-        uniprot=identifier_text,
-    )
-
-
-def _interaction_records(df: pd.DataFrame) -> list[NeKoInteractionRecord]:
-    """Convert an edge dataframe into strict JSON-safe interaction records."""
-    records = []
-    for _, row in df.iterrows():
-        records.append(
-            NeKoInteractionRecord(
-                source=_required_text(row.get("source"), field_name="edge source"),
-                target=_required_text(row.get("target"), field_name="edge target"),
-                effect=_optional_text(row.get("Effect")),
-            )
-        )
-    return records
-
-
-def _reference_list(value) -> list[str]:
-    """Normalize NeKo's comma/semicolon-delimited reference values."""
-    if value is None:
-        return []
-    if isinstance(value, (list, tuple, set)):
-        raw_references = value
-    else:
-        text = _optional_text(value)
-        if text is None or text.lower() == "none":
-            return []
-        raw_references = re.split(r"[;,]", text)
-
-    references = []
-    seen = set()
-    for value in raw_references:
-        reference = _optional_text(value)
-        if reference is not None and reference not in seen:
-            references.append(reference)
-            seen.add(reference)
-    return references
-
-
-def _referenced_interaction_records(
-        df: pd.DataFrame,
-) -> list[NeKoReferencedInteractionRecord]:
-    """Convert an edge dataframe while retaining its complete evidence list."""
-    records = []
-    for _, row in df.iterrows():
-        references = _reference_list(row.get("References"))
-        records.append(
-            NeKoReferencedInteractionRecord(
-                source=_required_text(row.get("source"), field_name="edge source"),
-                target=_required_text(row.get("target"), field_name="edge target"),
-                effect=_optional_text(row.get("Effect")),
-                reference_count=len(references),
-                references=references,
-            )
-        )
-    return records
-
 
 def _export_sanitized_bnet(
     network,
@@ -347,57 +167,14 @@ def _export_sanitized_bnet(
     *,
     overwrite: bool,
 ) -> dict:
-    """Export and sanitize one BNET through a temporary session-local path."""
-    if destination.exists() and not overwrite:
-        raise FileExistsError(
-            f"Refusing to overwrite existing BNET artifact: {destination}"
-        )
-
-    try:
-        with tempfile.TemporaryDirectory(
-            dir=destination.parent,
-            prefix=".neko-bnet-",
-        ) as temporary_directory:
-            temporary_prefix = Path(temporary_directory) / destination.stem
-            try:
-                Exports(network).export_bnet(str(temporary_prefix))
-            except Exception as exc:
-                raise RuntimeError(f"Error exporting BNET: {exc}") from exc
-            generated_bnets = sorted(Path(temporary_directory).glob("*.bnet"))
-            if not generated_bnets:
-                raise FileNotFoundError(
-                    "NeKo did not create a BNET file in the temporary export "
-                    f"directory {temporary_directory}."
-                )
-            if len(generated_bnets) > 1:
-                generated_names = ", ".join(
-                    path.name for path in generated_bnets
-                )
-                raise RuntimeError(
-                    "NeKo generated multiple BNET models "
-                    f"({generated_names}); this export requires exactly one model."
-                )
-            temporary_bnet = generated_bnets[0]
-            try:
-                sanitizer_result = sanitize_bnet_file(str(temporary_bnet))
-            except Exception as exc:
-                raise RuntimeError(f"Error sanitizing BNET: {exc}") from exc
-
-            if overwrite:
-                temporary_bnet.replace(destination)
-            else:
-                try:
-                    os.link(temporary_bnet, destination)
-                except FileExistsError as exc:
-                    raise FileExistsError(
-                        "Refusing to overwrite BNET artifact created "
-                        f"concurrently: {destination}"
-                    ) from exc
-            return sanitizer_result
-    except OSError as exc:
-        raise RuntimeError(
-            f"Could not finalize BNET artifact {destination}: {exc}"
-        ) from exc
+    """Export through the service while retaining injectable test adapters."""
+    return export_sanitized_bnet(
+        network,
+        destination,
+        overwrite=overwrite,
+        export_factory=Exports,
+        sanitizer=sanitize_bnet_file,
+    )
 
 
 def _neko_package_version() -> str:
@@ -423,127 +200,11 @@ def _network_history_state_id(network) -> int | None:
     return state_id if state_id >= 0 else None
 
 
-# NOTE: Previous implementation used a single global `network` object.
-# Now session-based management (see `session_manager.py`).
-# Each tool can accept an optional `session_id` allowing multiple networks.
-# If not provided, the default session is used (auto-created on first use).
-
-# 1. Define the manual in one place so you only ever have to update it here.
-NEKO_AGENT_MANUAL = """
-# NeKo to MaBoSS Workflow Manual
-
-## 1. Recommended Execution Order
-1. **Initialize:** `create_session()` -> `set_default_params(max_len=2,
-   path_policy='one_shortest', reuse_policy='discovered_paths',
-   only_signed=True, consensus=True)`
-2. **Build:** `create_network([...list_of_initial_genes...], database='omnipath')`
-3. **Curate:** `remove_bimodal_interactions()` -> `remove_undefined_interactions()`
-4. **Audit Connectivity:** `analyze_connectivity()` reports both isolated
-   (0-edge) nodes and the full connected-component partition in one call.
-   - *If disconnected:* `preview_connection_impact()` -> Apply a connection tool
-     (see the cost guide below before choosing one).
-5. **Inspect history:** `list_network_history()` after topology changes. Use
-   `compare_network_states(state_a, state_b)` before deciding whether to
-   `navigate_network_history(action='checkout', state_id=...)`.
-6. **Inspect network:** `list_genes_and_interactions(verbosity='preview')`
-7. **Export:** Use `export_neko_handoff(biological_context=...,
-   output_nodes=[...])` for a typed MaBoSS transfer. Use
-   `export_network(format='bnet')` only when a standalone BNET is sufficient.
-
-## 2. Tool Categories
-* **Sessions:** `create_session`, `list_sessions`, `set_default_session`, `delete_session`, `status`, `reset_network`
-* **Construction:** `create_network`, `add_nodes` (batch add, optional cheap
-  direct-neighbour autoconnect), `remove_gene`, `remove_interaction`
-* **Connectivity diagnostics:** `analyze_connectivity` (isolated nodes + full
-  component partition), `preview_connection_impact` (non-mutating scout: hub
-  ranking or a simulated parameter-relaxation preview)
-* **Connection strategies:** `connect_targeted_nodes` (integrate specific
-  nodes), `bridge_components` (connect group A <-> group B),
-  `apply_global_connection` (whole-network closure)
-  - See https://github.com/sysbio-curie/Neko/blob/development/docs_mkdocs/strategies/index.md
-    for the concise strategy and path/reuse policy semantics.
-* **Inspection:** `list_genes_and_interactions`, `find_paths`, `get_references`, `filter_interactions`
-* **History:** `list_network_history`, `navigate_network_history`, `compare_network_states`, `set_network_history_limit`
-* **Handoff:** `export_neko_handoff` records exact sanitized Boolean nodes,
-  declared outputs, package versions, history state, and artifact digests.
-
-## 3. Connection Strategy Cost Guide
-Choose the cheapest strategy that can plausibly close the gap; escalate only
-if it fails. All costs assume seed/group sizes of a few dozen genes.
-
-| Tool | Strategy | Cardinality | Relative cost | Notes |
-|---|---|---|---|---|
-| `add_nodes` | `autoconnect=True` | new node(s) -> existing network | Very low | Direct-neighbour edges only (equivalent to maxlen=1); no multi-step path search |
-| `connect_targeted_nodes` | `connect_to_upstream_nodes` | specific node(s) | Low, bounded by `depth` | Cascades upstream from the given nodes only |
-| `connect_targeted_nodes` | `connect_subgroup` | one node list | Moderate, ~O(pairs in group) | Pairwise path search within the group only |
-| `bridge_components` | `connect_component` (A, B) | group A <-> group B | Moderate-high | Also silently runs `connect_subgroup` on every node NOT in A or B as a side effect |
-| `apply_global_connection` | `connect_network_radially` | whole network | Moderate-high, bounded by `max_len` hops | Expands outward/inward from existing seed nodes only, not all pairs |
-| `apply_global_connection` | `connect_as_atopo` | whole network, output-anchored | High, open-ended | Runs `connect_network_radially` or `complete_connection` first, then loops upstream search until the network is fully connected - the loop is not bounded by `max_len` alone |
-| `apply_global_connection` | `complete_connection` | whole network | **Highest - O(N^2) over every node pair** | Searches paths between every pair of nodes in the network; this is almost certainly the cause of a network exploding in size (e.g. `max_len=2` with 20+ seed genes producing hundreds of edges) |
-
-**Large-network warning:** before calling `complete_connection` or
-`connect_as_atopo`, check the current node count (via `status()`). Above
-roughly 50 nodes, prefer `connect_targeted_nodes` or `bridge_components` to
-close specific gaps instead, or run `preview_connection_impact()` first to see
-the predicted edge-count delta without committing.
-
-## 4. Critical Operating Rules
-* **Session First:** Always call `create_session` before `create_network`.
-* **Scout Before You Shoot:** Always run `preview_connection_impact()` before
-  heavy connection tools, and check the cost guide above.
-* **Output Names:** Handoff output nodes may use original NeKo names; export
-  translates renamed symbols to the exact names stored in the sanitized BNET.
-  If outputs are omitted, MaBoSS must select a small output set before running.
-* **Token Frugality:** In iterative loops, ALWAYS use `verbosity='summary'`. 
-"""
-
-
-# 2. Expose it as an MCP Prompt (For smart clients that pull system prompts)
-@mcp.prompt(name="neko_workflow_prompt", description="System prompt and operating manual for the NeKo agent.")
-def neko_workflow_prompt() -> str:
-    return NEKO_AGENT_MANUAL
-
-# 3. Expose it as an MCP Resource (For clients that prefer to 'read' documentation)
-@mcp.resource(
-    uri="docs://neko/agent_manual",
-    name="NeKo Agent Operations Manual",
-    description="The single source of truth for NeKo workflows, tool categories, and rules.",
-    mime_type="text/markdown"
+@mcp.tool(
+    title="Create signalling network",
+    annotations=_DESTRUCTIVE_NON_IDEMPOTENT_OPEN,
+    structured_output=True,
 )
-def neko_agent_manual_resource() -> str:
-    return NEKO_AGENT_MANUAL
-
-
-@mcp.resource(
-    uri="neko://session/{session_id}/history",
-    name="Network History",
-    description=(
-        "Branching NeKo network history rendered as inline SVG HTML. "
-        "Use list_network_history to identify the current state."
-    ),
-    mime_type="text/html",
-)
-def network_history_resource(session_id: str) -> str:
-    """Render the history of an existing NeKo session without mutating it."""
-    try:
-        with session_manager.existing_session_scope(session_id) as sess:
-            if sess.network is None:
-                raise ResourceNotFoundError(
-                    "No network in this session. Call create_network first."
-                )
-            try:
-                return sess.network.history_html()
-            except Exception as exc:
-                raise RuntimeError(
-                    "Unable to render NeKo history as HTML. "
-                    f"Check the Graphviz installation: {exc}"
-                ) from exc
-    except KeyError as exc:
-        raise ResourceNotFoundError(
-            f"NeKo session not found: {session_id}"
-        ) from exc
-
-@mcp.tool(annotations=_DESTRUCTIVE_NON_IDEMPOTENT_OPEN)
 async def create_network(
                    list_of_initial_genes: Annotated[List[NonEmptyString], Field(description="Gene symbols to seed the network (e.g. ['TP53', 'MYC', 'CASP3']). Can be empty if sif_file is provided.")],
                    ctx: Context,
@@ -729,7 +390,11 @@ async def create_network(
     await ctx.report_progress(4, 4)
     return response
 
-@mcp.tool(annotations=_NON_IDEMPOTENT_OPEN)
+@mcp.tool(
+    title="Add genes",
+    annotations=_NON_IDEMPOTENT_OPEN,
+    structured_output=True,
+)
 @requires_network
 def add_nodes(
         genes: Annotated[NonEmptyStringList, Field(description="Gene symbols to add (e.g. ['TP53'] or ['EGFR', 'AKT1']).")],
@@ -777,7 +442,11 @@ def add_nodes(
     )
     return f"Added {added}/{len(genes)} genes. {autoconnect_note} {SUMMARY_HINT}"
 
-@mcp.tool(annotations=_DESTRUCTIVE_NON_IDEMPOTENT_CLOSED)
+@mcp.tool(
+    title="Remove gene",
+    annotations=_DESTRUCTIVE_NON_IDEMPOTENT_CLOSED,
+    structured_output=True,
+)
 @requires_network
 def remove_gene(
         gene: Annotated[NonEmptyString, Field(description="Gene symbol to remove. Case-insensitive; closest match is suggested if not found.")],
@@ -830,7 +499,11 @@ def remove_gene(
     except Exception as e:
         raise RuntimeError(f"Error removing gene {gene}: {e}") from e
 
-@mcp.tool(annotations=_DESTRUCTIVE_NON_IDEMPOTENT_CLOSED)
+@mcp.tool(
+    title="Remove interaction",
+    annotations=_DESTRUCTIVE_NON_IDEMPOTENT_CLOSED,
+    structured_output=True,
+)
 @requires_network
 def remove_interaction(
         node_A: Annotated[NonEmptyString, Field(description="Source gene symbol (interaction goes A -> B).")],
@@ -873,7 +546,11 @@ def remove_interaction(
 
 # TO DO: implement GO enrichment
 
-@mcp.tool(annotations=_IDEMPOTENT_CLOSED)
+@mcp.tool(
+    title="Export network",
+    annotations=_IDEMPOTENT_CLOSED,
+    structured_output=True,
+)
 @session_locked
 def export_network(
         format: NormalizedExportFormat = Field("sif", description="Export format: 'sif' (Simple Interaction Format, tab-separated) or 'bnet' (Boolean network for MaBoSS). BNET requires a fully connected network."),
@@ -979,7 +656,11 @@ def export_network(
         return structured_report(text, payload)
 
 
-@mcp.tool(annotations=_NON_IDEMPOTENT_CLOSED)
+@mcp.tool(
+    title="Export NeKo to MaBoSS handoff",
+    annotations=_NON_IDEMPOTENT_CLOSED,
+    structured_output=True,
+)
 @session_locked
 def export_neko_handoff(
         biological_context: NonEmptyString = Field(description="Biological question or modelling context that must remain attached to the network."),
@@ -1144,7 +825,11 @@ def export_neko_handoff(
     return structured_report(text, payload)
 
 
-@mcp.tool(annotations=_READ_ONLY_CLOSED)
+@mcp.tool(
+    title="List genes and interactions",
+    annotations=_READ_ONLY_CLOSED,
+    structured_output=True,
+)
 @session_locked
 def list_genes_and_interactions(
         session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session."),
@@ -1237,7 +922,11 @@ def list_genes_and_interactions(
     except Exception as e:
         raise RuntimeError(f"Unable to retrieve network data: {e}") from e
 
-@mcp.tool(annotations=_READ_ONLY_CLOSED)
+@mcp.tool(
+    title="Find network paths",
+    annotations=_READ_ONLY_CLOSED,
+    structured_output=True,
+)
 @session_locked
 def find_paths(
         source: Annotated[NonEmptyString, Field(description="Source gene symbol (path start).")],
@@ -1294,7 +983,11 @@ def find_paths(
             sys.stdout = old_stdout
             buffer.close()
 
-@mcp.tool(annotations=_DESTRUCTIVE_IDEMPOTENT_CLOSED)
+@mcp.tool(
+    title="Reset network",
+    annotations=_DESTRUCTIVE_IDEMPOTENT_CLOSED,
+    structured_output=True,
+)
 @session_locked
 def reset_network(
         session_id: Optional[NonEmptyString] = Field(None, description="Session ID to reset; omit to use the active/default session.")) -> str:
@@ -1307,190 +1000,11 @@ def reset_network(
     return f"Session {sess.session_id} network reset."
 
 
-@mcp.tool(annotations=_READ_ONLY_CLOSED)
-@requires_network
-def list_network_history(
-        session_id: NonEmptyString | None = Field(
-            None,
-            description=(
-                "Session ID; omit to inspect the active/default session."
-            ),
-        ),
-        *,
-        sess=None,
-        network=None,
-        ) -> NetworkHistorySummary:
-    """List exact state IDs and branch relationships for the current network."""
-    return summarize_history(
-        network,
-        session_id=sess.session_id,
-        max_states=sess.get_history_max_states(),
-    )
-
-
-@mcp.tool(annotations=_NON_IDEMPOTENT_CLOSED)
-@requires_network
-def navigate_network_history(
-        action: Annotated[
-            Literal["undo", "redo", "checkout"],
-            Field(
-                description=(
-                    "History operation: undo to a parent, redo to a child, "
-                    "or checkout an exact state ID."
-                )
-            ),
-        ],
-        state_id: int | None = Field(
-            None,
-            ge=0,
-            description=(
-                "Exact target state ID. Required for checkout; optional for "
-                "redo when the current state has one child; invalid for undo."
-            ),
-        ),
-        session_id: NonEmptyString | None = Field(
-            None,
-            description=(
-                "Session ID; omit to use the active/default session."
-            ),
-        ),
-        *,
-        sess=None,
-        network=None,
-        ) -> HistoryNavigationResult:
-    """Move through NeKo's branching history while preserving saved states."""
-    if action == "checkout" and state_id is None:
-        raise ValueError("checkout requires an exact state_id.")
-    if action == "undo" and state_id is not None:
-        raise ValueError("undo does not accept state_id.")
-
-    previous_state_id = network.current_state_id
-    if action == "undo":
-        network.undo()
-    elif action == "redo":
-        network.redo(state_id)
-    else:
-        network.checkout(state_id)
-
-    current_state_id = network.current_state_id
-    moved = previous_state_id != current_state_id
-    if moved:
-        _invalidate(sess)
-
-    if moved:
-        message = (
-            f"Moved from state {previous_state_id} to state "
-            f"{current_state_id}."
-        )
-    elif action == "undo":
-        message = "Already at a root state; no parent state is available."
-    elif action == "redo":
-        message = "No child state is available from the current state."
-    else:
-        message = f"State {current_state_id} is already checked out."
-
-    return HistoryNavigationResult(
-        server="NeKo",
-        session_id=sess.session_id,
-        action=action,
-        requested_state_id=state_id,
-        previous_state_id=previous_state_id,
-        current_state_id=current_state_id,
-        moved=moved,
-        node_count=len(network.nodes),
-        edge_count=len(network.edges),
-        message=message,
-    )
-
-
-@mcp.tool(annotations=_READ_ONLY_CLOSED)
-@requires_network
-def compare_network_states(
-        state_a: Annotated[
-            int,
-            Field(ge=0, description="Exact ID of the baseline history state."),
-        ],
-        state_b: Annotated[
-            int,
-            Field(ge=0, description="Exact ID of the comparison history state."),
-        ],
-        session_id: NonEmptyString | None = Field(
-            None,
-            description=(
-                "Session ID; omit to use the active/default session."
-            ),
-        ),
-        *,
-        sess=None,
-        network=None,
-        ) -> NetworkStateComparison:
-    """Compare two saved topologies without changing the checked-out state."""
-    return compare_history_states(
-        network,
-        session_id=sess.session_id,
-        state_a=state_a,
-        state_b=state_b,
-    )
-
-
-@mcp.tool(annotations=_DESTRUCTIVE_IDEMPOTENT_CLOSED)
-@session_locked
-def set_network_history_limit(
-        max_states: Annotated[
-            int | None,
-            Field(
-                ge=2,
-                description=(
-                    "Maximum retained states (minimum 2), or null for "
-                    "unbounded history. Lowering this value may immediately "
-                    "and irreversibly prune older snapshots."
-                ),
-            ),
-        ],
-        session_id: NonEmptyString | None = Field(
-            None,
-            description=(
-                "Session ID; omit to configure the active/default session."
-            ),
-        ),
-        ) -> HistoryRetentionResult:
-    """Configure optional NeKo history pruning for this session."""
-    sess = ensure_session(session_id)
-    network = sess.network
-    before_ids = state_ids(network) if network is not None else []
-
-    if network is not None:
-        network.set_max_history(max_states)
-    sess.set_history_max_states(max_states)
-
-    after_ids = state_ids(network) if network is not None else []
-    pruned_ids = sorted(set(before_ids) - set(after_ids))
-    if max_states is None:
-        policy = "History retention is now unbounded."
-    else:
-        policy = f"History retention is limited to {max_states} states."
-    if network is None:
-        policy += " The policy will apply when a network is created."
-    elif pruned_ids:
-        policy += (
-            " Pruned state IDs: "
-            + ", ".join(str(state_id) for state_id in pruned_ids)
-            + "."
-        )
-
-    return HistoryRetentionResult(
-        server="NeKo",
-        session_id=sess.session_id,
-        max_states=max_states,
-        applies_to_current_network=network is not None,
-        state_count_before=len(before_ids),
-        state_count_after=len(after_ids),
-        pruned_state_ids=pruned_ids,
-        retained_state_ids=after_ids,
-        message=policy,
-    )
-
-@mcp.tool(annotations=_DESTRUCTIVE_IDEMPOTENT_CLOSED)
+@mcp.tool(
+    title="Clean generated files",
+    annotations=_DESTRUCTIVE_IDEMPOTENT_CLOSED,
+    structured_output=True,
+)
 @session_locked
 def clean_generated_files(
         session_id: Optional[NonEmptyString] = Field(None, description="Session ID whose artifact files (SIF, BNET, etc.) should be removed. Omit for the active/default session.")) -> Annotated[CallToolResult, NeKoArtifactCleanupResult]:
@@ -1508,7 +1022,11 @@ def clean_generated_files(
     except Exception as e:
         raise RuntimeError(f"Error during cleanup: {e}") from e
 
-@mcp.tool(annotations=_DESTRUCTIVE_IDEMPOTENT_CLOSED)
+@mcp.tool(
+    title="Remove bimodal interactions",
+    annotations=_DESTRUCTIVE_IDEMPOTENT_CLOSED,
+    structured_output=True,
+)
 @session_locked
 def remove_bimodal_interactions(
         session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session.")) -> str:
@@ -1529,7 +1047,11 @@ def remove_bimodal_interactions(
     removed = before - after
     return f"Removed {removed} bimodal interactions from the network."
 
-@mcp.tool(annotations=_DESTRUCTIVE_IDEMPOTENT_CLOSED)
+@mcp.tool(
+    title="Remove undefined interactions",
+    annotations=_DESTRUCTIVE_IDEMPOTENT_CLOSED,
+    structured_output=True,
+)
 @session_locked
 def remove_undefined_interactions(
         session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session.")) -> str:
@@ -1551,7 +1073,11 @@ def remove_undefined_interactions(
     return f"Removed {removed} undefined interactions from the network."
 
 
-@mcp.tool(annotations=_READ_ONLY_CLOSED)
+@mcp.tool(
+    title="List Boolean network files",
+    annotations=_READ_ONLY_CLOSED,
+    structured_output=True,
+)
 @session_locked
 def list_bnet_files(
         session_id: Optional[NonEmptyString] = Field(None, description="Session ID to query; omit to use the active/default session.")) -> Annotated[CallToolResult, NeKoArtifactFileListResult]:
@@ -1581,7 +1107,11 @@ def list_bnet_files(
     )
     return structured_report(text, payload)
 
-@mcp.tool(annotations=_READ_ONLY_CLOSED)
+@mcp.tool(
+    title="Get interaction references",
+    annotations=_READ_ONLY_CLOSED,
+    structured_output=True,
+)
 @session_locked
 def get_references(
         node1: Annotated[NonEmptyString, Field(description="Gene symbol. Returns all edges where this gene is source or target.")],
@@ -1662,7 +1192,11 @@ def get_references(
     )
     return structured_report(md, payload)
 
-@mcp.tool(annotations=_IDEMPOTENT_CLOSED)
+@mcp.tool(
+    title="Set connection defaults",
+    annotations=_IDEMPOTENT_CLOSED,
+    structured_output=True,
+)
 @session_locked
 def set_default_params(
         max_len: Optional[int] = Field(None, ge=1, le=4, description="Default maximum path length for complete_connection calls (1-4)."),
@@ -1682,17 +1216,23 @@ def set_default_params(
     )
     return "Defaults updated." 
 
-@mcp.tool(annotations=_READ_ONLY_CLOSED)
+@mcp.tool(
+    title="Filter interactions",
+    annotations=_READ_ONLY_CLOSED,
+    structured_output=True,
+)
 @session_locked
 def filter_interactions(
         effect: Optional[List[NonEmptyString]] = Field(None, description="Effect types to keep, e.g. ['stimulation', 'inhibition']. Omit to include all effects."),
         source: Optional[NonEmptyString] = Field(None, description="Keep only edges where the source matches this gene symbol."),
         target: Optional[NonEmptyString] = Field(None, description="Keep only edges where the target matches this gene symbol."),
+        nodes: Optional[NonEmptyStringList] = Field(None, description="Optional gene-symbol or UniProt set used by node_scope. Identifiers are resolved against the current in-memory network."),
+        node_scope: NormalizedInteractionNodeScope = Field("incident", description="When nodes is provided: 'incident' keeps edges touching the set, 'internal' keeps edges with both endpoints in it, and 'boundary' keeps edges with exactly one endpoint in it."),
         session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session."),
         verbosity: NormalizedVerbosity = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary' (count), 'preview'/'full' (Markdown table)."),
         format: OutputFormat = Field("markdown", description="Output format: 'markdown' (default) or 'json'."),
         max_rows: int = Field(50, ge=1, description="Maximum rows returned in preview mode.")) -> Annotated[CallToolResult, NeKoInteractionFilterResult]:
-    """Filter and display interactions by effect type, source gene, or target gene.
+    """Filter interactions by effect, scalar endpoints, or a node set.
 
     Non-destructive - does not modify the network; use remove_interaction() to permanently delete edges.
     """
@@ -1709,6 +1249,24 @@ def filter_interactions(
         df = df[df['source'] == source]
     if target:
         df = df[df['target'] == target]
+    requested_nodes = None
+    applied_node_scope = None
+    if nodes:
+        requested_nodes, resolved_nodes, _ = _resolve_requested_genes(
+            network,
+            df,
+            nodes,
+        )
+        incident, internal, boundary = _partition_gene_set_edges(
+            df,
+            set(resolved_nodes),
+        )
+        df = {
+            "incident": incident,
+            "internal": internal,
+            "boundary": boundary,
+        }[node_scope]
+        applied_node_scope = node_scope
 
     total_match_count = len(df)
     if verbosity == "summary" and format != "json":
@@ -1733,6 +1291,8 @@ def filter_interactions(
         effect_filter=effect,
         source_filter=source,
         target_filter=target,
+        node_filter=requested_nodes,
+        node_scope=applied_node_scope,
         total_match_count=total_match_count,
         returned_count=len(interactions),
         truncated=truncated,
@@ -1746,7 +1306,11 @@ def filter_interactions(
         )
         return structured_report(text, payload)
     if total_match_count == 0:
-        text = "No interactions." if not any((effect, source, target)) else "No matches."
+        text = (
+            "No interactions."
+            if not any((effect, source, target, nodes))
+            else "No matches."
+        )
         return structured_report(text, payload)
     if verbosity == "summary":
         text = f"Filtered interactions: {total_match_count}. {SUMMARY_HINT}"
@@ -1758,7 +1322,12 @@ def filter_interactions(
     text = table + (" (truncated)" if truncated else "")
     return structured_report(text, payload)
 
-@mcp.tool(annotations=_NON_IDEMPOTENT_CLOSED)
+
+@mcp.tool(
+    title="Create modelling session",
+    annotations=_NON_IDEMPOTENT_CLOSED,
+    structured_output=True,
+)
 def create_session(
         label: Optional[str] = Field(None, description="Optional human-readable label for this session (e.g. 'TP53-MYC cancer'). Stored on disk so the session can be rediscovered after a server restart.")) -> str:
     """Create a new isolated modelling session (always call before create_network).
@@ -1778,7 +1347,11 @@ def create_session(
     label_info = f" ({label})" if label else ""
     return f"Created session: {sid}{label_info}"
 
-@mcp.tool(annotations=_READ_ONLY_CLOSED)
+@mcp.tool(
+    title="List active sessions",
+    annotations=_READ_ONLY_CLOSED,
+    structured_output=True,
+)
 def list_sessions() -> Annotated[CallToolResult, NeKoSessionListResult]:
     """List all active sessions with network presence and basic node/edge counts."""
     data = session_manager.list_sessions()
@@ -1807,7 +1380,11 @@ def list_sessions() -> Annotated[CallToolResult, NeKoSessionListResult]:
         lines.append(f"- {sid}: has_network={meta['has_network']} nodes={meta['nodes']} edges={meta['edges']}")
     return structured_report("\n".join(lines), payload)
 
-@mcp.tool(annotations=_READ_ONLY_CLOSED)
+@mcp.tool(
+    title="List artifact sessions",
+    annotations=_READ_ONLY_CLOSED,
+    structured_output=True,
+)
 def list_artifact_sessions(
 ) -> Annotated[CallToolResult, NeKoArtifactSessionListResult]:
     """List all NeKo sessions that have artifact files on disk (including past server runs).
@@ -1855,7 +1432,11 @@ def list_artifact_sessions(
             lines.append("  Files: (none)")
     return structured_report("\n".join(lines), payload)
 
-@mcp.tool(annotations=_IDEMPOTENT_CLOSED)
+@mcp.tool(
+    title="Set default session",
+    annotations=_IDEMPOTENT_CLOSED,
+    structured_output=True,
+)
 def set_default_session(
         session_id: Annotated[NonEmptyString, Field(description="Session ID to make the active default; used when session_id is omitted in subsequent tool calls.")]) -> str:
     """Set the default session used when session_id is omitted in other tool calls."""
@@ -1864,7 +1445,11 @@ def set_default_session(
         raise ValueError(f"Session not found: {session_id}")
     return "Default set."
 
-@mcp.tool(annotations=_DESTRUCTIVE_NON_IDEMPOTENT_CLOSED)
+@mcp.tool(
+    title="Delete session",
+    annotations=_DESTRUCTIVE_NON_IDEMPOTENT_CLOSED,
+    structured_output=True,
+)
 def delete_session(
         session_id: Annotated[NonEmptyString, Field(description="Session ID to permanently delete (irreversible).")]) -> str:
     """Permanently delete a session and its in-memory network."""
@@ -1873,7 +1458,11 @@ def delete_session(
         raise ValueError(f"Session not found: {session_id}")
     return "Deleted."
 
-@mcp.tool(annotations=_READ_ONLY_CLOSED)
+@mcp.tool(
+    title="Show network status",
+    annotations=_READ_ONLY_CLOSED,
+    structured_output=True,
+)
 @session_locked
 def status(
         session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to query the active/default session.")) -> Annotated[CallToolResult, NeKoNetworkStatusResult]:
@@ -1907,149 +1496,11 @@ def status(
     return structured_report(text, payload)
 
 # ===== Component & Strategy Tools =====
-@mcp.tool(annotations=_READ_ONLY_CLOSED)
-@session_locked
-def analyze_connectivity(
-        session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session."),
-        verbosity: NormalizedVerbosity = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary' (counts only), 'preview'/'full' (isolated node list and per-component stats)."),
-        format: OutputFormat = Field("markdown", description="Output format: 'markdown' (default) or 'json'.")) -> Annotated[CallToolResult, NeKoConnectivityResult]:
-    """Report isolated (0-edge) nodes AND the full connected-component partition.
-
-    A network can have zero isolated nodes yet still be fragmented into
-    several disconnected multi-node clusters (e.g. two unrelated 10-node
-    islands). This tool reports both facets together, so "all_nodes_have_interactions"
-    plus "component_count == 1" together confirm the network is fully connected.
-    Use before choosing a connection strategy (see preview_connection_impact()).
-    Each component's `component_id` is a report label only - to bridge two
-    components with bridge_components(), pass the Gene Symbols listed in
-    their `nodes`, not the `component_id` integers.
-    """
-    verbosity = normalize_verbosity(verbosity)
-    sess, network = _session_network(session_id)
-    if network is None:
-        raise RuntimeError(E_NO_NET)
-
-    u2s, _ = _get_translators(network)
-    node_index = _node_record_index(network)
-
-    all_nodes = {
-        node
-        for node in network.nodes["Uniprot"].tolist()
-        if _optional_text(node) is not None
-    }
-    connected_nodes = (
-        set(network.edges["source"].tolist())
-        | set(network.edges["target"].tolist())
-    )
-    disconnected_uniprot = all_nodes - connected_nodes
-    disconnected_nodes = [
-        _node_record_for_identifier(
-            node,
-            node_index=node_index,
-            uniprot_to_symbol=u2s,
-        )
-        for node in disconnected_uniprot
-    ]
-    disconnected_nodes.sort(
-        key=lambda record: record.gene_symbol or record.uniprot or ""
-    )
-
-    comps = _compute_components(network)
-
-    deg = {}
-    try:
-        sources = network.edges["source"].tolist()
-        targets = network.edges["target"].tolist()
-        for s, t in zip(sources, targets):
-            if pd.notna(s) and s != "":
-                s_str = str(s)
-                deg[s_str] = deg.get(s_str, 0) + 1
-            if pd.notna(t) and t != "":
-                t_str = str(t)
-                deg[t_str] = deg.get(t_str, 0) + 1
-    except Exception:
-        pass
-
-    components = []
-    for idx, comp in enumerate(comps):
-        dvals = [deg.get(n, 0) for n in comp]
-        avg_d = round(sum(dvals)/len(dvals), 2) if dvals else 0
-        components.append(
-            NeKoComponentRecord(
-                component_id=idx,
-                size=len(comp),
-                average_degree=avg_d,
-                nodes=[
-                    _node_record_for_identifier(
-                        node,
-                        node_index=node_index,
-                        uniprot_to_symbol=u2s,
-                    )
-                    for node in comp
-                ],
-            )
-        )
-    largest_component_size = max(
-        (component.size for component in components),
-        default=0,
-    )
-    payload = NeKoConnectivityResult(
-        server="NeKo",
-        session_id=sess.session_id,
-        total_node_count=len(all_nodes),
-        disconnected_count=len(disconnected_nodes),
-        all_nodes_have_interactions=not disconnected_nodes,
-        disconnected_nodes=disconnected_nodes,
-        component_count=len(components),
-        largest_component_size=largest_component_size,
-        components=components,
-    )
-
-    if format == "json":
-        text = json.dumps(payload.model_dump(mode="json"), separators=(",", ":"))
-        return structured_report(text, payload)
-    if verbosity == "summary":
-        text = (
-            f"Isolated nodes: {len(disconnected_nodes)}/{len(all_nodes)}. "
-            f"Components={len(components)} largest={largest_component_size}. "
-            f"{SUMMARY_HINT}"
-        )
-        return structured_report(text, payload)
-
-    lines = []
-    if disconnected_nodes:
-        labels = [
-            record.gene_symbol or record.uniprot or "(unknown)"
-            for record in disconnected_nodes
-        ]
-        lines.append("Isolated nodes (Gene Symbols):\n" + "\n".join(labels))
-    else:
-        lines.append("No isolated nodes.")
-
-    if not components:
-        lines.append("No components (empty network).")
-    else:
-        component_lines = ["Components:"]
-        for component in components:
-            visible_nodes = (
-                component.nodes[:5]
-                if verbosity == "preview"
-                else component.nodes
-            )
-            node_labels = [
-                node.gene_symbol or node.uniprot or "(unknown)"
-                for node in visible_nodes
-            ]
-            label = "sample" if verbosity == "preview" else "nodes"
-            component_lines.append(
-                f"- {component.component_id}: size={component.size} "
-                f"avg_deg={component.average_degree} {label}={node_labels}"
-            )
-        lines.append("\n".join(component_lines))
-
-    return structured_report("\n\n".join(lines), payload)
-
-@mcp.tool(annotations=_READ_ONLY_OPEN)
+@mcp.tool(
+    title="Preview connection impact",
+    annotations=_READ_ONLY_OPEN,
+    structured_output=True,
+)
 @session_locked
 def preview_connection_impact(
         method: NormalizedConnectorMethod = Field("hubs", description="Suggestion strategy: 'hubs' (rank high-degree nodes), 'relax_max_len' (simulate +1 max_len), 'unsigned' (simulate allowing unsigned interactions)."),
@@ -2081,16 +1532,7 @@ def preview_connection_impact(
     
     # --- HUBS METHOD ---
     if method == 'hubs':
-        deg = {}
-        try:
-            # Calculate degrees natively using Uniprot IDs from the edges dataframe
-            sources = network.edges["source"].tolist()
-            targets = network.edges["target"].tolist()
-            for s, t in zip(sources, targets):
-                if pd.notna(s) and s != "": deg[s] = deg.get(s, 0) + 1
-                if pd.notna(t) and t != "": deg[t] = deg.get(t, 0) + 1
-        except Exception:
-            pass
+        deg = _edge_degrees(network.edges)
             
         if not deg:
             payload = NeKoConnectionPreviewResult(
@@ -2212,7 +1654,11 @@ def preview_connection_impact(
         
     return structured_report("\n".join(lines), payload)
 
-@mcp.tool(annotations=_NON_IDEMPOTENT_OPEN)
+@mcp.tool(
+    title="Bridge network components",
+    annotations=_NON_IDEMPOTENT_OPEN,
+    structured_output=True,
+)
 @session_locked
 def bridge_components(
         comp_a: NonEmptyStringList = Field(..., description="First group: a list of actual Gene Symbols already present in the network (e.g. ['TP53', 'MDM2']). This is NOT the integer 'component_id' reported by analyze_connectivity() - pass the gene names belonging to that component instead."),
@@ -2259,7 +1705,11 @@ def bridge_components(
     except Exception as e:
         raise RuntimeError(f"Bridging failed: {e}") from e
 
-@mcp.tool(annotations=_NON_IDEMPOTENT_OPEN)
+@mcp.tool(
+    title="Connect targeted genes",
+    annotations=_NON_IDEMPOTENT_OPEN,
+    structured_output=True,
+)
 @session_locked
 def connect_targeted_nodes(
         strategy: Annotated[TargetStrategy, Field(description="Targeted strategy.")],
@@ -2315,7 +1765,11 @@ def connect_targeted_nodes(
     except Exception as e:
         raise RuntimeError(f"Targeted strategy failed: {e}") from e
 
-@mcp.tool(annotations=_NON_IDEMPOTENT_OPEN)
+@mcp.tool(
+    title="Apply global connection strategy",
+    annotations=_NON_IDEMPOTENT_OPEN,
+    structured_output=True,
+)
 @session_locked
 def apply_global_connection(
         strategy: Annotated[GlobalStrategy, Field(description="Global connection strategy.")],

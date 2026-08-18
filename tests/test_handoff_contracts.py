@@ -61,7 +61,7 @@ def _provenance(
 
 
 def _write(path: Path, text: str) -> Path:
-    path.write_text(text, encoding="utf-8")
+    path.write_text(text, encoding="utf-8", newline="")
     return path
 
 
@@ -635,11 +635,15 @@ def test_verify_detects_size_digest_and_missing_file_changes(
         role="neko_bnet",
     )
 
-    artifact_path.write_text("A, B\nB, A\n", encoding="utf-8")
+    artifact_path.write_text(
+        "A, B\nB, A\n",
+        encoding="utf-8",
+        newline="",
+    )
     with pytest.raises(ValueError, match="size changed"):
         verify_handoff_artifact(artifact)
 
-    artifact_path.write_text("B, A\n", encoding="utf-8")
+    artifact_path.write_text("B, A\n", encoding="utf-8", newline="")
     with pytest.raises(ValueError, match="digest changed"):
         verify_handoff_artifact(artifact)
 

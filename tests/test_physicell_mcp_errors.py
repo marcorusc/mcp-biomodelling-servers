@@ -63,12 +63,7 @@ def _install_physicell_import_stubs() -> None:
     )
 
 
-PHYSICELL_DIR = Path(__file__).parent.parent / "PhysiCell"
-sys.path.insert(0, str(PHYSICELL_DIR))
 _install_physicell_import_stubs()
-
-# The launchers import their local session manager as the top-level module.
-sys.modules.pop("session_manager", None)
 
 from mcp_biomodelling_servers.handoff import (  # noqa: E402
     HandoffNetwork,
@@ -720,6 +715,8 @@ def test_workflow_prompt_manual_resource_and_help_share_guidance() -> None:
     assert str(resources.resources[0].uri) == (
         "docs://physicell/agent_manual"
     )
+    assert resources.resources[0].name == "PhysiCell Agent Operations Manual"
+    assert resources.resources[0].title == "PhysiCell agent operations manual"
     assert resources.resources[0].mime_type == "text/markdown"
     assert len(templates.resource_templates) == 7
 
@@ -735,37 +732,48 @@ def test_workflow_prompt_manual_resource_and_help_share_guidance() -> None:
 def test_session_resource_templates_publish_exact_contracts() -> None:
     templates = _run(_list_resource_templates()).resource_templates
     published = {
-        str(template.uri_template): (template.name, template.mime_type)
+        str(template.uri_template): (
+            template.name,
+            template.title,
+            template.mime_type,
+        )
         for template in templates
     }
 
     assert published == {
         "physicell://session/{session_id}/workflow": (
             "PhysiCell Workflow Status",
+            "PhysiCell workflow status",
             "text/markdown",
         ),
         "physicell://session/{session_id}/domain": (
             "PhysiCell Domain",
+            "PhysiCell simulation domain",
             "text/markdown",
         ),
         "physicell://session/{session_id}/substrates": (
             "PhysiCell Substrates",
+            "PhysiCell substrates",
             "text/markdown",
         ),
         "physicell://session/{session_id}/cell_types": (
             "PhysiCell Cell Types",
+            "PhysiCell cell types",
             "text/markdown",
         ),
         "physicell://session/{session_id}/cell_rules": (
             "PhysiCell Cell Rules",
+            "PhysiCell cell rules",
             "text/markdown",
         ),
         "physicell://session/{session_id}/physiboss": (
             "PhysiBoSS Integration",
+            "PhysiBoSS integration",
             "text/markdown",
         ),
         "physicell://session/{session_id}/files": (
             "PhysiCell Artifact Files",
+            "PhysiCell artifact files",
             "text/markdown",
         ),
     }
@@ -2746,6 +2754,7 @@ def test_all_physicell_tools_publish_safety_annotations() -> None:
         assert annotations.idempotent_hint is (
             tool_name in read_only | idempotent | idempotent_destructive
         )
+        assert tool.title
         assert tool.output_schema is not None
 
 

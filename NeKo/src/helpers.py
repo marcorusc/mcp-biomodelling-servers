@@ -5,36 +5,25 @@ standalone utility functions that support server.py tools but are not
 themselves MCP-exposed tools or resources.
 """
 
-import os
-import sys
 import glob
 import inspect
+import os
 import re
-import tempfile
-import requests
-from pathlib import Path
-from typing import Optional, List
 from functools import wraps
+from pathlib import Path
+from typing import List, Optional
 
 import pandas as pd
+import requests
 
-# ── Path bootstrap ─────────────────────────────────────────────────────────────
-# Allow imports from NeKo/ (utils, session_manager) and the repo root
-# (artifact_manager) without requiring an installed package.
-_NEKO_ROOT = Path(__file__).parent.parent   # .../NeKo/
-_REPO_ROOT = _NEKO_ROOT.parent              # .../mcp-biomodelling-servers/
+from mcp_biomodelling_servers.artifact_manager import get_artifact_dir
 
-for _p in (_NEKO_ROOT, _REPO_ROOT):
-    _ps = str(_p)
-    if _ps not in sys.path:
-        sys.path.insert(0, _ps)
-
-from neko._outputs.exports import Exports   # noqa: E402 (post-path setup)
-from utils import clean_for_markdown        # noqa: E402
-from session_manager import ensure_session, session_manager  # noqa: E402
-from artifact_manager import get_artifact_dir  # noqa: E402
+from ..session_manager import ensure_session, session_manager
+from ..utils import clean_for_markdown
 
 # ── Constants ──────────────────────────────────────────────────────────────────
+
+_NEKO_ROOT = Path(__file__).parent.parent   # .../NeKo/
 
 #: Canonical error message for tools that require a network but find none.
 E_NO_NET = "E_NO_NET: No network in session. Call create_session() then create_network()."
@@ -141,25 +130,33 @@ def _compute_components(network) -> List[List[str]]:
 
     Returns a list of node-lists sorted from largest to smallest component.
     """
-    # Seed all known nodes so that isolates appear as singleton components.
-    try:
-        all_nodes = set(network.nodes["Uniprot"].tolist())
-    except Exception:
-        all_nodes = set()
+    nodes = getattr(network, "nodes", None)
+    if nodes is None or "Uniprot" not in nodes.columns:
+        raise ValueError(
+            "Network node data are missing the required Uniprot column."
+        )
+    all_nodes = set(nodes["Uniprot"].tolist())
 
     adj: dict = {str(n): set() for n in all_nodes if pd.notna(n) and n != ""}
 
-    # Build undirected adjacency from the edge list.
-    try:
-        sources = network.edges["source"].tolist()
-        targets = network.edges["target"].tolist()
-        for s, t in zip(sources, targets):
-            if pd.notna(s) and pd.notna(t) and s != "" and t != "":
-                s_str, t_str = str(s), str(t)
-                adj.setdefault(s_str, set()).add(t_str)
-                adj.setdefault(t_str, set()).add(s_str)
-    except Exception:
-        pass
+    edges = getattr(network, "edges", None)
+    if edges is None or not {"source", "target"}.issubset(edges.columns):
+        raise ValueError(
+            "Network edge data are missing required source/target columns."
+        )
+    for source, target in edges[["source", "target"]].itertuples(
+        index=False,
+        name=None,
+    ):
+        if (
+            pd.notna(source)
+            and pd.notna(target)
+            and source != ""
+            and target != ""
+        ):
+            source_text, target_text = str(source), str(target)
+            adj.setdefault(source_text, set()).add(target_text)
+            adj.setdefault(target_text, set()).add(source_text)
 
     if not adj:
         return []
@@ -300,7 +297,7 @@ def clean_bnet_headers(folder_path: str = ".") -> str:  # pragma: no cover
     warnings.warn("clean_bnet_headers is deprecated; use sanitize_bnet_file.", DeprecationWarning)
     results = []
     for fp in glob.glob(os.path.join(folder_path, "*.bnet")):
-        r = sanitize_bnet_file(fp)
+        sanitize_bnet_file(fp)
         results.append(os.path.basename(fp))
     return f"Sanitized: {', '.join(results)}" if results else "No .bnet files found."
 
@@ -318,6 +315,6 @@ def _get_translators(network):
         symbol_to_uniprot = dict(zip(clean_df['Genesymbol'], clean_df['Uniprot']))
         
         return uniprot_to_symbol, symbol_to_uniprot
-    except Exception as e:
+    except Exception:
         # Fallback to empty dicts if columns are missing
         return {}, {}

@@ -10,33 +10,19 @@ This server provides tools for configuring PhysiCell biological simulations:
 Features lightweight session management and progress tracking.
 """
 
-import inspect
 import math
-import os
-import shutil
-import sys
-import tempfile
 import time
 from collections.abc import Mapping
-from contextlib import ExitStack
 from copy import deepcopy
-from functools import wraps
 from pathlib import Path
 from threading import RLock
-from typing import Annotated, Any, Literal, Optional
+from typing import Annotated, Optional
 
-from mcp.server.mcpserver.exceptions import ResourceNotFoundError
-from mcp.types import CallToolResult, ToolAnnotations
+from mcp.types import CallToolResult
 from pydantic import Field
 
-# Add the physicell_config package to Python path
-current_dir = Path(__file__).parent
-sys.path.insert(0, str(current_dir))
-
-# Make repo root importable for shared artifact_manager
-sys.path.insert(0, str(current_dir.parent))
-from artifact_manager import (
-    METADATA_FILENAME,
+from mcp_biomodelling_servers import __version__
+from mcp_biomodelling_servers.artifact_manager import (
     clean_artifacts,
     get_artifact_dir,
     list_artifacts,
@@ -44,17 +30,8 @@ from artifact_manager import (
     safe_artifact_path,
     write_session_meta,
 )
-from mcp_biomodelling_servers import __version__
 from mcp_biomodelling_servers.handoff import (
-    MaBoSSToPhysiCellHandoffManifest,
-    NeKoToMaBoSSHandoffManifest,
     PhysiCellHandoffImportResult,
-    bnd_node_names,
-    handoff_artifact,
-    load_handoff_manifest,
-    sha256_file,
-    verify_handoff_artifact,
-    verify_handoff_manifest,
 )
 from mcp_biomodelling_servers.structured_outputs import (
     ArtifactSessionSummary,
@@ -68,7 +45,21 @@ from mcp_biomodelling_servers.structured_outputs import (
     artifact_file_summary,
     structured_report,
 )
-from physicell_outputs import (
+from .app import mcp
+from .contracts import (
+    DESTRUCTIVE as _DESTRUCTIVE_TOOL,
+    IDEMPOTENT as _IDEMPOTENT_TOOL,
+    IDEMPOTENT_DESTRUCTIVE as _IDEMPOTENT_DESTRUCTIVE_TOOL,
+    NON_IDEMPOTENT as _NON_IDEMPOTENT_TOOL,
+    READ_ONLY as _READ_ONLY_TOOL,
+    ComponentType,
+    HandoffArtifactPrefix,
+    MutationState,
+    NonEmptyString,
+    PhysiBoSSAction,
+    RuleDirection,
+)
+from .physicell_outputs import (
     PhysiCellBehaviorListResult,
     PhysiCellBehaviorRecord,
     PhysiCellCellTypeRecord,
@@ -85,9 +76,35 @@ from physicell_outputs import (
     PhysiCellWorkflowStatusResult,
     PhysiCellXmlValidationResult,
 )
-from physicell_guidance import PHYSICELL_AGENT_MANUAL
+from .physicell_guidance import (
+    PHYSICELL_AGENT_MANUAL,
+    PHYSICELL_SERVER_INSTRUCTIONS,
+)
+from .locking import (
+    optional_session_locked as _optional_session_locked,
+    resource_session_locked as _resource_session_locked,
+    session_locked as _session_locked,
+)
+from .services.artifacts import (
+    copy_verified_handoff_artifact as _copy_verified_handoff_artifact,
+    link_handoff_artifact_without_overwrite as _link_handoff_artifact_without_overwrite,
+    require_unused_handoff_paths as _require_unused_handoff_paths,
+    rollback_handoff_artifacts as _rollback_handoff_artifacts,
+    validate_export_filename as _validate_export_filename,
+)
+from .services.handoff import (
+    import_maboss_handoff_transaction as _import_maboss_handoff_transaction,
+)
+from .services.resource_views import (
+    configuration_cell_type as _configuration_cell_type,
+    configuration_substrates as _configuration_substrates,
+    display_value as _display_value,
+    format_files_resource as _render_files_resource,
+    mapping_at as _mapping_at,
+    preserved_interaction_value as _preserved_interaction_value,
+)
 
-_SERVER_ROOT = current_dir
+_SERVER_ROOT = Path(__file__).parent
 
 from physicell_config import PhysiCellConfig
 from physicell_config.config.embedded_signals_behaviors import (
@@ -108,175 +125,39 @@ except ImportError:
     PHYSIBOSS_AVAILABLE = False
 
 # Import session management
-from session_manager import (
+from .session_manager import (
     session_manager, SessionState, WorkflowStep, MaBoSSContext,
     get_current_session, analyze_and_update_session_from_config
 )
 
-from mcp.server.mcpserver import MCPServer
-
-PHYSICELL_SERVER_INSTRUCTIONS = (
-    "Create one session per PhysiCell model and pass `session_id` explicitly "
-    "when multiple configurations are active. For a new model, create the "
-    "domain before adding substrates and cell types; for existing XML, "
-    "validate, load, and analyze it before editing. When revising "
-    "`configure_cell_parameters()`, `set_substrate_interaction()`, or "
-    "`configure_physiboss_settings()`, provide only the values that should "
-    "change; omitted configuration values are preserved. Prefer "
-    "`import_maboss_handoff()` for an integrity-checked "
-    "PhysiBoSS model transfer, then configure its timing and biologically "
-    "justified signal/node mappings. Inspect session resources or "
-    "`get_simulation_summary()` before export. Read "
-    "`docs://physicell/agent_manual` or use "
-    "`physicell_workflow_prompt` for the complete workflow."
+from .tools.guidance import (
+    physicell_agent_manual_resource,
+    physicell_workflow_prompt,
+)
+from .tools.resources import (
+    physicell_cell_rules_resource,
+    physicell_cell_types_resource,
+    physicell_domain_resource,
+    physicell_physiboss_resource,
+    physicell_substrates_resource,
 )
 
-mcp = MCPServer(
-    "PhysiCell",
-    title="PhysiCell Configuration Builder",
-    description=(
-        "Create, inspect, and export PhysiCell simulation configuration files."
-    ),
-    instructions=PHYSICELL_SERVER_INSTRUCTIONS,
-    version=__version__,
-)
-
-
-@mcp.prompt(
-    name="physicell_workflow_prompt",
-    title="Build or revise a PhysiCell configuration",
-    description=(
-        "Operating manual for creating, modifying, integrating, and "
-        "exporting PhysiCell configurations."
-    ),
-)
-def physicell_workflow_prompt() -> str:
-    """Return the PhysiCell configuration-building workflow."""
-    return PHYSICELL_AGENT_MANUAL
-
-
-@mcp.resource(
-    uri="docs://physicell/agent_manual",
-    name="PhysiCell Agent Operations Manual",
-    description=(
-        "Single source of truth for PhysiCell configuration workflows, "
-        "repeatable operations, PhysiBoSS integration, and export."
-    ),
-    mime_type="text/markdown",
-)
-def physicell_agent_manual_resource() -> str:
-    """Return the PhysiCell agent operations manual."""
-    return PHYSICELL_AGENT_MANUAL
+__all__ = [
+    "PHYSICELL_AGENT_MANUAL",
+    "PHYSICELL_SERVER_INSTRUCTIONS",
+    "__version__",
+    "mcp",
+    "physicell_agent_manual_resource",
+    "physicell_cell_rules_resource",
+    "physicell_cell_types_resource",
+    "physicell_domain_resource",
+    "physicell_physiboss_resource",
+    "physicell_substrates_resource",
+    "physicell_workflow_prompt",
+]
 
 
 _signals_behaviors_lock = RLock()
-
-NonEmptyString = Annotated[
-    str,
-    Field(
-        min_length=1,
-        pattern=r".*\S.*",
-        description="A non-empty string containing at least one non-whitespace character.",
-    ),
-]
-ComponentType = Literal["substrates", "cell_types", "physiboss", "all"]
-RuleDirection = Literal["increases", "decreases"]
-PhysiBoSSAction = Literal["activation", "inhibition"]
-MutationState = Literal[0, 1]
-HandoffArtifactPrefix = Annotated[
-    str,
-    Field(
-        min_length=1,
-        max_length=128,
-        pattern=r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9_-])?$",
-        description=(
-            "Safe basename prefix for copied handoff artifacts. Directory "
-            "components and a trailing dot are forbidden."
-        ),
-    ),
-]
-
-_READ_ONLY_TOOL = ToolAnnotations(
-    read_only_hint=True,
-    destructive_hint=False,
-    idempotent_hint=True,
-    open_world_hint=False,
-)
-_IDEMPOTENT_TOOL = ToolAnnotations(
-    read_only_hint=False,
-    destructive_hint=False,
-    idempotent_hint=True,
-    open_world_hint=False,
-)
-_NON_IDEMPOTENT_TOOL = ToolAnnotations(
-    read_only_hint=False,
-    destructive_hint=False,
-    idempotent_hint=False,
-    open_world_hint=False,
-)
-_DESTRUCTIVE_TOOL = ToolAnnotations(
-    read_only_hint=False,
-    destructive_hint=True,
-    idempotent_hint=False,
-    open_world_hint=False,
-)
-_IDEMPOTENT_DESTRUCTIVE_TOOL = ToolAnnotations(
-    read_only_hint=False,
-    destructive_hint=True,
-    idempotent_hint=True,
-    open_world_hint=False,
-)
-
-
-def _session_locked(handler):
-    """Run a synchronous handler under its session's exclusive lease."""
-    signature = inspect.signature(handler)
-
-    @wraps(handler)
-    def locked_handler(*args, **kwargs):
-        arguments = signature.bind_partial(*args, **kwargs).arguments
-        with session_manager.session_scope(arguments.get("session_id")):
-            return handler(*args, **kwargs)
-
-    return locked_handler
-
-
-def _optional_session_locked(handler):
-    """Lease an optional session without creating an absent default."""
-    signature = inspect.signature(handler)
-
-    @wraps(handler)
-    def locked_handler(*args, **kwargs):
-        arguments = signature.bind_partial(*args, **kwargs).arguments
-        with session_manager.optional_session_scope(
-            arguments.get("session_id")
-        ):
-            return handler(*args, **kwargs)
-
-    return locked_handler
-
-
-def _resource_session_locked(handler):
-    """Lease a resource session and preserve typed lookup failures."""
-    signature = inspect.signature(handler)
-
-    @wraps(handler)
-    def locked_handler(*args, **kwargs):
-        arguments = signature.bind_partial(*args, **kwargs).arguments
-        session_id = arguments["session_id"]
-        stack = ExitStack()
-        try:
-            stack.enter_context(session_manager.session_scope(session_id))
-        except ValueError as exc:
-            raise ResourceNotFoundError(
-                f"PhysiCell session not found: {session_id}"
-            ) from exc
-
-        with stack:
-            return handler(*args, **kwargs)
-
-    return locked_handler
-
 
 def _require_session(session_id: Optional[str] = None) -> SessionState:
     """Return an existing session or raise an actionable tool error."""
@@ -298,17 +179,6 @@ def _require_configuration(session_id: Optional[str] = None) -> SessionState:
     return session
 
 
-def _require_resource_configuration(session_id: str) -> SessionState:
-    """Return resource state or raise the SDK v2 typed not-found error."""
-    session = _require_session(session_id)
-    if session.config is None:
-        raise ResourceNotFoundError(
-            "No PhysiCell configuration in this session. "
-            "Call create_simulation_domain first."
-        )
-    return session
-
-
 def _require_loaded_configuration(session_id: Optional[str] = None) -> SessionState:
     """Return a session containing a configuration loaded from XML."""
     session = _require_session(session_id)
@@ -326,86 +196,6 @@ def _require_physiboss() -> None:
             "PhysiBoSS support is not available in the installed "
             "`physicell-settings` package."
         )
-
-
-def _validate_export_filename(filename: str, expected_suffix: str) -> str:
-    """Require a plain export basename with the expected file extension."""
-    if not filename or not filename.strip():
-        raise ValueError("Export filename cannot be empty.")
-    if filename != filename.strip():
-        raise ValueError("Export filename cannot contain surrounding whitespace.")
-    if "\x00" in filename:
-        raise ValueError("Export filename cannot contain null bytes.")
-    if filename in {".", ".."}:
-        raise ValueError(f"Invalid export filename: {filename!r}.")
-    if Path(filename).is_absolute() or "/" in filename or "\\" in filename:
-        raise ValueError(
-            "Export filename must be a basename without directory components: "
-            f"{filename!r}."
-        )
-    if Path(filename).suffix.lower() != expected_suffix.lower():
-        raise ValueError(
-            f"Export filename must use the {expected_suffix} extension: "
-            f"{filename!r}."
-        )
-    return filename
-
-
-def _require_unused_handoff_paths(paths: list[Path]) -> None:
-    """Reject an import prefix when any destination already exists."""
-    existing = [path for path in paths if path.exists()]
-    if existing:
-        raise FileExistsError(
-            "Refusing to overwrite existing PhysiCell handoff artifacts: "
-            + ", ".join(str(path) for path in existing)
-            + ". Choose a different artifact_prefix."
-        )
-
-
-def _copy_verified_handoff_artifact(artifact, destination: Path) -> None:
-    """Copy one verified source artifact and retain its recorded bytes."""
-    source = verify_handoff_artifact(artifact)
-    try:
-        shutil.copyfile(source, destination)
-    except OSError as exc:
-        raise RuntimeError(
-            f"Could not copy handoff artifact {source}: {exc}"
-        ) from exc
-    if destination.stat().st_size != artifact.size_bytes:
-        raise RuntimeError(
-            f"Copied handoff artifact size changed for {source}."
-        )
-    if sha256_file(destination) != artifact.sha256:
-        raise RuntimeError(
-            f"Copied handoff artifact digest changed for {source}."
-        )
-
-
-def _link_handoff_artifact_without_overwrite(
-    source: Path,
-    destination: Path,
-) -> None:
-    """Atomically publish one complete temporary artifact if absent."""
-    if not source.is_file():
-        raise FileNotFoundError(
-            f"Expected temporary handoff artifact was not created: {source}"
-        )
-    try:
-        os.link(source, destination)
-    except FileExistsError as exc:
-        raise FileExistsError(
-            "Refusing to overwrite a PhysiCell handoff artifact created "
-            f"concurrently: {destination}"
-        ) from exc
-
-
-def _rollback_handoff_artifacts(paths: list[Path]) -> None:
-    """Best-effort cleanup for an incomplete multi-file import."""
-    for path in reversed(paths):
-        try:
-            path.unlink(missing_ok=True)
-        except OSError:
-            pass
 
 
 def _physiboss_tracking(
@@ -664,459 +454,15 @@ def _workflow_status_payload(
     )
 
 
-def _mapping_from_method(
-    owner: object,
-    method_name: str,
-) -> Mapping[str, Any]:
-    """Return a backend mapping while retaining useful backend failures."""
-    method = getattr(owner, method_name, None)
-    if method is not None:
-        value = method()
-        if not isinstance(value, Mapping):
-            raise TypeError(
-                f"{type(owner).__name__}.{method_name}() did not return a mapping."
-            )
-        return value
-
-    data = getattr(owner, "data", None)
-    if isinstance(data, Mapping):
-        return data
-    return {}
-
-
-def _mapping_at(value: object, *keys: str) -> Mapping[str, Any]:
-    """Read a nested mapping, returning an empty mapping when absent."""
-    current = value
-    for key in keys:
-        if not isinstance(current, Mapping):
-            return {}
-        current = current.get(key)
-    return current if isinstance(current, Mapping) else {}
-
-
-def _configuration_cell_type(
-    config: object,
-    cell_type: str,
-) -> Mapping[str, Any]:
-    """Return one configured cell type or raise an actionable error."""
-    try:
-        cell_types = config.cell_types.get_cell_types()
-    except Exception as exc:
-        raise RuntimeError(
-            f"Could not inspect PhysiCell cell types: {exc}"
-        ) from exc
-    if not isinstance(cell_types, Mapping):
-        raise TypeError(
-            "PhysiCell cell_types.get_cell_types() did not return a mapping."
-        )
-    if cell_type not in cell_types:
-        available = ", ".join(str(name) for name in cell_types) or "none"
-        raise ValueError(
-            f"Cell type {cell_type!r} is not configured. "
-            f"Available cell types: {available}."
-        )
-    cell_data = cell_types[cell_type]
-    if not isinstance(cell_data, Mapping):
-        raise TypeError(
-            f"PhysiCell cell type {cell_type!r} did not return a mapping."
-        )
-    return cell_data
-
-
-def _configuration_substrates(config: object) -> Mapping[str, Any]:
-    """Return configured substrates or raise when the backend is malformed."""
-    try:
-        substrates = config.substrates.get_substrates()
-    except Exception as exc:
-        raise RuntimeError(
-            f"Could not inspect PhysiCell substrates: {exc}"
-        ) from exc
-    if not isinstance(substrates, Mapping):
-        raise TypeError(
-            "PhysiCell substrates.get_substrates() did not return a mapping."
-        )
-    return substrates
-
-
-def _preserved_interaction_value(
-    interaction: Mapping[str, Any],
-    key: str,
-    default: float,
-) -> float:
-    """Read one existing secretion value without accepting malformed data."""
-    value = interaction.get(key, default)
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, (int, float))
-        or not math.isfinite(float(value))
-    ):
-        raise ValueError(
-            f"Existing substrate interaction field {key!r} must be a finite "
-            "number."
-        )
-    return float(value)
-
-
-def _display_value(value: object) -> str:
-    """Format one compact, human-readable resource value."""
-    if value is None or value == "":
-        return "unavailable"
-    if isinstance(value, bool):
-        return "yes" if value else "no"
-    if isinstance(value, float):
-        return f"{value:g}" if math.isfinite(value) else str(value)
-    return str(value)
-
-
-def _attribute_or_mapping_value(
-    owner: object,
-    mapping: Mapping[str, Any],
-    key: str,
-) -> Any:
-    """Read a mapping value with an attribute fallback for test/backends."""
-    if key in mapping:
-        return mapping[key]
-    return getattr(owner, key, None)
-
-
-def _display_extent(lower: object, upper: object) -> str:
-    """Format an axis extent when both configured bounds are numeric."""
-    try:
-        extent = float(upper) - float(lower)
-    except (TypeError, ValueError):
-        return "unavailable"
-    return _display_value(extent)
-
-
-def _format_domain_resource(session: SessionState) -> str:
-    """Render the spatial and temporal configuration."""
-    config = session.config
-    domain = config.domain
-    options = config.options
-    domain_info = _mapping_from_method(domain, "get_info")
-    options_info = _mapping_from_method(options, "get_options")
-
-    def domain_value(key: str) -> Any:
-        return _attribute_or_mapping_value(domain, domain_info, key)
-
-    def option_value(key: str) -> Any:
-        return _attribute_or_mapping_value(options, options_info, key)
-
-    units = _display_value(option_value("space_units"))
-    time_units = _display_value(option_value("time_units"))
-    mode = "2D" if bool(domain_value("use_2D")) else "3D"
-    lines = [
-        "# PhysiCell Domain",
-        "",
-        f"- Session: `{session.session_id}`",
-        f"- Mode: {mode}",
-        (
-            "- Bounds: "
-            f"x=[{_display_value(domain_value('x_min'))}, "
-            f"{_display_value(domain_value('x_max'))}], "
-            f"y=[{_display_value(domain_value('y_min'))}, "
-            f"{_display_value(domain_value('y_max'))}], "
-            f"z=[{_display_value(domain_value('z_min'))}, "
-            f"{_display_value(domain_value('z_max'))}] {units}"
-        ),
-        (
-            "- Extent: "
-            f"x={_display_extent(domain_value('x_min'), domain_value('x_max'))}, "
-            f"y={_display_extent(domain_value('y_min'), domain_value('y_max'))}, "
-            f"z={_display_extent(domain_value('z_min'), domain_value('z_max'))} "
-            f"{units}"
-        ),
-        (
-            "- Mesh spacing: "
-            f"dx={_display_value(domain_value('dx'))}, "
-            f"dy={_display_value(domain_value('dy'))}, "
-            f"dz={_display_value(domain_value('dz'))} {units}"
-        ),
-        (
-            "- Maximum time: "
-            f"{_display_value(option_value('max_time'))} {time_units}"
-        ),
-        (
-            "- Time steps: "
-            f"diffusion={_display_value(option_value('dt_diffusion'))}, "
-            f"mechanics={_display_value(option_value('dt_mechanics'))}, "
-            f"phenotype={_display_value(option_value('dt_phenotype'))} "
-            f"{time_units}"
-        ),
-    ]
-    return "\n".join(lines)
-
-
-def _format_substrates_resource(session: SessionState) -> str:
-    """Render configured diffusible substrates."""
-    substrates = _mapping_from_method(
-        session.config.substrates,
-        "get_substrates",
-    )
-    lines = [
-        "# PhysiCell Substrates",
-        "",
-        f"- Session: `{session.session_id}`",
-        f"- Count: {len(substrates)}",
-        "",
-    ]
-    if not substrates:
-        lines.append("No substrates configured.")
-        return "\n".join(lines)
-
-    for name, raw_data in sorted(
-        substrates.items(),
-        key=lambda item: str(item[0]),
-    ):
-        data = raw_data if isinstance(raw_data, Mapping) else {}
-        dirichlet = (
-            f"enabled at {_display_value(data.get('dirichlet_value'))}"
-            if data.get("dirichlet_enabled")
-            else "disabled"
-        )
-        lines.append(
-            f"- **{name}** — "
-            f"diffusion={_display_value(data.get('diffusion_coefficient'))}; "
-            f"decay={_display_value(data.get('decay_rate'))}; "
-            f"initial={_display_value(data.get('initial_condition'))} "
-            f"{_display_value(data.get('units'))}; "
-            f"Dirichlet={dirichlet}"
-        )
-    return "\n".join(lines)
-
-
-def _format_cell_types_resource(session: SessionState) -> str:
-    """Render the principal phenotype values for each cell type."""
-    cell_types = _mapping_from_method(
-        session.config.cell_types,
-        "get_cell_types",
-    )
-    lines = [
-        "# PhysiCell Cell Types",
-        "",
-        f"- Session: `{session.session_id}`",
-        f"- Count: {len(cell_types)}",
-        "",
-    ]
-    if not cell_types:
-        lines.append("No cell types configured.")
-        return "\n".join(lines)
-
-    for name, raw_data in sorted(
-        cell_types.items(),
-        key=lambda item: str(item[0]),
-    ):
-        data = raw_data if isinstance(raw_data, Mapping) else {}
-        phenotype = _mapping_at(data, "phenotype")
-        cycle = _mapping_at(phenotype, "cycle")
-        volume = _mapping_at(phenotype, "volume")
-        motility = _mapping_at(phenotype, "motility")
-        death = _mapping_at(phenotype, "death")
-        apoptosis = _mapping_at(death, "apoptosis")
-        necrosis = _mapping_at(death, "necrosis")
-        lines.append(
-            f"- **{name}** — "
-            f"cycle={_display_value(cycle.get('model'))}; "
-            "volume("
-            f"total={_display_value(volume.get('total'))}, "
-            f"nuclear={_display_value(volume.get('nuclear'))}); "
-            "motility("
-            f"speed={_display_value(motility.get('speed'))}, "
-            "persistence="
-            f"{_display_value(motility.get('persistence_time'))}); "
-            "death("
-            f"apoptosis={_display_value(apoptosis.get('default_rate'))}, "
-            f"necrosis={_display_value(necrosis.get('default_rate'))}); "
-            f"PhysiBoSS={_display_value('intracellular' in phenotype)}"
-        )
-    return "\n".join(lines)
-
-
-def _format_cell_rules_resource(session: SessionState) -> str:
-    """Render cell rules and external ruleset declarations."""
-    rules_module = session.config.cell_rules
-    rules = rules_module.get_rules()
-    if not isinstance(rules, list):
-        raise TypeError(
-            f"{type(rules_module).__name__}.get_rules() did not return a list."
-        )
-    rulesets = _mapping_from_method(rules_module, "get_rulesets")
-    lines = [
-        "# PhysiCell Cell Rules",
-        "",
-        f"- Session: `{session.session_id}`",
-        f"- Rule count: {len(rules)}",
-        f"- Ruleset count: {len(rulesets)}",
-        "",
-    ]
-    if not rules:
-        lines.append("No cell rules configured.")
-    else:
-        for raw_rule in rules:
-            rule = raw_rule if isinstance(raw_rule, Mapping) else {}
-            lines.append(
-                "- "
-                f"**{_display_value(rule.get('cell_type'))}**: "
-                f"{_display_value(rule.get('signal'))} "
-                f"{_display_value(rule.get('direction'))} "
-                f"{_display_value(rule.get('behavior'))}; "
-                "saturation="
-                f"{_display_value(rule.get('saturation_value'))}; "
-                f"half-max={_display_value(rule.get('half_max'))}; "
-                f"Hill={_display_value(rule.get('hill_power'))}; "
-                "apply-to-dead="
-                f"{_display_value(bool(rule.get('apply_to_dead', False)))}"
-            )
-
-    if rulesets:
-        lines.extend(["", "## Rulesets", ""])
-        for name, raw_data in sorted(
-            rulesets.items(),
-            key=lambda item: str(item[0]),
-        ):
-            data = raw_data if isinstance(raw_data, Mapping) else {}
-            folder = data.get("folder")
-            filename = data.get("filename")
-            path = (
-                str(Path(str(folder)) / str(filename))
-                if folder and filename
-                else "unavailable"
-            )
-            lines.append(
-                f"- **{name}** — enabled="
-                f"{_display_value(data.get('enabled'))}; file=`{path}`"
-            )
-    return "\n".join(lines)
-
-
-def _format_physiboss_resource(session: SessionState) -> str:
-    """Render upstream MaBoSS context and configured intracellular models."""
-    lines = [
-        "# PhysiBoSS Integration",
-        "",
-        f"- Session: `{session.session_id}`",
-    ]
-    contexts = list(session.maboss_contexts.values())
-    if contexts:
-        lines.extend(
-            [
-                "",
-                "## MaBoSS contexts",
-                "",
-                f"- Context count: {len(contexts)}",
-            ]
-        )
-        for context in contexts:
-            lines.extend(
-                [
-                    "",
-                    (
-                        f"### {_display_value(context.target_cell_type)} — "
-                        f"{_display_value(context.model_name)}"
-                    ),
-                    "",
-                    f"- Model: {_display_value(context.model_name)}",
-                    f"- BND file: `{context.bnd_file_path}`",
-                    f"- CFG file: `{context.cfg_file_path}`",
-                    f"- Available nodes: {len(context.available_nodes)}",
-                    f"- Output nodes: {len(context.output_nodes)}",
-                    (
-                        "- Source manifest: "
-                        f"`{context.source_manifest_path or 'not recorded'}`"
-                    ),
-                ]
-            )
-
-    intracellular_models: dict[str, Mapping[str, Any]] = {}
-    try:
-        cell_types = _mapping_from_method(
-            session.config.cell_types,
-            "get_cell_types",
-        )
-    except Exception:  # noqa: BLE001
-        cell_types = {}
-    for name, raw_data in cell_types.items():
-        data = raw_data if isinstance(raw_data, Mapping) else {}
-        intracellular = _mapping_at(data, "phenotype", "intracellular")
-        if intracellular:
-            intracellular_models[str(name)] = intracellular
-
-    known_names = sorted(
-        set(intracellular_models) | set(session.loaded_physiboss_models)
-    )
-    lines.extend(
-        [
-            "",
-            "## Intracellular models",
-            "",
-            f"- Model count: {len(known_names)}",
-            (
-                "- Tracked operations: "
-                f"settings={session.physiboss_settings_count}; "
-                f"inputs={session.physiboss_input_links_count}; "
-                f"outputs={session.physiboss_output_links_count}; "
-                f"mutations={session.physiboss_mutations_count}"
-            ),
-        ]
-    )
-    if not known_names:
-        lines.extend(["", "No PhysiBoSS integration configured."])
-        return "\n".join(lines)
-
-    for name in known_names:
-        intracellular = intracellular_models.get(name, {})
-        settings = _mapping_at(intracellular, "settings")
-        mapping = _mapping_at(intracellular, "mapping")
-        inputs = mapping.get("inputs")
-        outputs = mapping.get("outputs")
-        mutations = settings.get("mutations")
-        initial_values = intracellular.get("initial_values")
-        setting_values = "; ".join(
-            f"{key}={_display_value(value)}"
-            for key, value in settings.items()
-            if key != "mutations"
-        )
-        lines.append(
-            f"- **{name}** — "
-            f"type={_display_value(intracellular.get('type'))}; "
-            f"BND=`{_display_value(intracellular.get('bnd_filename'))}`; "
-            f"CFG=`{_display_value(intracellular.get('cfg_filename'))}`; "
-            f"settings=[{setting_values or 'none'}]; "
-            f"initial-values={len(initial_values) if isinstance(initial_values, list) else 0}; "
-            f"inputs={len(inputs) if isinstance(inputs, list) else 0}; "
-            f"outputs={len(outputs) if isinstance(outputs, list) else 0}; "
-            f"mutations={len(mutations) if isinstance(mutations, list) else 0}"
-        )
-    return "\n".join(lines)
-
-
 def _format_files_resource(session: SessionState) -> str:
     """Render generated files without creating an artifact directory."""
-    files = [
-        path
-        for path in list_artifacts(
-            _SERVER_ROOT,
-            session_id=session.session_id,
-        )
-        if path.name != METADATA_FILENAME
-    ]
-    lines = [
-        "# PhysiCell Artifact Files",
-        "",
-        f"- Session: `{session.session_id}`",
-        f"- Count: {len(files)}",
-        "",
-    ]
-    if not files:
-        lines.append("No artifact files found for this session.")
-    else:
-        lines.extend(f"- `{path}`" for path in files)
-    return "\n".join(lines)
+    return _render_files_resource(session, _SERVER_ROOT)
 
 
 @mcp.resource(
     uri="physicell://session/{session_id}/workflow",
     name="PhysiCell Workflow Status",
+    title="PhysiCell workflow status",
     description="Current configuration progress and recommended next actions.",
     mime_type="text/markdown",
 )
@@ -1126,77 +472,12 @@ def physicell_workflow_resource(session_id: str) -> str:
     return _format_simulation_summary(_require_session(session_id))
 
 
-@mcp.resource(
-    uri="physicell://session/{session_id}/domain",
-    name="PhysiCell Domain",
-    description="Spatial domain, mesh, duration, and simulation time steps.",
-    mime_type="text/markdown",
-)
-@_resource_session_locked
-def physicell_domain_resource(session_id: str) -> str:
-    """Return the configured domain for an existing session."""
-    return _format_domain_resource(_require_resource_configuration(session_id))
-
-
-@mcp.resource(
-    uri="physicell://session/{session_id}/substrates",
-    name="PhysiCell Substrates",
-    description="Configured substrates and their principal diffusion values.",
-    mime_type="text/markdown",
-)
-@_resource_session_locked
-def physicell_substrates_resource(session_id: str) -> str:
-    """Return configured substrates for an existing session."""
-    return _format_substrates_resource(
-        _require_resource_configuration(session_id)
-    )
-
-
-@mcp.resource(
-    uri="physicell://session/{session_id}/cell_types",
-    name="PhysiCell Cell Types",
-    description="Configured cell types and their principal phenotype values.",
-    mime_type="text/markdown",
-)
-@_resource_session_locked
-def physicell_cell_types_resource(session_id: str) -> str:
-    """Return configured cell types for an existing session."""
-    return _format_cell_types_resource(
-        _require_resource_configuration(session_id)
-    )
-
-
-@mcp.resource(
-    uri="physicell://session/{session_id}/cell_rules",
-    name="PhysiCell Cell Rules",
-    description="Configured signal-behavior rules and ruleset references.",
-    mime_type="text/markdown",
-)
-@_resource_session_locked
-def physicell_cell_rules_resource(session_id: str) -> str:
-    """Return configured cell rules for an existing session."""
-    return _format_cell_rules_resource(
-        _require_resource_configuration(session_id)
-    )
-
-
-@mcp.resource(
-    uri="physicell://session/{session_id}/physiboss",
-    name="PhysiBoSS Integration",
-    description="MaBoSS context and intracellular model configuration.",
-    mime_type="text/markdown",
-)
-@_resource_session_locked
-def physicell_physiboss_resource(session_id: str) -> str:
-    """Return PhysiBoSS integration state for an existing session."""
-    return _format_physiboss_resource(
-        _require_resource_configuration(session_id)
-    )
 
 
 @mcp.resource(
     uri="physicell://session/{session_id}/files",
     name="PhysiCell Artifact Files",
+    title="PhysiCell artifact files",
     description="Generated artifact files for an existing PhysiCell session.",
     mime_type="text/markdown",
 )
@@ -1210,7 +491,11 @@ def physicell_files_resource(session_id: str) -> str:
 # SESSION MANAGEMENT TOOLS
 # ============================================================================
 
-@mcp.tool(annotations=_NON_IDEMPOTENT_TOOL)
+@mcp.tool(
+    title="Create PhysiCell session",
+    annotations=_NON_IDEMPOTENT_TOOL,
+    structured_output=True,
+)
 def create_session(
     set_as_default: bool = Field(default=True, description="Set this as the default session for subsequent operations."),
     session_name: Optional[NonEmptyString] = Field(default=None, description="Optional human-readable name for cross-server linking (e.g., 'gastric_cancer_v1')."),
@@ -1246,7 +531,11 @@ def create_session(
     
     return result
 
-@mcp.tool(annotations=_READ_ONLY_TOOL)
+@mcp.tool(
+    title="List PhysiCell sessions",
+    annotations=_READ_ONLY_TOOL,
+    structured_output=True,
+)
 def list_sessions() -> Annotated[CallToolResult, PhysiCellSessionListResult]:
     """List all active simulation sessions with their status and progress.
 
@@ -1312,7 +601,11 @@ def list_sessions() -> Annotated[CallToolResult, PhysiCellSessionListResult]:
 
     return structured_report(result, payload)
 
-@mcp.tool(annotations=_READ_ONLY_TOOL)
+@mcp.tool(
+    title="List PhysiCell artifact sessions",
+    annotations=_READ_ONLY_TOOL,
+    structured_output=True,
+)
 def list_artifact_sessions() -> Annotated[
     CallToolResult,
     PhysiCellArtifactSessionListResult,
@@ -1359,7 +652,11 @@ def list_artifact_sessions() -> Annotated[
             lines.append("  Files: (none)")
     return structured_report("\n".join(lines), payload)
 
-@mcp.tool(annotations=_IDEMPOTENT_TOOL)
+@mcp.tool(
+    title="Set default PhysiCell session",
+    annotations=_IDEMPOTENT_TOOL,
+    structured_output=True,
+)
 @_session_locked
 def set_default_session(
     session_id: Annotated[NonEmptyString, Field(description="ID of the session to activate. May be shortened to the first 8 characters.")],
@@ -1376,7 +673,11 @@ def set_default_session(
         return f"**Switched to session:** {session.session_id[:8]}... (Progress: {progress:.0f}%)"
     raise ValueError(f"Session not found: {session_id}")
 
-@mcp.tool(annotations=_READ_ONLY_TOOL)
+@mcp.tool(
+    title="Get PhysiCell workflow status",
+    annotations=_READ_ONLY_TOOL,
+    structured_output=True,
+)
 @_optional_session_locked
 def get_workflow_status(
     session_id: Optional[NonEmptyString] = Field(
@@ -1398,7 +699,11 @@ def get_workflow_status(
         _workflow_status_payload(session),
     )
 
-@mcp.tool(annotations=_DESTRUCTIVE_TOOL)
+@mcp.tool(
+    title="Delete PhysiCell session",
+    annotations=_DESTRUCTIVE_TOOL,
+    structured_output=True,
+)
 def delete_session(
     session_id: Annotated[NonEmptyString, Field(description="The ID of the session to delete permanently.")],
 ) -> str:
@@ -1412,7 +717,11 @@ def delete_session(
         return f"**Session deleted:** {session_id[:8]}..."
     raise ValueError(f"Session not found: {session_id}")
 
-@mcp.tool(annotations=_DESTRUCTIVE_TOOL)
+@mcp.tool(
+    title="Import MaBoSS handoff",
+    annotations=_DESTRUCTIVE_TOOL,
+    structured_output=True,
+)
 @_session_locked
 def import_maboss_handoff(
     manifest_path: Annotated[
@@ -1447,354 +756,28 @@ def import_maboss_handoff(
     """Verify and atomically attach a typed MaBoSS handoff through PhysiBoSS."""
     session = _require_configuration(session_id)
     _require_physiboss()
-
-    loaded_manifest = load_handoff_manifest(
-        manifest_path,
-        expected_handoff_type="maboss-to-physicell",
-        verify_artifacts=True,
-    )
-    if not isinstance(loaded_manifest, MaBoSSToPhysiCellHandoffManifest):
-        raise ValueError(
-            "The supplied handoff is not a MaBoSS-to-PhysiCell manifest."
-        )
-
-    source_manifest_path = Path(manifest_path).resolve()
-    source_manifest_file = handoff_artifact(
-        source_manifest_path,
-        server="MaBoSS",
-        session_id=loaded_manifest.source.session_id,
-        role="parent_manifest",
-    )
-    stored_nodes = bnd_node_names(loaded_manifest.bnd_file.path)
-    if stored_nodes != loaded_manifest.network.nodes:
-        raise ValueError(
-            "The MaBoSS BND node order does not match the handoff manifest."
-        )
-
-    neko_manifest = None
-    if loaded_manifest.parent_manifest is not None:
-        loaded_parent = load_handoff_manifest(
-            loaded_manifest.parent_manifest.path,
-            expected_handoff_type="neko-to-maboss",
-            verify_artifacts=True,
-        )
-        if not isinstance(loaded_parent, NeKoToMaBoSSHandoffManifest):
-            raise ValueError(
-                "The MaBoSS handoff parent is not a NeKo manifest."
-            )
-        if (
-            not loaded_manifest.lineage
-            or loaded_parent.source != loaded_manifest.lineage[0]
-        ):
-            raise ValueError(
-                "The NeKo parent provenance does not match MaBoSS lineage."
-            )
-        if set(loaded_parent.network.nodes) != set(
-            loaded_manifest.network.nodes
-        ):
-            raise ValueError(
-                "The NeKo and MaBoSS handoff node sets do not match."
-            )
-        if set(loaded_parent.network.output_nodes) != set(
-            loaded_manifest.network.output_nodes
-        ):
-            raise ValueError(
-                "The NeKo and MaBoSS output-node selections do not match."
-            )
-        neko_manifest = loaded_parent
-
-    target_cell_type = loaded_manifest.target.cell_type
-    try:
-        cell_types = session.config.cell_types.get_cell_types()
-    except Exception as exc:
-        raise RuntimeError(
-            f"Could not inspect PhysiCell cell types: {exc}"
-        ) from exc
-    if not isinstance(cell_types, Mapping):
-        raise TypeError(
-            "PhysiCell cell_types.get_cell_types() did not return a mapping."
-        )
-    if target_cell_type not in cell_types:
-        available = ", ".join(str(name) for name in cell_types) or "none"
-        raise ValueError(
-            f"Target cell type {target_cell_type!r} is not configured. "
-            f"Available cell types: {available}."
-        )
-
-    target_data = cell_types[target_cell_type]
-    target_mapping = target_data if isinstance(target_data, Mapping) else {}
-    existing_intracellular = _mapping_at(
-        target_mapping,
-        "phenotype",
-        "intracellular",
-    )
-    replaced_existing = bool(existing_intracellular)
-    if replaced_existing and not replace_existing:
-        raise ValueError(
-            f"Cell type {target_cell_type!r} already has an intracellular "
-            "model. Set replace_existing=true to replace it explicitly."
-        )
-
-    art_dir = get_artifact_dir(_SERVER_ROOT, session.session_id)
-    destinations: dict[str, Path] = {
-        "manifest": safe_artifact_path(
-            art_dir,
-            f"{artifact_prefix}.handoff.json",
+    text, payload = _import_maboss_handoff_transaction(
+        session=session,
+        manifest_path=manifest_path,
+        artifact_prefix=artifact_prefix,
+        replace_existing=replace_existing,
+        server_root=_SERVER_ROOT,
+        require_unused_paths=_require_unused_handoff_paths,
+        copy_verified_artifact=_copy_verified_handoff_artifact,
+        link_artifact_without_overwrite=(
+            _link_handoff_artifact_without_overwrite
         ),
-        "bnd": safe_artifact_path(art_dir, f"{artifact_prefix}.bnd"),
-        "cfg": safe_artifact_path(art_dir, f"{artifact_prefix}.cfg"),
-    }
-    if loaded_manifest.simulation.result_file is not None:
-        destinations["result"] = safe_artifact_path(
-            art_dir,
-            f"{artifact_prefix}.result.csv",
-        )
-    if neko_manifest is not None:
-        destinations["neko_manifest"] = safe_artifact_path(
-            art_dir,
-            f"{artifact_prefix}.neko.handoff.json",
-        )
-        destinations["bnet"] = safe_artifact_path(
-            art_dir,
-            f"{artifact_prefix}.neko.bnet",
-        )
-    _require_unused_handoff_paths(list(destinations.values()))
-
-    try:
-        candidate_config = session.config.copy()
-    except Exception as exc:
-        raise RuntimeError(
-            f"Could not copy the PhysiCell configuration for import: {exc}"
-        ) from exc
-    try:
-        candidate_config.physiboss.add_intracellular_model(
-            cell_type_name=target_cell_type,
-            model_type="maboss",
-            bnd_filename=str(destinations["bnd"]),
-            cfg_filename=str(destinations["cfg"]),
-        )
-    except Exception as exc:
-        raise RuntimeError(
-            f"Could not attach the MaBoSS model to {target_cell_type!r}: {exc}"
-        ) from exc
-
-    tracking = _physiboss_tracking(candidate_config)
-    created_paths: list[Path] = []
-    try:
-        with tempfile.TemporaryDirectory(
-            dir=art_dir,
-            prefix=".maboss-handoff-import-",
-        ) as temporary_directory:
-            temporary_root = Path(temporary_directory)
-            temporary_paths = {
-                key: temporary_root / destination.name
-                for key, destination in destinations.items()
-            }
-            sources = {
-                "manifest": source_manifest_file,
-                "bnd": loaded_manifest.bnd_file,
-                "cfg": loaded_manifest.cfg_file,
-            }
-            if loaded_manifest.simulation.result_file is not None:
-                sources["result"] = loaded_manifest.simulation.result_file
-            if neko_manifest is not None:
-                assert loaded_manifest.parent_manifest is not None
-                sources["neko_manifest"] = loaded_manifest.parent_manifest
-                sources["bnet"] = neko_manifest.bnet_file
-
-            for key, source in sources.items():
-                _copy_verified_handoff_artifact(
-                    source,
-                    temporary_paths[key],
-                )
-
-            reloaded_manifest = load_handoff_manifest(
-                source_manifest_path,
-                expected_handoff_type="maboss-to-physicell",
-                verify_artifacts=True,
-            )
-            if reloaded_manifest != loaded_manifest:
-                raise RuntimeError(
-                    "The MaBoSS handoff changed while it was imported."
-                )
-            verify_handoff_artifact(source_manifest_file)
-            verify_handoff_manifest(loaded_manifest)
-            if neko_manifest is not None:
-                assert loaded_manifest.parent_manifest is not None
-                reloaded_parent = load_handoff_manifest(
-                    loaded_manifest.parent_manifest.path,
-                    expected_handoff_type="neko-to-maboss",
-                    verify_artifacts=True,
-                )
-                if reloaded_parent != neko_manifest:
-                    raise RuntimeError(
-                        "The NeKo parent handoff changed while it was imported."
-                    )
-
-            for key, destination in destinations.items():
-                _link_handoff_artifact_without_overwrite(
-                    temporary_paths[key],
-                    destination,
-                )
-                created_paths.append(destination)
-
-        manifest_snapshot_file = handoff_artifact(
-            destinations["manifest"],
-            server="PhysiCell",
-            session_id=session.session_id,
-            role="parent_manifest",
-        )
-        bnd_file = handoff_artifact(
-            destinations["bnd"],
-            server="PhysiCell",
-            session_id=session.session_id,
-            role="maboss_bnd",
-        )
-        cfg_file = handoff_artifact(
-            destinations["cfg"],
-            server="PhysiCell",
-            session_id=session.session_id,
-            role="maboss_cfg",
-        )
-        result_file = (
-            handoff_artifact(
-                destinations["result"],
-                server="PhysiCell",
-                session_id=session.session_id,
-                role="maboss_result",
-            )
-            if "result" in destinations
-            else None
-        )
-        neko_manifest_file = (
-            handoff_artifact(
-                destinations["neko_manifest"],
-                server="PhysiCell",
-                session_id=session.session_id,
-                role="parent_manifest",
-            )
-            if "neko_manifest" in destinations
-            else None
-        )
-        bnet_file = (
-            handoff_artifact(
-                destinations["bnet"],
-                server="PhysiCell",
-                session_id=session.session_id,
-                role="neko_bnet",
-            )
-            if "bnet" in destinations
-            else None
-        )
-        payload = PhysiCellHandoffImportResult(
-            server="PhysiCell",
-            session_id=session.session_id,
-            source_manifest_file=source_manifest_file,
-            source_manifest=loaded_manifest,
-            manifest_snapshot_file=manifest_snapshot_file,
-            bnd_file=bnd_file,
-            cfg_file=cfg_file,
-            result_file=result_file,
-            neko_manifest=neko_manifest,
-            neko_manifest_file=neko_manifest_file,
-            bnet_file=bnet_file,
-            target_cell_type=target_cell_type,
-            nodes=list(loaded_manifest.network.nodes),
-            output_nodes=list(loaded_manifest.network.output_nodes),
-            replaced_existing=replaced_existing,
-            context_count=(
-                len(session.maboss_contexts)
-                + (
-                    0
-                    if target_cell_type in session.maboss_contexts
-                    else 1
-                )
-            ),
-        )
-    except Exception:
-        _rollback_handoff_artifacts(created_paths)
-        raise
-
-    context = MaBoSSContext(
-        model_name=Path(loaded_manifest.bnd_file.path).stem,
-        bnd_file_path=str(destinations["bnd"]),
-        cfg_file_path=str(destinations["cfg"]),
-        available_nodes=list(loaded_manifest.network.nodes),
-        output_nodes=list(loaded_manifest.network.output_nodes),
-        simulation_results=(
-            loaded_manifest.simulation.simulation_summary or ""
-        ),
-        target_cell_type=target_cell_type,
-        biological_context=loaded_manifest.biological_context or "",
-        source_manifest_path=str(source_manifest_path),
-        local_manifest_path=str(destinations["manifest"]),
-        source_session_id=loaded_manifest.source.session_id,
-        result_file_path=(
-            str(destinations["result"])
-            if "result" in destinations
-            else ""
-        ),
-        simulation_parameters=dict(
-            loaded_manifest.simulation.parameters
-        ),
-        neko_session_id=(
-            neko_manifest.source.session_id
-            if neko_manifest is not None
-            else ""
-        ),
-        neko_manifest_path=(
-            loaded_manifest.parent_manifest.path
-            if loaded_manifest.parent_manifest is not None
-            else ""
-        ),
-        local_neko_manifest_path=(
-            str(destinations["neko_manifest"])
-            if "neko_manifest" in destinations
-            else ""
-        ),
-        local_bnet_path=(
-            str(destinations["bnet"])
-            if "bnet" in destinations
-            else ""
-        ),
-    )
-    session.publish_physiboss_import(
-        config=candidate_config,
-        context=context,
-        model_names=tracking[0],
-        settings_count=tracking[1],
-        input_links_count=tracking[2],
-        output_links_count=tracking[3],
-        mutations_count=tracking[4],
-    )
-
-    replacement_text = (
-        "replaced the previous intracellular model"
-        if replaced_existing
-        else "attached a new intracellular model"
-    )
-    lineage_text = (
-        f"NeKo session {neko_manifest.source.session_id}"
-        if neko_manifest is not None
-        else "standalone MaBoSS model"
-    )
-    text = (
-        "MaBoSS handoff imported into PhysiCell successfully.\n"
-        f"  Session: {session.session_id}\n"
-        f"  Target cell type: {target_cell_type}\n"
-        f"  Action: {replacement_text}\n"
-        f"  BND: {destinations['bnd']}\n"
-        f"  CFG: {destinations['cfg']}\n"
-        f"  Boolean nodes: {len(loaded_manifest.network.nodes)}\n"
-        f"  Output nodes: {', '.join(loaded_manifest.network.output_nodes)}\n"
-        f"  Lineage: {lineage_text}\n\n"
-        "Next: configure PhysiBoSS timing, then add biologically justified "
-        "input and output links."
+        rollback_artifacts=_rollback_handoff_artifacts,
+        physiboss_tracking=_physiboss_tracking,
     )
     return structured_report(text, payload)
 
 
-@mcp.tool(annotations=_IDEMPOTENT_TOOL)
+@mcp.tool(
+    title="Set MaBoSS context",
+    annotations=_IDEMPOTENT_TOOL,
+    structured_output=True,
+)
 @_session_locked
 def set_maboss_context(
     model_name: Annotated[NonEmptyString, Field(description="Name of the MaBoSS model.")],
@@ -1842,7 +825,11 @@ def set_maboss_context(
     
     return result
 
-@mcp.tool(annotations=_READ_ONLY_TOOL)
+@mcp.tool(
+    title="Get MaBoSS context",
+    annotations=_READ_ONLY_TOOL,
+    structured_output=True,
+)
 @_session_locked
 def get_maboss_context(
     cell_type: Optional[NonEmptyString] = Field(
@@ -1924,7 +911,11 @@ def get_maboss_context(
 # XML CONFIGURATION LOADING
 # ============================================================================
 
-@mcp.tool(annotations=_IDEMPOTENT_DESTRUCTIVE_TOOL)
+@mcp.tool(
+    title="Load PhysiCell XML configuration",
+    annotations=_IDEMPOTENT_DESTRUCTIVE_TOOL,
+    structured_output=True,
+)
 def load_xml_configuration(
     filepath: Annotated[NonEmptyString, Field(description="Absolute path to the PhysiCell XML configuration file to load.")],
     session_name: Optional[NonEmptyString] = Field(default=None, description="Optional name for the session, useful for cross-server tracking."),
@@ -1988,7 +979,11 @@ def load_xml_configuration(
     )
     return result
 
-@mcp.tool(annotations=_READ_ONLY_TOOL)
+@mcp.tool(
+    title="Validate PhysiCell XML",
+    annotations=_READ_ONLY_TOOL,
+    structured_output=True,
+)
 def validate_xml_file(
     filepath: Annotated[NonEmptyString, Field(description="Absolute path to the PhysiCell XML file to validate.")],
 ) -> Annotated[CallToolResult, PhysiCellXmlValidationResult]:
@@ -2025,7 +1020,11 @@ def validate_xml_file(
     )
     return structured_report(text, payload)
 
-@mcp.tool(annotations=_IDEMPOTENT_TOOL)
+@mcp.tool(
+    title="Analyze loaded PhysiCell configuration",
+    annotations=_IDEMPOTENT_TOOL,
+    structured_output=True,
+)
 @_session_locked
 def analyze_loaded_configuration(
     session_id: Optional[NonEmptyString] = Field(default=None, description="Session to query. Omit to use the active session."),
@@ -2084,7 +1083,11 @@ def analyze_loaded_configuration(
     )
     return structured_report("\n".join(lines), payload)
 
-@mcp.tool(annotations=_READ_ONLY_TOOL)
+@mcp.tool(
+    title="List loaded PhysiCell components",
+    annotations=_READ_ONLY_TOOL,
+    structured_output=True,
+)
 @_session_locked
 def list_loaded_components(
     component_type: ComponentType = Field(default="all", description="Filter results: 'substrates', 'cell_types', 'physiboss', or 'all'."),
@@ -2180,7 +1183,11 @@ def list_loaded_components(
 # BIOLOGICAL SCENARIO ANALYSIS
 # ============================================================================
 
-@mcp.tool(annotations=_IDEMPOTENT_TOOL)
+@mcp.tool(
+    title="Analyze biological scenario",
+    annotations=_IDEMPOTENT_TOOL,
+    structured_output=True,
+)
 def analyze_biological_scenario(
     biological_scenario: Annotated[NonEmptyString, Field(description="Description of the biological scenario or experimental setup (e.g., 'Breast cancer cells in hypoxic 3D tissue with immune infiltration').")],
     session_id: Optional[NonEmptyString] = Field(default=None, description="Session to use. Omit to use the active session."),
@@ -2209,7 +1216,11 @@ def analyze_biological_scenario(
 # SIMULATION SETUP
 # ============================================================================
 
-@mcp.tool(annotations=_IDEMPOTENT_DESTRUCTIVE_TOOL)
+@mcp.tool(
+    title="Create PhysiCell simulation domain",
+    annotations=_IDEMPOTENT_DESTRUCTIVE_TOOL,
+    structured_output=True,
+)
 def create_simulation_domain(
     domain_x: Annotated[float, Field(gt=0, allow_inf_nan=False, description="Domain width in micrometers (e.g., 2000).")],
     domain_y: Annotated[float, Field(gt=0, allow_inf_nan=False, description="Domain height in micrometers (e.g., 2000).")],
@@ -2286,7 +1297,11 @@ def create_simulation_domain(
     
     return result
 
-@mcp.tool(annotations=_DESTRUCTIVE_TOOL)
+@mcp.tool(
+    title="Add PhysiCell substrate",
+    annotations=_DESTRUCTIVE_TOOL,
+    structured_output=True,
+)
 @_session_locked
 def add_single_substrate(
     substrate_name: Annotated[NonEmptyString, Field(description="Name of the substrate (e.g., 'oxygen', 'glucose', 'drug').")],
@@ -2365,7 +1380,11 @@ def add_single_substrate(
     
     return result
 
-@mcp.tool(annotations=_DESTRUCTIVE_TOOL)
+@mcp.tool(
+    title="Add PhysiCell cell type",
+    annotations=_DESTRUCTIVE_TOOL,
+    structured_output=True,
+)
 @_session_locked
 def add_single_cell_type(
     cell_type_name: Annotated[NonEmptyString, Field(description="Name for this cell type (e.g., 'cancer_cell', 'immune_cell', 'fibroblast').")],
@@ -2409,7 +1428,11 @@ def add_single_cell_type(
 
 
 
-@mcp.tool(annotations=_IDEMPOTENT_TOOL)
+@mcp.tool(
+    title="Configure PhysiCell parameters",
+    annotations=_IDEMPOTENT_TOOL,
+    structured_output=True,
+)
 @_session_locked
 def configure_cell_parameters(
     cell_type: Annotated[NonEmptyString, Field(description="Name of an existing cell type to configure.")],
@@ -2526,7 +1549,11 @@ def configure_cell_parameters(
             f"Could not configure cell type '{cell_type}': {exc}"
         ) from exc
 
-@mcp.tool(annotations=_IDEMPOTENT_TOOL)
+@mcp.tool(
+    title="Set PhysiCell substrate interaction",
+    annotations=_IDEMPOTENT_TOOL,
+    structured_output=True,
+)
 @_session_locked
 def set_substrate_interaction(
     cell_type: Annotated[NonEmptyString, Field(description="Name of an existing cell type.")],
@@ -2642,7 +1669,11 @@ def set_substrate_interaction(
 # PARAMETER DISCOVERY AND DEFAULTS
 # ============================================================================
 
-@mcp.tool(annotations=_READ_ONLY_TOOL)
+@mcp.tool(
+    title="Get available PhysiCell cycle models",
+    annotations=_READ_ONLY_TOOL,
+    structured_output=True,
+)
 def get_available_cycle_models(
 ) -> Annotated[CallToolResult, PhysiCellCycleModelListResult]:
     """List all available PhysiCell cell cycle models with their identifiers.
@@ -2680,7 +1711,11 @@ def get_available_cycle_models(
 # SIGNAL AND BEHAVIOR DISCOVERY
 # ============================================================================
 
-@mcp.tool(annotations=_READ_ONLY_TOOL)
+@mcp.tool(
+    title="List PhysiCell signals",
+    annotations=_READ_ONLY_TOOL,
+    structured_output=True,
+)
 @_optional_session_locked
 def list_all_available_signals(
     session_id: Optional[NonEmptyString] = Field(default=None, description="Session to query. Omit to use the active session."),
@@ -2762,7 +1797,11 @@ def list_all_available_signals(
     )
     return structured_report(result, payload)
 
-@mcp.tool(annotations=_READ_ONLY_TOOL)
+@mcp.tool(
+    title="List PhysiCell behaviors",
+    annotations=_READ_ONLY_TOOL,
+    structured_output=True,
+)
 @_optional_session_locked
 def list_all_available_behaviors(
     session_id: Optional[NonEmptyString] = Field(default=None, description="Session to query. Omit to use the active session."),
@@ -2849,7 +1888,11 @@ def list_all_available_behaviors(
 # CELL RULES AND PHYSIBOSS
 # ============================================================================
 
-@mcp.tool(annotations=_NON_IDEMPOTENT_TOOL)
+@mcp.tool(
+    title="Add PhysiCell cell rule",
+    annotations=_NON_IDEMPOTENT_TOOL,
+    structured_output=True,
+)
 @_session_locked
 def add_single_cell_rule(
     cell_type: Annotated[NonEmptyString, Field(description="Name of existing cell type.")],
@@ -2933,7 +1976,11 @@ def add_single_cell_rule(
     
     return result
 
-@mcp.tool(annotations=_DESTRUCTIVE_TOOL)
+@mcp.tool(
+    title="Add PhysiBoSS model",
+    annotations=_DESTRUCTIVE_TOOL,
+    structured_output=True,
+)
 @_session_locked
 def add_physiboss_model(
     cell_type: Annotated[NonEmptyString, Field(description="Name of an existing cell type to attach the boolean network to.")],
@@ -2990,7 +2037,11 @@ def add_physiboss_model(
     except Exception as exc:
         raise RuntimeError(f"Could not add the PhysiBoSS model: {exc}") from exc
 
-@mcp.tool(annotations=_IDEMPOTENT_TOOL)
+@mcp.tool(
+    title="Configure PhysiBoSS settings",
+    annotations=_IDEMPOTENT_TOOL,
+    structured_output=True,
+)
 @_session_locked
 def configure_physiboss_settings(
     cell_type: Annotated[NonEmptyString, Field(description="Name of an existing cell type with a PhysiBoSS model attached.")],
@@ -3093,7 +2144,11 @@ def configure_physiboss_settings(
             f"Could not configure PhysiBoSS settings: {exc}"
         ) from exc
 
-@mcp.tool(annotations=_NON_IDEMPOTENT_TOOL)
+@mcp.tool(
+    title="Add PhysiBoSS input link",
+    annotations=_NON_IDEMPOTENT_TOOL,
+    structured_output=True,
+)
 @_session_locked
 def add_physiboss_input_link(
     cell_type: Annotated[NonEmptyString, Field(description="Name of an existing cell type with a PhysiBoSS model.")],
@@ -3141,7 +2196,11 @@ def add_physiboss_input_link(
             f"Could not add the PhysiBoSS input link: {exc}"
         ) from exc
 
-@mcp.tool(annotations=_NON_IDEMPOTENT_TOOL)
+@mcp.tool(
+    title="Add PhysiBoSS output link",
+    annotations=_NON_IDEMPOTENT_TOOL,
+    structured_output=True,
+)
 @_session_locked
 def add_physiboss_output_link(
     cell_type: Annotated[NonEmptyString, Field(description="Name of an existing cell type with a PhysiBoSS model.")],
@@ -3192,7 +2251,11 @@ def add_physiboss_output_link(
             f"Could not add the PhysiBoSS output link: {exc}"
         ) from exc
 
-@mcp.tool(annotations=_NON_IDEMPOTENT_TOOL)
+@mcp.tool(
+    title="Apply PhysiBoSS mutation",
+    annotations=_NON_IDEMPOTENT_TOOL,
+    structured_output=True,
+)
 @_session_locked
 def apply_physiboss_mutation(
     cell_type: Annotated[NonEmptyString, Field(description="Name of an existing cell type with a PhysiBoSS model.")],
@@ -3237,7 +2300,11 @@ def apply_physiboss_mutation(
 # UTILITY AND EXPORT TOOLS
 # ============================================================================
 
-@mcp.tool(annotations=_READ_ONLY_TOOL)
+@mcp.tool(
+    title="Get PhysiCell simulation summary",
+    annotations=_READ_ONLY_TOOL,
+    structured_output=True,
+)
 @_optional_session_locked
 def get_simulation_summary(
     session_id: Optional[NonEmptyString] = Field(default=None, description="Session to query. Omit to use the active session."),
@@ -3330,7 +2397,11 @@ def _format_simulation_summary(session: Optional[SessionState]) -> str:
 
     return result
 
-@mcp.tool(annotations=_IDEMPOTENT_TOOL)
+@mcp.tool(
+    title="Export PhysiCell XML configuration",
+    annotations=_IDEMPOTENT_TOOL,
+    structured_output=True,
+)
 @_session_locked
 def export_xml_configuration(
     filename: NonEmptyString = Field(default="PhysiCell_settings.xml", description="Output filename for the XML configuration file."),
@@ -3419,7 +2490,11 @@ def export_xml_configuration(
             f"Could not export the PhysiCell XML configuration: {exc}"
         ) from exc
 
-@mcp.tool(annotations=_IDEMPOTENT_TOOL)
+@mcp.tool(
+    title="Export PhysiCell rules CSV",
+    annotations=_IDEMPOTENT_TOOL,
+    structured_output=True,
+)
 @_session_locked
 def export_cell_rules_csv(
     filename: NonEmptyString = Field(default="cell_rules.csv", description="Output filename for the cell rules CSV file."),
@@ -3503,7 +2578,11 @@ def clean_for_markdown(text: str) -> str:
         text = str(text)
     return text.replace("|", "\\|").replace("\n", " ").strip()
 
-@mcp.tool(annotations=_READ_ONLY_TOOL)
+@mcp.tool(
+    title="List PhysiCell generated files",
+    annotations=_READ_ONLY_TOOL,
+    structured_output=True,
+)
 def list_generated_files(
     session_id: Optional[NonEmptyString] = Field(default=None, description="Session to query. Omit to use the active session. Pass 'all' to list files across every session."),
 ) -> Annotated[CallToolResult, PhysiCellArtifactFileListResult]:
@@ -3566,7 +2645,11 @@ def list_generated_files(
     return structured_report(result, payload)
 
 
-@mcp.tool(annotations=_IDEMPOTENT_DESTRUCTIVE_TOOL)
+@mcp.tool(
+    title="Clean PhysiCell generated files",
+    annotations=_IDEMPOTENT_DESTRUCTIVE_TOOL,
+    structured_output=True,
+)
 @_session_locked
 def clean_generated_files(
     session_id: Optional[NonEmptyString] = Field(default=None, description="Session to clean. Omit to use the active session."),
@@ -3595,7 +2678,11 @@ def clean_generated_files(
             f"Could not clean generated PhysiCell files: {exc}"
         ) from exc
 
-@mcp.tool(annotations=_READ_ONLY_TOOL)
+@mcp.tool(
+    title="Get PhysiCell help",
+    annotations=_READ_ONLY_TOOL,
+    structured_output=True,
+)
 def get_help() -> str:
     """Return the same workflow guide exposed as a prompt and resource.
 
