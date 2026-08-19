@@ -19,6 +19,8 @@ from matplotlib.figure import Figure
 from mcp import Client, MCPError
 from mcp.types import ImageContent, TextContent
 
+from MaBoSS import server as maboss_server  # noqa: E402
+from MaBoSS.session_manager import session_manager  # noqa: E402
 from mcp_biomodelling_servers.handoff import (
     HandoffNetwork,
     HandoffPackage,
@@ -27,9 +29,6 @@ from mcp_biomodelling_servers.handoff import (
     handoff_artifact,
     write_handoff_manifest,
 )
-
-from MaBoSS import server as maboss_server  # noqa: E402
-from MaBoSS.session_manager import session_manager  # noqa: E402
 
 mcp = maboss_server.mcp
 
