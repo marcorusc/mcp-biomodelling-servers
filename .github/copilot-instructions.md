@@ -2,7 +2,7 @@
 
 ## Repository Purpose
 
-This repository packages three stateful Model Context Protocol servers for
+This repository packages four stateful Model Context Protocol servers for
 mechanistic and systems-biology modelling:
 
 - **NeKo** builds, curates, analyzes, and exports signalling networks.
@@ -10,12 +10,14 @@ mechanistic and systems-biology modelling:
 - **PhysiCell** builds, loads, validates, edits, and exports PhysiCell and
   PhysiBoSS configuration files. It does not run PhysiCell tissue simulations.
 
+- **BioMASS** constructs, inspects, visualizes, and simulates evidence-backed ODE models.
+
 The servers run as independent stdio processes but share versioned contracts
 for sessions, artifacts, structured results, and model handoffs. The supported
-cross-server workflow is NeKo -> MaBoSS -> PhysiCell.
+cross-server workflows are NeKo -> MaBoSS -> PhysiCell and NeKo -> BioMASS.
 
 Current release metadata is defined in `pyproject.toml`. Do not hard-code a
-different package or server version. The three `server.json` Registry manifests
+different package or server version. The four `server.json` Registry manifests
 and `mcp_biomodelling_servers/__init__.py` must remain synchronized with it.
 
 ## MCP v2 Architecture
@@ -46,13 +48,13 @@ Each server publishes:
 - concise initialization instructions;
 - structured scientific results where downstream applications need typed data.
 
-As of the 2.0.0 release checkpoint, the public surface contains 89 tools:
-24 MaBoSS, 31 NeKo, and 34 PhysiCell. If the tool surface changes, update the
+The current public surface contains 110 tools:
+24 MaBoSS, 33 NeKo, 34 PhysiCell, and 19 BioMASS. If the tool surface changes, update the
 relevant server README/manual and the cross-server schema tests together.
 
 ## Session State and Concurrency
 
-All three servers use session-based mutable state. Never add process-global
+All four servers use session-based mutable state. Never add process-global
 model state as a shortcut.
 
 - `MaBoSS/session_manager.py` owns MaBoSS models, results, locks, leases, and

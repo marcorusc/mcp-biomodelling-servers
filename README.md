@@ -3,11 +3,12 @@
 <!-- mcp-name: io.github.marcorusc/NeKo -->
 <!-- mcp-name: io.github.marcorusc/MaBoSS -->
 <!-- mcp-name: io.github.marcorusc/PhysiCell -->
+<!-- mcp-name: io.github.marcorusc/BioMASS -->
 
 [![PyPI](https://img.shields.io/pypi/v/mcp-biomodelling-servers?cacheSeconds=300)](https://pypi.org/project/mcp-biomodelling-servers/)
 [![MCP Registry](https://img.shields.io/badge/MCP_Registry-active-brightgreen)](https://registry.modelcontextprotocol.io)
 
-This package provides three stateful
+This package provides four stateful
 [Model Context Protocol](https://modelcontextprotocol.io/) servers for
 mechanistic and systems-biology modelling:
 
@@ -15,9 +16,10 @@ mechanistic and systems-biology modelling:
 |---|---|---|---|
 | MaBoSS | Configure, simulate, and analyze stochastic Boolean models | [pyMaBoSS](https://github.com/colomoto/pyMaBoSS) | `io.github.marcorusc/MaBoSS` |
 | NeKo | Build and analyze signalling networks from interaction databases | [NeKo](https://github.com/sysbio-curie/Neko) | `io.github.marcorusc/NeKo` |
+| BioMASS | Construct, visualize, and simulate evidence-backed ODE models | [BioMASS](https://github.com/biomass-dev/biomass) | `io.github.marcorusc/BioMASS` |
 | PhysiCell | Build, inspect, and export PhysiCell and PhysiBoSS configuration files | [PhysiCell-settings](https://github.com/marcorusc/PhysiCell_Settings) | `io.github.marcorusc/PhysiCell` |
 
-All three servers use MCP over stdio and are distributed together as
+All four servers use MCP over stdio and are distributed together as
 `mcp-biomodelling-servers`.
 
 ## Publication
@@ -56,12 +58,13 @@ platform-specific instructions.
 python -m pip install mcp-biomodelling-servers
 ```
 
-The installation provides three console entry points:
+The installation provides four console entry points:
 
 ```bash
 mcp-neko-server
 mcp-maboss-server
 mcp-physicell-server
+mcp-biomass-server
 ```
 
 ### Run in an isolated environment with uvx
@@ -70,6 +73,7 @@ mcp-physicell-server
 uvx --from mcp-biomodelling-servers mcp-neko-server
 uvx --from mcp-biomodelling-servers mcp-maboss-server
 uvx --from mcp-biomodelling-servers mcp-physicell-server
+uvx --from mcp-biomodelling-servers mcp-biomass-server
 ```
 
 Conda is optional. It remains useful when you want one explicitly managed
@@ -110,6 +114,11 @@ The following example uses `uvx` and works with clients that accept the common
         "mcp-biomodelling-servers",
         "mcp-physicell-server"
       ]
+    },
+    "biomass": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": ["--from", "mcp-biomodelling-servers[biomass-graph]", "mcp-biomass-server"]
     }
   }
 }
@@ -132,6 +141,10 @@ instead use its console script directly:
     "physicell": {
       "type": "stdio",
       "command": "mcp-physicell-server"
+    },
+    "biomass": {
+      "type": "stdio",
+      "command": "mcp-biomass-server"
     }
   }
 }
@@ -140,6 +153,18 @@ instead use its console script directly:
 Refer to your MCP client's documentation for its configuration-file location
 and reload procedure. For Visual Studio Code, see
 [Use MCP servers in VS Code](https://code.visualstudio.com/docs/copilot/chat/mcp-servers).
+
+## ODE models with BioMASS
+
+NeKo's `export_biomass_handoff` preserves the curated network's references and
+available mechanism metadata for BioMASS. The calling agent reads the literature,
+records evidence and assumptions, and authors Text2Model reactions. BioMASS
+supports standalone text too, along with graph rendering and bounded exploratory
+simulation. Calibration and sensitivity analysis are deferred.
+
+For visualization, install `mcp-biomodelling-servers[biomass-graph]` and the Graphviz
+system runtime. See the [BioMASS manual](BioMASS/README.md) for an MCP client
+configuration, the 19 tools, graph interpretation limits, and a runnable example.
 
 ## Sessions, artifacts, and errors
 
@@ -173,6 +198,7 @@ directly with the selected Python interpreter:
 python MaBoSS/server.py
 python NeKo/server.py
 python PhysiCell/server.py
+python -m BioMASS.server
 ```
 
 ## Repository layout
@@ -181,6 +207,7 @@ python PhysiCell/server.py
 MaBoSS/                     MaBoSS server, manual, and Registry manifest
 NeKo/                       NeKo server, manual, and Registry manifest
 PhysiCell/                  PhysiCell server, manual, and Registry manifest
+BioMASS/                    ODE construction, visualization, and simulation server
 mcp_biomodelling_servers/   Installed package namespace and entry points
 tests/                      Protocol, runtime, concurrency, and package tests
 ```
