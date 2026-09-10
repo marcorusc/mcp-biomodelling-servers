@@ -164,7 +164,7 @@ simulation. Calibration and sensitivity analysis are deferred.
 
 For visualization, install `mcp-biomodelling-servers[biomass-graph]` and the Graphviz
 system runtime. See the [BioMASS manual](BioMASS/README.md) for an MCP client
-configuration, the 19 tools, graph interpretation limits, and a runnable example.
+configuration, the 22 tools, graph interpretation limits, and a runnable example.
 
 ## Sessions, artifacts, and errors
 

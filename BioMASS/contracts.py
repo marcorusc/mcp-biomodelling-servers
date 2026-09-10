@@ -52,16 +52,12 @@ class ReactionRecord(Contract):
     statement: NonEmpty
     evidence_ids: list[Identifier] = Field(default_factory=list)
     edge_ids: list[str] = Field(default_factory=list)
-    status: Literal["supported", "assumed"]
+    status: Literal["supported", "assumed", "unreviewed"] = "unreviewed"
     assumption: str | None = None
     share_parameters_with: Identifier | None = None
 
     @model_validator(mode="after")
     def require_justification(self) -> ReactionRecord:
-        if self.status == "assumed" and not (
-            self.assumption and self.assumption.strip()
-        ):
-            raise ValueError("Assumed reactions require an explicit rationale.")
         if self.status == "supported" and not self.evidence_ids:
             raise ValueError("Supported reactions require evidence links.")
         if "\n" in self.statement or "\r" in self.statement:
@@ -128,6 +124,81 @@ class SimulationScenario(Contract):
 class GraphOptions(Contract):
     layout: Literal["dot", "neato", "fdp", "circo", "twopi"] = "dot"
     show_controls: bool = False
+
+
+class ReactionMetadata(Contract):
+    """Optional agent-authored annotations; the server does not infer them."""
+
+    status: Literal["supported", "assumed", "unreviewed"] = "unreviewed"
+    assumption: str | None = None
+    evidence_ids: list[Identifier] = Field(default_factory=list)
+    edge_ids: list[str] = Field(default_factory=list)
+
+
+class ReactionEdit(Contract):
+    action: Literal["add", "update", "remove"]
+    reaction_id: Identifier
+    template: (
+        Literal[
+            "binding",
+            "dissociation",
+            "dimerization",
+            "conversion",
+            "phosphorylation",
+            "dephosphorylation",
+            "transcription",
+            "synthesis",
+            "degradation",
+            "transport",
+        ]
+        | None
+    ) = None
+    participants: dict[str, NonEmpty] = Field(default_factory=dict)
+    reversible: bool = False
+    statement: NonEmpty | None = None
+    parameters: dict[Identifier, Quantity] = Field(default_factory=dict)
+    initials: dict[Identifier, Quantity] = Field(default_factory=dict)
+    metadata: ReactionMetadata | None = None
+    share_parameters_with: Identifier | None = None
+
+    @model_validator(mode="after")
+    def explicit_edit(self) -> ReactionEdit:
+        if self.action == "remove":
+            if (
+                self.template
+                or self.statement
+                or self.participants
+                or self.parameters
+                or self.initials
+                or self.metadata
+                or self.share_parameters_with
+                or self.reversible
+            ):
+                raise ValueError("Removal takes only action and reaction_id.")
+        elif bool(self.template) == bool(self.statement):
+            raise ValueError(
+                "Provide exactly one of template or statement for an add/update."
+            )
+        if self.statement and (self.participants or self.reversible):
+            raise ValueError("participants and reversible apply only to templates.")
+        if self.statement and ("\n" in self.statement or "\r" in self.statement):
+            raise ValueError("Each reaction edit contains one statement on one line.")
+        if self.parameters and self.share_parameters_with:
+            raise ValueError("Set values on the source of parameter sharing.")
+        return self
+
+
+class DocumentLineEdit(Contract):
+    """Replace a directive/comment in place; None leaves a removal comment."""
+
+    line_number: int = Field(ge=1)
+    text: str | None = None
+
+    @model_validator(mode="after")
+    def single_line(self) -> DocumentLineEdit:
+        if self.text is not None and ("\n" in self.text or "\r" in self.text):
+            raise ValueError("Document line edits must contain at most one line.")
+        return self
 
 
 GRAPH_LIMITATIONS = (

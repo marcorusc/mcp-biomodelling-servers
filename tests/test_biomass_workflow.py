@@ -18,7 +18,6 @@ import numpy as np
 import pandas as pd
 import pytest
 from mcp import Client
-from pydantic import ValidationError
 
 from BioMASS import server
 from BioMASS.contracts import (
@@ -147,8 +146,12 @@ def test_evidence_coverage_and_atomic_invalid_update(manager, tmp_path):
             [record.model_copy(update={"evidence_ids": ["missing"]})], sid
         )
     assert server.inspect_model(sid).document == prior.document
-    with pytest.raises(ValidationError, match="rationale"):
-        ReactionRecord(reaction_id="missing", statement="X --> S", status="assumed")
+    assert (
+        ReactionRecord(
+            reaction_id="optional", statement="X --> S", status="assumed"
+        ).assumption
+        is None
+    )
     conflict = EvidenceRecord(
         evidence_id="conflict",
         source_identifiers=["PMID:2"],

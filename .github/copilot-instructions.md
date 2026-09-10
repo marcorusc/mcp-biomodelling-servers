@@ -48,8 +48,8 @@ Each server publishes:
 - concise initialization instructions;
 - structured scientific results where downstream applications need typed data.
 
-The current public surface contains 110 tools:
-24 MaBoSS, 33 NeKo, 34 PhysiCell, and 19 BioMASS. If the tool surface changes, update the
+The current public surface contains 113 tools:
+24 MaBoSS, 33 NeKo, 34 PhysiCell, and 22 BioMASS. If the tool surface changes, update the
 relevant server README/manual and the cross-server schema tests together.
 
 ## Session State and Concurrency

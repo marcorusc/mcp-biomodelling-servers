@@ -1,8 +1,10 @@
 """Typed MCP tools for evidence-backed ODE modelling."""
 
 import base64
+import hashlib
 import json
 import shutil
+import time
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -25,11 +27,13 @@ from .contracts import (
     DELETE,
     READ_ONLY,
     WRITE,
+    DocumentLineEdit,
     EvidenceRecord,
     GraphOptions,
     LineEvidence,
     ModelConfiguration,
     NonEmpty,
+    ReactionEdit,
     ReactionRecord,
     SimulationScenario,
     Timeout,
@@ -38,13 +42,15 @@ from .outputs import (
     BioMASSArtifactCleanupResult,
     BioMASSArtifactFileListResult,
     BioMASSArtifactSessionListResult,
+    BioMASSBuildResult,
+    BioMASSInventoryResult,
     BioMASSJobResult,
     BioMASSSessionListResult,
     BioMASSSessionSummary,
     BioMASSStateResult,
     BioMASSValidationResult,
 )
-from .services import artifacts
+from .services import artifacts, editing
 from .services.authoring import validate_text
 from .services.models import coverage, edited, render
 from .session_manager import session_manager
@@ -211,6 +217,10 @@ def import_text(
             )
         document = sess.document.model_copy(deep=True)
         document.mode, document.text = "document", text
+        document.reactions = []
+        document.reaction_lines = {}
+        document.record_line_count = 0
+        document.source_file = None
         document.line_evidence = line_evidence or []
         document.biological_context = biological_context
         # A new document can change generated numerical symbol identities.
@@ -252,24 +262,309 @@ def set_reactions(
     """Replace the COMPLETE ordered reaction list, retaining prior records explicitly.
 
     Before authoring, read docs://biomass/reaction_syntax,
-    docs://biomass/authoring_examples, and docs://biomass/network_to_reactions.
+    docs://biomass/authoring_examples, docs://biomass/network_to_reactions, and
+    docs://biomass/model_editing for incremental edits that preserve configuration.
     Signed edges and PMID identifiers alone do not justify mechanisms or kinetics.
     """
     with session_manager.use(session_id) as sess:
-        if sess.document.mode != "records":
-            raise ValueError("Import a NeKo handoff before authoring reaction records.")
+        if sess.document.mode == "document":
+            raise ValueError(
+                "Use build_reactions to edit a standalone document in place."
+            )
         document = sess.document.model_copy(deep=True)
-        if document.reactions != reactions:
+        document.mode = "records"
+        if document.reactions != reactions or document.reaction_lines:
             # Reaction edits can change generated kfN and species identities.
             # Preserve observables/time settings but invalidate numerical overrides.
             document.configuration.parameters = {}
             document.configuration.initials = {}
             document.configuration.conditions = []
         document.reactions = reactions
+        document.reaction_lines = {}
+        document.record_line_count = 0
         if reactions:
             render(document)
         session_manager.save(sess, edited(document))
         return state(sess)
+
+
+@tool(annotations=WRITE, structured_output=True)
+def import_text_file(
+    path: Annotated[
+        NonEmpty,
+        Field(
+            description="Existing UTF-8 Text2Model file; contents are copied, never executed as a Python package."
+        ),
+    ],
+    line_evidence: Annotated[
+        list[LineEvidence] | None,
+        Field(
+            description="Complete optional evidence links for imported document lines; omitted clears prior line links."
+        ),
+    ] = None,
+    biological_context: Annotated[
+        str | None,
+        Field(
+            description="Optional agent-supplied biological context for the imported model."
+        ),
+    ] = None,
+    session_id: SessionID = None,
+) -> BioMASSStateResult:
+    """Read a Text2Model file verbatim for expansion or editing with build_reactions.
+
+    Source files are not modified. Read docs://biomass/model_editing for the
+    versioned editing interface and preservation of line-based parameters.
+    """
+    source = Path(path).expanduser().resolve()
+    if not source.is_file():
+        raise ValueError("Provide an existing regular Text2Model file.")
+    with source.open("rb") as handle:
+        contents = handle.read(1024 * 1024 + 1)
+    if len(contents) > 1024 * 1024:
+        raise ValueError("Text2Model files are limited to 1 MiB.")
+    text = contents.decode("utf-8")
+    validate_text(text)
+    with session_manager.use(session_id) as sess:
+        if sess.document.mode == "records":
+            raise ValueError(
+                "Import a standalone document into a fresh or document session."
+            )
+        document = sess.document.model_copy(deep=True)
+        document.mode, document.text = "document", text
+        document.reactions, document.reaction_lines = [], {}
+        document.configuration = ModelConfiguration()
+        document.line_evidence = line_evidence or []
+        document.biological_context = biological_context
+        document.source_file = {
+            "path": str(source),
+            "sha256": hashlib.sha256(contents).hexdigest(),
+        }
+        session_manager.save(sess, edited(document))
+        return state(sess)
+
+
+@tool(annotations=WRITE, structured_output=True)
+def inspect_reactions(
+    check_generation: Annotated[
+        bool,
+        Field(
+            description="Compile in a disposable worker to report actual species, parameters, and dependencies."
+        ),
+    ] = True,
+    timeout_seconds: JobTimeout = 60,
+    session_id: SessionID = None,
+) -> BioMASSInventoryResult:
+    """Inventory stable reaction IDs, text lines, and generated parameter names.
+
+    Imported reactions initially use IDs such as line_3. This tool also works
+    on an empty model or a document awaiting dependency repairs.
+    """
+    with session_manager.use(session_id) as sess:
+        deadline = time.monotonic() + timeout_seconds
+        text, items = editing.text_and_inventory(sess.document)
+        result = BioMASSInventoryResult(
+            session_id=sess.session_id,
+            document_version=sess.document.version,
+            reactions=items,
+            species_mapping=sess.document.species_mapping,
+        )
+        if check_generation:
+            try:
+                summary = editing.compile_structure(
+                    session_manager.directory(sess.session_id), text, timeout_seconds
+                )
+                editing.annotate_inventory(items, summary)
+                result.species, result.parameters = (
+                    summary["species"],
+                    list(summary["parameters"]),
+                )
+                result.issues = editing.dependencies(sess.document, text, summary)
+                if result.issues:
+                    result.generation_valid = False
+                elif items:
+                    budget = deadline - time.monotonic()
+                    if budget <= 0:
+                        raise TimeoutError(
+                            "Reaction inspection exceeded its worker time budget."
+                        )
+                    full_text, mapping = render(sess.document)
+                    validated, _ = artifacts.job(
+                        session_manager.directory(sess.session_id),
+                        {
+                            "operation": "generate",
+                            "text": full_text,
+                            "line_mapping": mapping,
+                            "configuration": sess.document.configuration.model_dump(
+                                mode="json"
+                            ),
+                        },
+                        budget,
+                    )
+                    shutil.rmtree(validated)
+                    result.generation_valid = True
+            except (ValueError, RuntimeError, OSError) as exc:
+                result.generation_valid = False
+                result.issues.append(str(exc))
+        return result
+
+
+@tool(annotations=WRITE, structured_output=True)
+def build_reactions(
+    expected_version: Annotated[
+        int,
+        Field(
+            ge=0,
+            description="Document version returned by inspect_model/inspect_reactions; stale edits are rejected.",
+        ),
+    ],
+    edits: Annotated[
+        list[ReactionEdit],
+        Field(
+            description="Explicit add/update/remove operations. Templates generate syntax; statement accepts raw Text2Model, including @rxn custom kinetics.",
+            max_length=1000,
+        ),
+    ],
+    species_mapping: Annotated[
+        dict[str, list[str]] | None,
+        Field(
+            description="Optional network node IDs to species names. A participant can name a node if it maps to exactly one species."
+        ),
+    ] = None,
+    configuration: Annotated[
+        ModelConfiguration | None,
+        Field(
+            description="Optional complete replacement configuration, applied in the same transaction."
+        ),
+    ] = None,
+    line_edits: Annotated[
+        list[DocumentLineEdit] | None,
+        Field(
+            description="Document-mode directive/comment replacements by original line number; None text leaves a removal comment."
+        ),
+    ] = None,
+    append_lines: Annotated[
+        list[str] | None,
+        Field(
+            description="Document-mode directives/comments to append; reactions belong in edits."
+        ),
+    ] = None,
+    prune_unused_values: Annotated[
+        bool,
+        Field(
+            description="Explicitly remove numerical defaults for symbols absent after editing; dependent expressions/conditions still require explicit repair."
+        ),
+    ] = False,
+    preview: Annotated[
+        bool,
+        Field(
+            description="Validate and report the proposed change without changing session state. False applies the batch atomically."
+        ),
+    ] = True,
+    timeout_seconds: JobTimeout = 60,
+    session_id: SessionID = None,
+) -> BioMASSBuildResult:
+    """Construct or edit reactions from a conversation, network, or existing file.
+
+    Read docs://biomass/model_editing for template participants and examples.
+    Scientific interpretation belongs to the calling agent. Metadata is optional;
+    new records are unreviewed unless the agent explicitly annotates them.
+    """
+    with session_manager.use(session_id) as sess:
+        if expected_version != sess.document.version:
+            raise ValueError(
+                f"Stale document version {expected_version}; current version is {sess.document.version}. Inspect before retrying."
+            )
+        result = BioMASSBuildResult(
+            session_id=sess.session_id,
+            base_version=expected_version,
+            document_version=expected_version,
+            applied=False,
+            can_apply=False,
+            changes=[],
+            removed_reaction_ids=[],
+        )
+        directory = session_manager.directory(sess.session_id)
+        deadline = time.monotonic() + timeout_seconds
+
+        def remaining():
+            budget = deadline - time.monotonic()
+            if budget <= 0:
+                raise TimeoutError(
+                    "Model editing exceeded its total worker time budget."
+                )
+            return min(budget, 300)
+
+        try:
+            document, removed, notes = editing.candidate(
+                sess.document,
+                edits,
+                line_edits or [],
+                species_mapping,
+                configuration,
+                append_lines or [],
+            )
+            result.removed_reaction_ids, result.notes = removed, notes
+            result.species_mapping = document.species_mapping
+            text, inventory = editing.text_and_inventory(document)
+            summary = editing.compile_structure(directory, text, remaining())
+            editing.annotate_inventory(inventory, summary)
+            changed_ids = {e.reaction_id for e in edits if e.action != "remove"}
+            result.changes = [r for r in inventory if r.reaction_id in changed_ids]
+            old_text, _ = editing.text_and_inventory(sess.document)
+            try:
+                old = editing.compile_structure(directory, old_text, remaining())
+            except (ValueError, RuntimeError):
+                old = {"species": [], "parameters": {}}
+                result.notes.append(
+                    "Previous document could not be compiled; symbol differences are relative to an empty inventory."
+                )
+            for kind in ("species", "parameters"):
+                setattr(
+                    result, "added_" + kind, sorted(set(summary[kind]) - set(old[kind]))
+                )
+                setattr(
+                    result,
+                    "removed_" + kind,
+                    sorted(set(old[kind]) - set(summary[kind])),
+                )
+            if prune_unused_values:
+                cfg = document.configuration
+                cfg.parameters = {
+                    k: v
+                    for k, v in cfg.parameters.items()
+                    if k in summary["parameters"]
+                }
+                cfg.initials = {
+                    k: v for k, v in cfg.initials.items() if k in summary["species"]
+                }
+                result.notes.append(
+                    "Pruned numerical defaults for absent symbols; retained conditions and observables for dependency validation."
+                )
+            result.issues = editing.dependencies(document, text, summary)
+            if result.issues:
+                return result
+            if inventory:
+                full_text, mapping = render(document)
+                validated, _ = artifacts.job(
+                    directory,
+                    {
+                        "operation": "generate",
+                        "text": full_text,
+                        "line_mapping": mapping,
+                        "configuration": document.configuration.model_dump(mode="json"),
+                    },
+                    remaining(),
+                )
+                shutil.rmtree(validated)
+            result.can_apply = True
+            if not preview and document != sess.document:
+                session_manager.save(sess, edited(document))
+                result.applied = True
+                result.document_version = sess.document.version
+            return result
+        except (ValueError, RuntimeError, OSError) as exc:
+            result.issues.append(str(exc))
+            return result
 
 
 @tool(annotations=WRITE, structured_output=True)

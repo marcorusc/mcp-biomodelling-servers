@@ -18,7 +18,12 @@ from BioMASS.session_manager import BioMASSSessionManager
 from BioMASS.tools.guidance import DOCS_DIRECTORY
 from tests.test_biomass_workflow import handoff
 
-RESOURCE_NAMES = ("reaction_syntax", "authoring_examples", "network_to_reactions")
+RESOURCE_NAMES = (
+    "reaction_syntax",
+    "authoring_examples",
+    "network_to_reactions",
+    "model_editing",
+)
 SYNTAX = (DOCS_DIRECTORY / "reaction_syntax.md").read_text()
 EXAMPLES = (DOCS_DIRECTORY / "authoring_examples.md").read_text()
 

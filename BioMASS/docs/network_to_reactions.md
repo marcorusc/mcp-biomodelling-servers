@@ -47,7 +47,9 @@ Do not silently promote mechanistic evidence into kinetic or parameter evidence.
 | Inhibitory signed edge only | Investigate repression, sequestration, dephosphorylation, degradation, or another mechanism; keep unresolved if none is supported or explicitly assumed. |
 | Indirect pathway effect | Avoid inventing direct molecular contact; introduce justified intermediate steps or record a coarse-grained assumption. |
 
-`status="supported"` requires supporting evidence links. If the representation
+Scientific annotation is the calling agent's responsibility. The server stores
+optional metadata; new records default to `unreviewed`, and assumption text is
+not mandatory. `status="supported"` requires supporting evidence links. If the representation
 requires an unsupported mechanistic or kinetic choice, use `status="assumed"`
 and explain that choice in `assumption`, while retaining relevant evidence links.
 The status is a coarse label for the whole reaction record; qualify which parts
@@ -62,13 +64,17 @@ Do not submit a dummy reaction or comment to claim coverage.
 ## Author and revise without losing work
 
 1. Store evidence with `set_evidence`; this upserts by evidence ID.
-2. Read the current model with `inspect_model`. Assemble the complete ordered
-   reaction list with stable IDs, edge links, evidence links, and assumptions.
-3. Call `set_reactions` with that entire list. It REPLACES the list; it does not
-   append a batch. Preserve earlier records when adding another subsystem.
+2. Read `inspect_model` and `inspect_reactions` for current records, symbols,
+   and document version. Prepare explicit changes with stable reaction IDs.
+3. Use `build_reactions` with `expected_version` to preview additions, updates,
+   or removals; apply with `preview=false`. This preserves unaffected records.
+   `set_reactions` remains a complete replacement interface, so preserve earlier
+   records when using it to add another subsystem.
 4. Use `share_parameters_with` only for justified sharing with an earlier record.
-   Reaction edits clear numerical overrides and conditions because generated
-   parameter names depend on line numbers. Reapply configuration after inspection.
+   Incremental edits preserve line positions and compatible numerical settings.
+   Complete replacement clears numerical overrides and conditions because
+   generated parameter names depend on line numbers. Reapply configuration after
+   inspection when using that interface. See `docs://biomass/model_editing`.
 5. `configure_model` also replaces its complete configuration. Document units,
    provenance, observables, conditions, and explicit time bounds.
 6. Use `validate_model(check_generation=true)`, generate, inspect equations and

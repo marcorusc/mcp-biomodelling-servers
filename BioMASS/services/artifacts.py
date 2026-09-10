@@ -77,9 +77,10 @@ def revision_path(directory: Path, revision: str, known: list[str]) -> Path:
     return path
 
 
-def run_worker(directory: Path, request: dict, timeout_seconds: int = 60) -> dict:
-    if not 1 <= timeout_seconds <= 300:
-        raise ValueError("Timeout must be between 1 and 300 seconds.")
+def run_worker(directory: Path, request: dict, timeout_seconds: float = 60) -> dict:
+    # A multi-worker tool may pass the fractional remainder of its public budget.
+    if not 0 < timeout_seconds <= 300:
+        raise ValueError("Worker timeout must be positive and at most 300 seconds.")
     directory.mkdir(parents=True, exist_ok=False)
     (directory / "request.json").write_text(
         json.dumps(request, allow_nan=False, indent=2), encoding="utf-8"
@@ -124,7 +125,7 @@ def run_worker(directory: Path, request: dict, timeout_seconds: int = 60) -> dic
 
 
 def job(
-    directory: Path, request: dict, timeout_seconds: int, snapshot: dict | None = None
+    directory: Path, request: dict, timeout_seconds: float, snapshot: dict | None = None
 ) -> tuple[Path, dict]:
     prefix = "rev" if request["operation"] == "generate" else request["operation"]
     name = prefix + "_" + uuid.uuid4().hex

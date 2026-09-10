@@ -17,6 +17,7 @@ EXPECTED_NAMED_OUTPUTS = {
                 "restore_session",
                 "import_neko_handoff",
                 "import_text",
+                "import_text_file",
                 "set_evidence",
                 "set_reactions",
                 "configure_model",
@@ -35,6 +36,8 @@ EXPECTED_NAMED_OUTPUTS = {
             "BioMASSJobResult",
         ),
         "validate_model": "BioMASSValidationResult",
+        "build_reactions": "BioMASSBuildResult",
+        "inspect_reactions": "BioMASSInventoryResult",
         "list_sessions": "BioMASSSessionListResult",
         "list_artifact_sessions": "BioMASSArtifactSessionListResult",
         "list_generated_files": "BioMASSArtifactFileListResult",
@@ -103,7 +106,7 @@ EXPECTED_NAMED_OUTPUTS = {
 EXPECTED_TOOL_COUNTS = {
     "MaBoSS": 24,
     "NeKo": 33,
-    "BioMASS": 19,
+    "BioMASS": 22,
     "PhysiCell": 34,
 }
 TOOL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
@@ -118,7 +121,7 @@ INTERNAL_PARAMETER_NAMES = {
 
 
 async def _list_all_tools() -> dict[str, dict[str, Any]]:
-    # Import all three source servers into this process before inspecting any
+    # Import all four source servers into this process before inspecting any
     # schemas. This catches collisions between launcher-compatible bare module
     # names in addition to auditing the individual tool surfaces.
     from tests import test_maboss_mcp_errors as maboss_tests
@@ -259,7 +262,7 @@ def test_schema_titles_are_unique_except_for_intentional_aliases() -> None:
         title: sorted(uses) for title, uses in uses_by_title.items() if len(uses) > 1
     }
     assert Counter(map(len, duplicated_titles.values())) == Counter(
-        {3: 3, 2: 1, 8: 1, 5: 1}
+        {3: 3, 2: 1, 9: 1, 5: 1}
     )
     assert duplicated_titles == {
         "BioMASSStateResult": sorted(
@@ -269,6 +272,7 @@ def test_schema_titles_are_unique_except_for_intentional_aliases() -> None:
                 "restore_session",
                 "import_neko_handoff",
                 "import_text",
+                "import_text_file",
                 "set_evidence",
                 "set_reactions",
                 "configure_model",

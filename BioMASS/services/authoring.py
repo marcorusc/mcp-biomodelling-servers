@@ -160,11 +160,18 @@ def numeric_assignments(text: str, prefix: str) -> None:
 
 
 def render_records(
-    records: list[ReactionRecord], config: ModelConfiguration
+    records: list[ReactionRecord],
+    config: ModelConfiguration,
+    reaction_lines: dict[str, int] | None = None,
+    line_count: int = 0,
 ) -> tuple[str, dict[str, int]]:
     lines: list[str] = []
     mapping: dict[str, int] = {}
     for record in records:
+        target_line = (reaction_lines or {}).get(record.reaction_id, len(lines) + 1)
+        if target_line <= len(lines):
+            raise ValueError("Reaction slots must be unique and in increasing order.")
+        lines.extend(["# Removed reaction"] * (target_line - len(lines) - 1))
         if record.reaction_id in mapping:
             raise ValueError("Reaction IDs must be unique.")
         statement, separator, comment = record.statement.partition("#")
@@ -194,6 +201,7 @@ def render_records(
             statement = " | ".join(parts)
         mapping[record.reaction_id] = len(lines) + 1
         lines.append(statement + (" #" + comment if separator else ""))
+    lines.extend(["# Removed reaction"] * max(0, line_count - len(lines)))
     for name, expr in config.observables.items():
         lines.append(f"@obs {name}: {expr}")
     if config.time_span:

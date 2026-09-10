@@ -32,6 +32,10 @@ class ModelDocument(StructuredOutputModel):
     configuration: ModelConfiguration = Field(default_factory=ModelConfiguration)
     current_revision: str | None = None
     revisions: list[str] = Field(default_factory=list)
+    reaction_lines: dict[str, int] = Field(default_factory=dict)
+    record_line_count: int = 0
+    species_mapping: dict[str, list[str]] = Field(default_factory=dict)
+    source_file: dict[str, str] | None = None
 
 
 class Coverage(StructuredOutputModel):
@@ -41,6 +45,44 @@ class Coverage(StructuredOutputModel):
     unresolved_edges: list[str] = Field(default_factory=list)
     conflicting_evidence: list[str] = Field(default_factory=list)
     assumed_reactions: list[str] = Field(default_factory=list)
+    unreviewed_edges: list[str] = Field(default_factory=list)
+
+
+class ReactionInventoryItem(StructuredOutputModel):
+    reaction_id: str
+    line_number: int
+    statement: str
+    parameters: list[str] = Field(default_factory=list)
+
+
+class BioMASSInventoryResult(StructuredOutputModel):
+    server: Literal["BioMASS"] = "BioMASS"
+    session_id: str
+    document_version: int
+    reactions: list[ReactionInventoryItem]
+    species: list[str] = Field(default_factory=list)
+    parameters: list[str] = Field(default_factory=list)
+    species_mapping: dict[str, list[str]] = Field(default_factory=dict)
+    generation_valid: bool | None = None
+    issues: list[str] = Field(default_factory=list)
+
+
+class BioMASSBuildResult(StructuredOutputModel):
+    server: Literal["BioMASS"] = "BioMASS"
+    session_id: str
+    base_version: int
+    document_version: int
+    applied: bool
+    can_apply: bool
+    changes: list[ReactionInventoryItem]
+    removed_reaction_ids: list[str]
+    added_species: list[str] = Field(default_factory=list)
+    removed_species: list[str] = Field(default_factory=list)
+    added_parameters: list[str] = Field(default_factory=list)
+    removed_parameters: list[str] = Field(default_factory=list)
+    species_mapping: dict[str, list[str]] = Field(default_factory=dict)
+    issues: list[str] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
 
 
 class BioMASSStateResult(StructuredOutputModel):

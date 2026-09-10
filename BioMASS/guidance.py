@@ -1,8 +1,8 @@
 """Workflow guidance published to every MCP client."""
 
 BIOMASS_SERVER_INSTRUCTIONS = (
-    "Use one session per ODE model. Import a NeKo-to-BioMASS handoff or standalone "
-    "Text2Model text. Read literature with the calling agent's tools, record "
+    "Use one session per ODE model. Start empty, import a NeKo-to-BioMASS handoff, "
+    "or import standalone Text2Model text/files. Read literature with the calling agent's tools, record "
     "evidence, and distinguish supported reactions from explicit assumptions. "
     "Inspect unresolved edges before generation. Visualize generated revisions "
     "before interpreting simulations; graph edges do not distinguish inhibition "
@@ -12,7 +12,10 @@ BIOMASS_SERVER_INSTRUCTIONS = (
     " Before authoring, read docs://biomass/reaction_syntax and "
     "docs://biomass/authoring_examples; for imported networks also read "
     "docs://biomass/network_to_reactions. A signed edge or PMID alone does not "
-    "establish a mechanism or kinetic law. set_reactions replaces the whole list."
+    "establish a mechanism or kinetic law. Read docs://biomass/model_editing for "
+    "build_reactions: incremental templates/custom kinetics, versioned previews, "
+    "and file editing. Metadata is optional; scientific reasoning belongs to the agent. "
+    "set_reactions replaces the whole list."
 )
 
 BIOMASS_AGENT_MANUAL = """# BioMASS Agent Operations Manual
@@ -26,25 +29,37 @@ internet access is required to learn the supported grammar:
   reaction records, numerical configuration, and standalone line provenance.
 - docs://biomass/network_to_reactions: how to justify mechanisms from literature,
   name molecular states, record assumptions, and preserve unresolved edges.
+- docs://biomass/model_editing: build_reactions templates and custom statements,
+  empty models, file imports, incremental editing, and dependency repairs.
 
 ## Workflow
 1. create_session; pass session_id explicitly when several sessions are active.
 2. For NeKo, call export_biomass_handoff on NeKo, then import_neko_handoff here.
-   For standalone work, use import_text with a complete Text2Model document.
+   For standalone work, use import_text or import_text_file. For conversational
+   construction, start directly with build_reactions in the empty session.
 3. Retrieve papers with the calling agent's literature tools. Preserve DOI/PMID
    identifiers, passage locations, context, limitations, and contradictory evidence.
    set_evidence upserts records; it does not retrieve or interpret papers.
-4. For a network model, set_reactions replaces the ordered reaction list. Each
-   supported reaction links supporting evidence; each assumed reaction needs a
-   rationale. Keep stable reaction IDs. Several edges may support one reaction,
+4. Use inspect_reactions for IDs, lines, symbols, and document_version, then
+   build_reactions to add, update, or remove reactions in one validated batch.
+   Pass expected_version; preview defaults to true. Set preview=false to apply.
+   The agent interprets user requests, chooses kinetics, and decides whether to
+   attach scientific context. Metadata is optional; new reactions are unreviewed.
+   Explicit supported status requires supporting evidence links. Assumption text
+   is optional storage supplied by the agent, not a server-enforced conversation.
+   Keep stable reaction IDs. Several edges may support one reaction,
    and an edge may need several reactions. Missing mechanisms remain unresolved.
    A signed edge or a PMID alone does not establish a mechanism or kinetic law.
    Do not force one reaction per edge. set_reactions replaces the COMPLETE list;
-   retain existing records when extending a model with another batch.
+   retain existing records when using that replacement interface. Incremental
+   build_reactions preserves unaffected records and compatible numeric settings.
 5. Use share_parameters_with to refer to an earlier reaction ID. Never use raw
    line-number sharing in reaction records. Standalone documents preserve their
    exact text, including line-number references; import_text replaces the whole
    document and its line provenance together.
+   import_text_file copies UTF-8 text and records its path/hash without modifying
+   the file. Incremental removals leave comments to preserve later line numbers.
+   The server does not choose model reductions or their scientific assumptions.
 6. configure_model replaces the configuration. Set observables and time_span for
    record mode. In document mode, put observables, conditions, and @sim tspan in
    the text; configuration supports numerical defaults and unit metadata.

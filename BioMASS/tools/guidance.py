@@ -47,6 +47,16 @@ def biomass_network_to_reactions_resource() -> str:
     return (DOCS_DIRECTORY / "network_to_reactions.md").read_text(encoding="utf-8")
 
 
+@mcp.resource(
+    "docs://biomass/model_editing",
+    name="BioMASS Conversational Construction and Model Editing",
+    description="Read before build_reactions: template participants, custom kinetics, file imports, versioned previews, dependency repairs, and optional metadata.",
+    mime_type="text/markdown",
+)
+def biomass_model_editing_resource() -> str:
+    return (DOCS_DIRECTORY / "model_editing.md").read_text(encoding="utf-8")
+
+
 @mcp.prompt(name="biomass_workflow_prompt")
 def biomass_workflow_prompt() -> str:
     """Guide evidence-backed ODE construction, visualization, and simulation."""

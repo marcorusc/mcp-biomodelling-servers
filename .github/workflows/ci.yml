@@ -194,7 +194,8 @@ jobs:
               required_biomass_docs = {
                   f"mcp_biomodelling_servers/BioMASS/docs/{name}.md"
                   for name in (
-                      "reaction_syntax", "authoring_examples", "network_to_reactions"
+                      "reaction_syntax", "authoring_examples", "network_to_reactions",
+                      "model_editing"
                   )
               }
               missing_biomass_docs = required_biomass_docs - set(wheel.namelist())

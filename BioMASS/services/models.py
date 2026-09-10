@@ -24,6 +24,14 @@ def coverage(document: ModelDocument) -> Coverage:
         assumed_reactions=[
             r.reaction_id for r in document.reactions if r.status == "assumed"
         ],
+        unreviewed_edges=sorted(
+            {
+                e
+                for r in document.reactions
+                if r.status == "unreviewed"
+                for e in r.edge_ids
+            }
+        ),
         conflicting_evidence=[
             e.evidence_id
             for e in document.evidence.values()
@@ -69,11 +77,17 @@ def validate_links(document: ModelDocument) -> None:
 def render(document: ModelDocument) -> tuple[str, dict[str, int]]:
     validate_links(document)
     if document.mode == "records":
-        return render_records(document.reactions, document.configuration)
+        return render_records(
+            document.reactions,
+            document.configuration,
+            document.reaction_lines,
+            document.record_line_count,
+        )
     if document.mode == "document" and document.text is not None:
         validate_text(document.text)
+        by_line = {n: rid for rid, n in document.reaction_lines.items()}
         return document.text, {
-            f"line_{n}": n
+            by_line.get(n, f"line_{n}"): n
             for n, line in enumerate(document.text.splitlines(), 1)
             if line.strip()
             and not line.lstrip().startswith(("#", "@obs", "@sim", "@add"))

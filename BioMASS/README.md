@@ -57,9 +57,10 @@ not support editable installs.
 3. Read papers with the calling agent's literature tools. `set_evidence` stores
    source identifiers, supporting passages or summaries, locations, biological
    context, limitations, and supporting/contradicting/context-only stances.
-4. `set_reactions` supplies the complete ordered reaction list. Each record has
+4. `build_reactions` adds or edits reactions; `set_reactions` replaces the complete list. Each record has
    a stable ID, Text2Model statement, originating edges, evidence IDs, and a
-   supported/assumed status. An assumption requires a rationale. These links
+   supported/assumed/unreviewed status. Scientific annotations are optional and
+   supplied by the agent; new records default to unreviewed. These links
    may be many-to-many; uncovered edges remain in the coverage report.
 5. `configure_model` sets observables, time span, conditions, numerical defaults,
    units, and quantity provenance. It replaces the complete configuration.
@@ -79,9 +80,17 @@ Reaction example (IDs must correspond to imported edges and stored evidence):
 
 Use `share_parameters_with` to refer to an earlier reaction ID. The renderer
 resolves that ID to the correct Text2Model line number. Numeric sharing in
-reaction records is rejected. Reaction edits clear numerical overrides and
+reaction records is rejected. Complete replacement with `set_reactions` clears numerical overrides and
 conditions because generated parameter names depend on line numbers; reapply
 those settings after inspecting the revised model.
+
+For conversational construction, call `create_session`, then `build_reactions`
+with templates or raw statements. `inspect_reactions` returns stable IDs and
+generated symbols. Preview a batch using `expected_version`, then apply with
+`preview=false`. Incremental edits retain compatible numerical settings. Read
+[model editing](docs/model_editing.md) or `docs://biomass/model_editing` for details.
+The agent chooses kinetics and any scientific annotations; the server validates
+syntax, references, dependencies, and execution.
 
 ## Standalone text workflow
 
@@ -91,6 +100,12 @@ replaces its line-evidence mapping and clears the old configuration. Evidence
 can be stored before import, then linked by line number. In document mode,
 put observables, simulation conditions, and time span in the text itself;
 `configure_model` can override numeric defaults and record units/provenance.
+
+`import_text_file` reads an existing UTF-8 file into the session with its source
+path and hash. `build_reactions` can expand or edit it while preserving untouched
+lines and parameter references. The original file is never modified. Removals
+leave comment lines so later line numbers remain stable; dependent observables
+and conditions must be repaired explicitly in the same batch.
 
 [examples/enzyme.txt](examples/enzyme.txt) is a small executable enzyme model.
 It specifies all three parameters, all four initial values (including zeros),
@@ -134,13 +149,13 @@ See the [upstream graph tutorial](https://biomass-core.readthedocs.io/en/latest/
 
 ## Tools and resources
 
-The server exposes 19 tools:
+The server exposes 22 tools:
 
 | Family | Tools |
 |---|---|
 | Sessions | `create_session`, `list_sessions`, `close_session`, `restore_session` |
-| Authoring | `import_neko_handoff`, `import_text`, `set_evidence`, `set_reactions`, `configure_model` |
-| Inspection | `inspect_model`, `validate_model` |
+| Authoring | `import_neko_handoff`, `import_text`, `import_text_file`, `set_evidence`, `set_reactions`, `build_reactions`, `configure_model` |
+| Inspection | `inspect_model`, `inspect_reactions`, `validate_model` |
 | Generation | `generate_model` |
 | Visualization | `visualize_model`, `export_model_graph` |
 | Simulation | `run_simulation` |
@@ -157,6 +172,7 @@ Before writing reactions, agents should read these offline MCP resources:
 | `docs://biomass/reaction_syntax` | [Supported syntax and generated kinetics](docs/reaction_syntax.md) |
 | `docs://biomass/authoring_examples` | [Tested tool argument examples](docs/authoring_examples.md) |
 | `docs://biomass/network_to_reactions` | [Evidence-to-mechanism authoring guide](docs/network_to_reactions.md) |
+| `docs://biomass/model_editing` | [Conversational construction, templates, and file editing](docs/model_editing.md) |
 
 These references ship with the server and are linked from its initialization
 instructions, agent manual, workflow prompt, and authoring tool descriptions.
