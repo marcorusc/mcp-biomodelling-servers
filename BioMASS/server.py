@@ -198,7 +198,11 @@ def import_text(
     ] = None,
     session_id: SessionID = None,
 ) -> BioMASSStateResult:
-    """Import or replace standalone text and its line provenance atomically."""
+    """Import or replace standalone text and its line provenance atomically.
+
+    Read docs://biomass/reaction_syntax and docs://biomass/authoring_examples
+    before writing text. Only the documented Text2Model subset is supported.
+    """
     validate_text(text)
     with session_manager.use(session_id) as sess:
         if sess.document.mode == "records":
@@ -245,7 +249,12 @@ def set_reactions(
     ],
     session_id: SessionID = None,
 ) -> BioMASSStateResult:
-    """Replace NeKo-derived reactions with evidence and explicit assumptions."""
+    """Replace the COMPLETE ordered reaction list, retaining prior records explicitly.
+
+    Before authoring, read docs://biomass/reaction_syntax,
+    docs://biomass/authoring_examples, and docs://biomass/network_to_reactions.
+    Signed edges and PMID identifiers alone do not justify mechanisms or kinetics.
+    """
     with session_manager.use(session_id) as sess:
         if sess.document.mode != "records":
             raise ValueError("Import a NeKo handoff before authoring reaction records.")

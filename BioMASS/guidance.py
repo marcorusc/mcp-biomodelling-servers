@@ -9,9 +9,23 @@ BIOMASS_SERVER_INSTRUCTIONS = (
     "or modifiers. Simulation requires an explicit scenario and time span; "
     "placeholder values require explicit opt-in. Read docs://biomass/agent_manual "
     "or use biomass_workflow_prompt."
+    " Before authoring, read docs://biomass/reaction_syntax and "
+    "docs://biomass/authoring_examples; for imported networks also read "
+    "docs://biomass/network_to_reactions. A signed edge or PMID alone does not "
+    "establish a mechanism or kinetic law. set_reactions replaces the whole list."
 )
 
 BIOMASS_AGENT_MANUAL = """# BioMASS Agent Operations Manual
+
+## Authoring references
+Read these MCP resources before writing reactions; no source-code search or
+internet access is required to learn the supported grammar:
+- docs://biomass/reaction_syntax: BioMASS 0.14 statements, kinetic laws, parameter
+  names, directives, sharing, and the subset accepted by this server.
+- docs://biomass/authoring_examples: tested complete tool arguments for evidence,
+  reaction records, numerical configuration, and standalone line provenance.
+- docs://biomass/network_to_reactions: how to justify mechanisms from literature,
+  name molecular states, record assumptions, and preserve unresolved edges.
 
 ## Workflow
 1. create_session; pass session_id explicitly when several sessions are active.
@@ -24,6 +38,9 @@ BIOMASS_AGENT_MANUAL = """# BioMASS Agent Operations Manual
    supported reaction links supporting evidence; each assumed reaction needs a
    rationale. Keep stable reaction IDs. Several edges may support one reaction,
    and an edge may need several reactions. Missing mechanisms remain unresolved.
+   A signed edge or a PMID alone does not establish a mechanism or kinetic law.
+   Do not force one reaction per edge. set_reactions replaces the COMPLETE list;
+   retain existing records when extending a model with another batch.
 5. Use share_parameters_with to refer to an earlier reaction ID. Never use raw
    line-number sharing in reaction records. Standalone documents preserve their
    exact text, including line-number references; import_text replaces the whole

@@ -150,6 +150,21 @@ Read `docs://biomass/agent_manual` or request `biomass_workflow_prompt` for agen
 instructions. Session resources expose `/model`, `/evidence`, `/coverage`,
 `/files`, and `/revision/{revision}` under `biomass://session/{session_id}`.
 
+Before writing reactions, agents should read these offline MCP resources:
+
+| Resource | Reference |
+|---|---|
+| `docs://biomass/reaction_syntax` | [Supported syntax and generated kinetics](docs/reaction_syntax.md) |
+| `docs://biomass/authoring_examples` | [Tested tool argument examples](docs/authoring_examples.md) |
+| `docs://biomass/network_to_reactions` | [Evidence-to-mechanism authoring guide](docs/network_to_reactions.md) |
+
+These references ship with the server and are linked from its initialization
+instructions, agent manual, workflow prompt, and authoring tool descriptions.
+They document the supported BioMASS 0.14 subset. A separate skill is not required.
+The syntax examples are converted in tests; the complete example workflows are
+also generated and simulated. Signed edges do not automatically determine
+mechanisms, kinetic laws, or one reaction per edge.
+
 ## Revisions, validation, and limits
 
 Each session has locked authoring state and a durable JSON snapshot. Workers

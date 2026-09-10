@@ -191,6 +191,18 @@ jobs:
               )
 
           with zipfile.ZipFile(wheels[0]) as wheel:
+              required_biomass_docs = {
+                  f"mcp_biomodelling_servers/BioMASS/docs/{name}.md"
+                  for name in (
+                      "reaction_syntax", "authoring_examples", "network_to_reactions"
+                  )
+              }
+              missing_biomass_docs = required_biomass_docs - set(wheel.namelist())
+              if missing_biomass_docs:
+                  raise SystemExit(
+                      "Wheel is missing BioMASS authoring resources: "
+                      + ", ".join(sorted(missing_biomass_docs))
+                  )
               metadata_members = [
                   member
                   for member in wheel.namelist()
