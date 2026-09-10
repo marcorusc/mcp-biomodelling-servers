@@ -283,6 +283,13 @@ _ARTIFACT_MEDIA_TYPES = {
     ".csv": "text/csv",
     ".json": "application/json",
     ".png": "image/png",
+    ".svg": "image/svg+xml",
+    ".html": "text/html",
+    ".dot": "text/vnd.graphviz",
+    ".zip": "application/zip",
+    ".txt": "text/plain",
+    ".py": "text/x-python",
+    ".log": "text/plain",
     ".sif": "text/tab-separated-values",
     ".xml": "application/xml",
 }

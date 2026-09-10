@@ -47,6 +47,12 @@ from mcp_biomodelling_servers.structured_outputs import (
     structured_report,
 )
 
+from mcp_biomodelling_servers.ode_handoff import (
+    NeKoBioMASSHandoffExportResult,
+    write_ode_handoff,
+)
+from .services.ode_exporting import ode_network
+
 from .app import mcp
 from .contracts import (
     AtopoStrategy,
@@ -1851,6 +1857,37 @@ def apply_global_connection(
         raise
     except Exception as e:
         raise RuntimeError(f"Global strategy failed: {e}") from e
+
+@mcp.tool(
+    title="Export NeKo to BioMASS handoff",
+    annotations=_NON_IDEMPOTENT_CLOSED,
+    structured_output=True,
+)
+@session_locked
+def export_biomass_handoff(
+    biological_context: Annotated[NonEmptyString, Field(description="Biological question and context to preserve with the ODE network.")],
+    artifact_prefix: Annotated[HandoffArtifactPrefix, Field(description="Unused basename prefix for the network JSON and handoff manifest.")] = "neko_to_biomass",
+    session_id: Annotated[Optional[NonEmptyString], Field(description="NeKo session ID; omit for the active default.")] = None,
+) -> Annotated[CallToolResult, NeKoBioMASSHandoffExportResult]:
+    """Export the curated graph with complete references and available mechanisms.
+
+    Disconnected components and unresolved/unsigned interactions are retained;
+    this handoff does not infer reactions, species states, or kinetic laws.
+    """
+    sess, network = _session_network(session_id)
+    if network is None:
+        raise RuntimeError(E_NO_NET)
+    graph = ode_network(network)
+    source = HandoffProvenance(
+        server="NeKo", session_id=sess.session_id,
+        mcp_package=HandoffPackage(name="mcp-biomodelling-servers", version=__version__),
+        modelling_package=HandoffPackage(name="nekomata", version=_neko_package_version()),
+        operation="export_biomass_handoff",
+    )
+    result = write_ode_handoff(_export_dir(sess.session_id), artifact_prefix, graph,
+                              source, biological_context, _network_history_state_id(network))
+    return structured_report(f"Exported {len(graph.edges)} referenced interactions for BioMASS.", result)
+
 
 if __name__ == "__main__":
     mcp.run()

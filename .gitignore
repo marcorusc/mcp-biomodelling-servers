@@ -36,6 +36,7 @@ NeKo/exports/
 NeKo/artifacts/
 MaBoSS/artifacts/
 PhysiCell/artifacts/
+BioMASS/artifacts/
 
 # Local upgrade tracking
 MCP_V2_UPGRADE_PLAN.md

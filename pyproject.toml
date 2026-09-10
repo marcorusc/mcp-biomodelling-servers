@@ -5,11 +5,11 @@ build-backend = "hatchling.build"
 [project]
 name = "mcp-biomodelling-servers"
 version = "2.3.0"
-description = "MCP servers for NeKo signalling-network construction, MaBoSS Boolean simulation, and PhysiCell configuration"
+description = "MCP servers for NeKo signalling-network construction, MaBoSS Boolean simulation, PhysiCell configuration, and BioMASS ODE construction"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
-keywords = ["mcp", "systems-biology", "bioinformatics", "neko", "maboss", "physicell"]
+keywords = ["mcp", "systems-biology", "bioinformatics", "neko", "maboss", "physicell", "biomass"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
@@ -35,9 +35,11 @@ dependencies = [
     "physicell-settings>=0.6.2,<0.7",
     "requests>=2.31,<3",
     "tabulate>=0.9,<1",
+    "biomass>=0.14.0,<0.15",
 ]
 
 [project.optional-dependencies]
+biomass-graph = ["biomass[graph]>=0.14.0,<0.15"]
 dev = [
     "build>=1.2",
     "mypy>=1.10,<2",
@@ -53,6 +55,7 @@ Repository = "https://github.com/marcorusc/mcp-biomodelling-servers"
 mcp-neko-server = "mcp_biomodelling_servers.neko:main"
 mcp-maboss-server = "mcp_biomodelling_servers.maboss:main"
 mcp-physicell-server = "mcp_biomodelling_servers.physicell:main"
+mcp-biomass-server = "mcp_biomodelling_servers.biomass:main"
 
 [tool.ruff]
 # Keep emitted syntax compatible with the project's minimum supported Python.
@@ -81,6 +84,7 @@ packages = [
     "NeKo",
     "MaBoSS",
     "PhysiCell",
+    "BioMASS",
 ]
 exclude = [
     "**/artifacts/**",
@@ -100,6 +104,7 @@ exclude = [
 "NeKo"      = "mcp_biomodelling_servers/NeKo"
 "MaBoSS"    = "mcp_biomodelling_servers/MaBoSS"
 "PhysiCell" = "mcp_biomodelling_servers/PhysiCell"
+"BioMASS" = "mcp_biomodelling_servers/BioMASS"
 
 [tool.hatch.build.targets.sdist]
 include = [
@@ -107,6 +112,7 @@ include = [
     "NeKo/",
     "MaBoSS/",
     "PhysiCell/",
+    "BioMASS/",
     "artifact_manager.py",
     "README.md",
     "pyproject.toml",

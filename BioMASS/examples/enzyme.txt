@@ -1,0 +1,6 @@
+E + S <--> ES | kf=0.003, kr=0.001 | E=100, S=50, ES=0
+ES --> E + P | kf=0.002 | P=0
+@obs Free_enzyme: u[E]
+@obs Total_enzyme: u[E] + u[ES]
+@obs Product: u[P]
+@sim tspan: [0, 100]
