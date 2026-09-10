@@ -7,7 +7,39 @@ from typing import Any
 
 from mcp import Client
 
+from BioMASS import server as biomass_server
+
 EXPECTED_NAMED_OUTPUTS = {
+    "BioMASS": {
+        **dict.fromkeys(
+            (
+                "create_session",
+                "restore_session",
+                "import_neko_handoff",
+                "import_text",
+                "set_evidence",
+                "set_reactions",
+                "configure_model",
+                "inspect_model",
+            ),
+            "BioMASSStateResult",
+        ),
+        **dict.fromkeys(
+            (
+                "generate_model",
+                "visualize_model",
+                "export_model_graph",
+                "run_simulation",
+                "export_model_bundle",
+            ),
+            "BioMASSJobResult",
+        ),
+        "validate_model": "BioMASSValidationResult",
+        "list_sessions": "BioMASSSessionListResult",
+        "list_artifact_sessions": "BioMASSArtifactSessionListResult",
+        "list_generated_files": "BioMASSArtifactFileListResult",
+        "clean_generated_files": "BioMASSArtifactCleanupResult",
+    },
     "MaBoSS": {
         "list_sessions": "MaBoSSSessionListResult",
         "list_artifact_sessions": "MaBoSSArtifactSessionListResult",
@@ -30,6 +62,7 @@ EXPECTED_NAMED_OUTPUTS = {
     "NeKo": {
         "export_network": "NeKoNetworkExportResult",
         "export_neko_handoff": "NeKoHandoffExportResult",
+        "export_biomass_handoff": "NeKoBioMASSHandoffExportResult",
         "list_genes_and_interactions": "NeKoNetworkInventoryResult",
         "find_paths": "NeKoPathSearchResult",
         "list_network_history": "NetworkHistorySummary",
@@ -54,9 +87,7 @@ EXPECTED_NAMED_OUTPUTS = {
         "get_workflow_status": "PhysiCellWorkflowStatusResult",
         "get_maboss_context": "PhysiCellMaBoSSContextResult",
         "validate_xml_file": "PhysiCellXmlValidationResult",
-        "analyze_loaded_configuration": (
-            "PhysiCellLoadedConfigurationResult"
-        ),
+        "analyze_loaded_configuration": ("PhysiCellLoadedConfigurationResult"),
         "list_loaded_components": "PhysiCellLoadedComponentsResult",
         "get_available_cycle_models": "PhysiCellCycleModelListResult",
         "list_all_available_signals": "PhysiCellSignalListResult",
@@ -71,7 +102,8 @@ EXPECTED_NAMED_OUTPUTS = {
 
 EXPECTED_TOOL_COUNTS = {
     "MaBoSS": 24,
-    "NeKo": 32,
+    "NeKo": 33,
+    "BioMASS": 19,
     "PhysiCell": 34,
 }
 TOOL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
@@ -94,6 +126,7 @@ async def _list_all_tools() -> dict[str, dict[str, Any]]:
     from tests import test_physicell_mcp_errors as physicell_tests
 
     servers = {
+        "BioMASS": biomass_server.mcp,
         "MaBoSS": maboss_tests.mcp,
         "NeKo": neko_tests.mcp,
         "PhysiCell": physicell_tests.mcp,
@@ -102,16 +135,16 @@ async def _list_all_tools() -> dict[str, dict[str, Any]]:
     for server_name, server in servers.items():
         async with Client(server) as client:
             listed = await client.list_tools()
-        tool_maps[server_name] = {
-            tool.name: tool for tool in listed.tools
-        }
+        tool_maps[server_name] = {tool.name: tool for tool in listed.tools}
     return tool_maps
 
 
 def test_all_servers_publish_complete_input_and_annotation_contracts() -> None:
     tool_maps = asyncio.run(_list_all_tools())
 
-    assert sum(len(tools) for tools in tool_maps.values()) == 90
+    assert sum(len(tools) for tools in tool_maps.values()) == sum(
+        EXPECTED_TOOL_COUNTS.values()
+    )
     for server_name, tools in tool_maps.items():
         assert len(tools) == EXPECTED_TOOL_COUNTS[server_name]
         for tool_name, tool in tools.items():
@@ -191,6 +224,7 @@ def test_shared_output_contract_fields_are_aligned() -> None:
         },
     }
     file_listing_names = {
+        "BioMASS": "list_generated_files",
         "MaBoSS": "list_generated_files",
         "NeKo": "list_bnet_files",
         "PhysiCell": "list_generated_files",
@@ -206,9 +240,7 @@ def test_shared_output_contract_fields_are_aligned() -> None:
         for contract_name, tool_name in named_tools.items():
             schema = tools[tool_name].output_schema
             assert schema is not None
-            assert set(schema["properties"]) == expected_properties[
-                contract_name
-            ]
+            assert set(schema["properties"]) == expected_properties[contract_name]
 
 
 def test_schema_titles_are_unique_except_for_intentional_aliases() -> None:
@@ -224,12 +256,35 @@ def test_schema_titles_are_unique_except_for_intentional_aliases() -> None:
             )
 
     duplicated_titles = {
-        title: sorted(uses)
-        for title, uses in uses_by_title.items()
-        if len(uses) > 1
+        title: sorted(uses) for title, uses in uses_by_title.items() if len(uses) > 1
     }
-    assert Counter(map(len, duplicated_titles.values())) == Counter({3: 3, 2: 1})
+    assert Counter(map(len, duplicated_titles.values())) == Counter(
+        {3: 3, 2: 1, 8: 1, 5: 1}
+    )
     assert duplicated_titles == {
+        "BioMASSStateResult": sorted(
+            "BioMASS." + name
+            for name in (
+                "create_session",
+                "restore_session",
+                "import_neko_handoff",
+                "import_text",
+                "set_evidence",
+                "set_reactions",
+                "configure_model",
+                "inspect_model",
+            )
+        ),
+        "BioMASSJobResult": sorted(
+            "BioMASS." + name
+            for name in (
+                "generate_model",
+                "visualize_model",
+                "export_model_graph",
+                "run_simulation",
+                "export_model_bundle",
+            )
+        ),
         "PhysiCellWorkflowStatusResult": [
             "PhysiCell.get_simulation_summary",
             "PhysiCell.get_workflow_status",

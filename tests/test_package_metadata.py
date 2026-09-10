@@ -13,6 +13,7 @@ REGISTRY_MANIFESTS = (
     PROJECT_ROOT / "NeKo" / "server.json",
     PROJECT_ROOT / "MaBoSS" / "server.json",
     PROJECT_ROOT / "PhysiCell" / "server.json",
+    PROJECT_ROOT / "BioMASS" / "server.json",
 )
 PACKAGE_NAME = "mcp-biomodelling-servers"
 
@@ -34,6 +35,14 @@ def _project_version() -> str:
 
 def test_source_version_matches_project_metadata() -> None:
     assert __version__ == _project_version()
+
+
+def test_biomass_entrypoint_dependency_and_graph_extra() -> None:
+    project = _project_text()
+    assert '"biomass>=0.14.0,<0.15"' in project
+    assert 'biomass-graph = ["biomass[graph]>=0.14.0,<0.15"]' in project
+    assert 'mcp-biomass-server = "mcp_biomodelling_servers.biomass:main"' in project
+    assert '"BioMASS" = "mcp_biomodelling_servers/BioMASS"' in project
 
 
 def test_project_requires_coordinated_neko_release() -> None:

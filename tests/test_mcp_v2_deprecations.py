@@ -10,6 +10,7 @@ SERVER_PATHS = (
     REPOSITORY_ROOT / "MaBoSS" / "server.py",
     REPOSITORY_ROOT / "NeKo" / "server.py",
     REPOSITORY_ROOT / "PhysiCell" / "server.py",
+    REPOSITORY_ROOT / "BioMASS" / "server.py",
 )
 DEPRECATED_CONTEXT_LOG_METHODS = {
     "debug",

@@ -2013,6 +2013,7 @@ def test_all_neko_tools_publish_safety_annotations() -> None:
     }
     non_idempotent_closed = {
         "create_session",
+        "export_biomass_handoff",
         "export_neko_handoff",
         "navigate_network_history",
     }
@@ -2808,3 +2809,28 @@ def test_global_completion_uses_session_policies_and_explicit_overrides() -> Non
             "consensus": True,
         },
     ]
+
+
+def test_neko_biomass_handoff_preserves_references_and_mechanisms(tmp_path):
+    from mcp_biomodelling_servers.ode_handoff import read_ode_handoff
+
+    network = SimpleNamespace(
+        nodes=pd.DataFrame([
+            {"Uniprot": "E", "Genesymbol": "Enzyme", "Type": "protein"},
+            {"Uniprot": "S", "Genesymbol": "Substrate", "Type": "protein"},
+        ]),
+        edges=pd.DataFrame([{
+            "source": "E", "target": "S", "Effect": "stimulation",
+            "References": ["PMID:1", "10.1234/example"], "Mechanism": "binding",
+        }]),
+        current_state_id=2,
+    )
+    sid = _create_session(network)
+    result = asyncio.run(_call_tool("export_biomass_handoff", {
+        "session_id": sid, "biological_context": "Synthetic mechanism fixture",
+    }))
+    assert not result.is_error
+    manifest, graph = read_ode_handoff(result.structured_content["manifest_file"]["path"])
+    assert manifest.history_state_id == 2
+    assert graph.edges[0].references == ["10.1234/example", "PMID:1"]
+    assert graph.edges[0].metadata["Mechanism"] == "binding"
