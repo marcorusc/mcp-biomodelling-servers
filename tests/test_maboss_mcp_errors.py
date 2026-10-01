@@ -75,26 +75,39 @@ class FakeTrajectoryResult:
 class BlockingSimulation:
     """Test double that exposes deterministic simulation/resource ordering."""
 
-    def __init__(self) -> None:
+    def __init__(self, result: object) -> None:
+        self.result = result
         self.run_started = Event()
         self.release_run = Event()
         self.nodes_read = Event()
         self.network = self
 
-    def run(self) -> "BlockingSimulationResult":
+    def run(self) -> object:
         self.run_started.set()
         if not self.release_run.wait(timeout=2):
             raise RuntimeError("test did not release simulation")
-        return BlockingSimulationResult()
+        return self.result
 
     def keys(self) -> list[str]:
         self.nodes_read.set()
         return ["A"]
 
 
-class BlockingSimulationResult:
-    def get_last_states_probtraj(self) -> pd.DataFrame:
-        return pd.DataFrame()
+def file_backed_result(directory: Path, trajectory: pd.DataFrame) -> SimpleNamespace:
+    """Engine-free fixture with the file-backed pyMaBoSS preservation interface."""
+    directory.mkdir()
+    bnd, cfg = directory / "input.bnd", directory / "input.cfg"
+    raw = directory / "res_probtraj.csv"
+    bnd.write_text("fixture BND input\n", encoding="utf-8")
+    cfg.write_text("fixture CFG input\n", encoding="utf-8")
+    trajectory.to_csv(raw)
+    return SimpleNamespace(
+        _path=str(directory), _bnd=str(bnd), _cfg=str(cfg), prefix="res",
+        get_probtraj_file=lambda: str(raw),
+        get_last_states_probtraj=lambda: trajectory,
+        get_states_probtraj=lambda: trajectory,
+        get_nodes_probtraj=lambda: trajectory.drop(columns=["<nil>"], errors="ignore"),
+    )
 
 
 class HandoffNetworkStub:
@@ -640,9 +653,7 @@ def test_run_and_read_simulation_preserve_numeric_trajectory_data(
         {"<nil>": [0.1], "A": [0.9]},
         index=pd.Index([10.0], name="Time"),
     )
-    simulation_result = SimpleNamespace(
-        get_last_states_probtraj=lambda: trajectory,
-    )
+    simulation_result = file_backed_result(tmp_path / "engine-result", trajectory)
     simulation = SimpleNamespace(run=lambda: simulation_result)
     session_id = _create_simulation_session(simulation)
     monkeypatch.setattr(maboss_server, "_SERVER_ROOT", tmp_path)
@@ -672,6 +683,13 @@ def test_run_and_read_simulation_preserve_numeric_trajectory_data(
         "column_count": 2,
         "rows": [[0.1, 0.9]],
     }
+
+    manifests = list(csv_path.parent.glob("run_*.json"))
+    assert len(manifests) == 1
+    manifest = json.loads(manifests[0].read_text())
+    assert manifest["session_id"] == session_id
+    assert manifest["state_timepoints"] == [10.0]
+    assert any(entry["role"] == "engine_input" for entry in manifest["files"])
 
 
 def test_mutant_simulation_returns_mutations_and_numeric_trajectory() -> None:
@@ -1969,8 +1987,12 @@ def test_invalid_parameter_bounds_are_rejected_before_mutation(
     assert simulation.param == original_parameters
 
 
-def test_resource_waits_for_same_session_simulation() -> None:
-    simulation = BlockingSimulation()
+def test_resource_waits_for_same_session_simulation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(maboss_server, "_SERVER_ROOT", tmp_path)
+    result = file_backed_result(tmp_path / "engine-result", pd.DataFrame())
+    simulation = BlockingSimulation(result)
     session_id = _create_simulation_session(simulation)
 
     async def run_concurrently() -> tuple[Any, Any]:

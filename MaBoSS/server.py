@@ -74,6 +74,7 @@ from .locking import (
 )
 from .services.artifacts import (
     link_artifact_without_overwrite as _link_artifact_without_overwrite,
+    preserve_simulation_result as _preserve_simulation_result,
     require_unused_artifact_paths as _require_unused_artifact_paths,
     rollback_artifacts as _rollback_artifacts,
 )
@@ -726,6 +727,7 @@ async def run_simulation(
             saved_csv_path = None
             try:
                 art_dir = get_artifact_dir(_SERVER_ROOT, sess.session_id)
+                _preserve_simulation_result(run_result, art_dir, sess.session_id)
                 csv_path = safe_artifact_path(art_dir, "result.csv")
                 df_result = run_result.get_last_states_probtraj()
                 row_count = len(df_result)
