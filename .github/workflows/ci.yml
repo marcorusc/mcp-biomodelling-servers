@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  workflow_call:
   push:
     branches: ["main", "development_v2", "mcp-biomass"]
   pull_request:

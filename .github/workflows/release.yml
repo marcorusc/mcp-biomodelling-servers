@@ -1,0 +1,138 @@
+name: Release to PyPI and MCP Registry
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      publish_pypi:
+        description: "Publish to PyPI (disable when retrying MCP registration after a successful PyPI upload)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    # For a manual retry, select the existing release tag as the workflow ref.
+    if: startsWith(github.ref, 'refs/tags/v')
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install build and metadata tools
+        run: python -m pip install build twine jsonschema
+      - name: Build and check distributions
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python -m build
+          python -m twine check --strict dist/*
+          python scripts/check_release.py --tag "$RELEASE_TAG"
+      - name: Validate MCP manifest schemas
+        run: |
+          python - <<'PY'
+          import json
+          import urllib.request
+          from pathlib import Path
+          import jsonschema
+
+          manifests = [Path(server) / "server.json" for server in ("NeKo", "MaBoSS", "PhysiCell", "BioMASS")]
+          schema_url = json.loads(manifests[0].read_text())["$schema"]
+          with urllib.request.urlopen(schema_url, timeout=30) as response:
+              schema = json.load(response)
+          for path in manifests:
+              manifest = json.loads(path.read_text())
+              assert manifest["$schema"] == schema_url
+              jsonschema.validate(manifest, schema)
+              print(f"Validated {path}")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-distributions
+          path: dist/
+          if-no-files-found: error
+
+  pypi:
+    needs: build
+    if: github.event_name == 'push' || inputs.publish_pypi
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/mcp-biomodelling-servers
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: python-distributions
+          path: dist/
+      - name: Publish to PyPI with trusted publishing
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+  mcp-registry:
+    needs: [build, pypi]
+    if: >-
+      always() && needs.build.result == 'success' &&
+      (needs.pypi.result == 'success' ||
+       (github.event_name == 'workflow_dispatch' && !inputs.publish_pypi && needs.pypi.result == 'skipped'))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Wait for PyPI release metadata
+        run: |
+          python - <<'PY'
+          import json
+          import time
+          import tomllib
+          import urllib.error
+          import urllib.request
+          from pathlib import Path
+
+          project = tomllib.loads(Path("pyproject.toml").read_text())["project"]
+          url = f"https://pypi.org/pypi/{project['name']}/{project['version']}/json"
+          names = [json.loads((Path(server) / "server.json").read_text())["name"] for server in ("NeKo", "MaBoSS", "PhysiCell", "BioMASS")]
+          for attempt in range(18):
+              try:
+                  with urllib.request.urlopen(url, timeout=20) as response:
+                      release = json.load(response)
+                  assert release["info"]["version"] == project["version"]
+                  assert release["urls"], "PyPI has no release files"
+                  for name in names:
+                      assert f"mcp-name: {name} -->" in release["info"]["description"]
+                  break
+              except (urllib.error.URLError, TimeoutError):
+                  if attempt == 17:
+                      raise
+                  time.sleep(10)
+          PY
+      - name: Install verified MCP publisher
+        run: |
+          curl --fail --location --retry 3 --output mcp-publisher.tar.gz \
+            https://github.com/modelcontextprotocol/registry/releases/download/v1.8.1/mcp-publisher_linux_amd64.tar.gz
+          echo "a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc  mcp-publisher.tar.gz" | sha256sum --check
+          tar xzf mcp-publisher.tar.gz mcp-publisher
+      - name: Authenticate with GitHub OIDC
+        run: ./mcp-publisher login github-oidc
+      - name: Publish all four servers
+        run: |
+          for server in NeKo MaBoSS PhysiCell BioMASS; do
+            ./mcp-publisher publish "$server/server.json"
+          done

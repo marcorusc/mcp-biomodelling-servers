@@ -221,6 +221,37 @@ The package uses the stable MCP Python SDK 2.x API. The SDK negotiates the
 appropriate MCP protocol revision with the connected client; the protocol
 revision is independent of the MCP Registry schema used by each `server.json`.
 
+## Releasing
+
+The `release.yml` workflow runs the full CI and compatibility suites, builds and
+checks the wheel and source archive, publishes to PyPI, then publishes all four
+server manifests to the official MCP Registry. Both publishing steps use GitHub
+OIDC; no API token is needed.
+
+Before the first automated release, configure a GitHub trusted publisher on
+[the PyPI project's Publishing settings](https://pypi.org/manage/project/mcp-biomodelling-servers/settings/publishing/):
+
+- Owner: `marcorusc`
+- Repository: `mcp-biomodelling-servers`
+- Workflow filename: `release.yml`
+- Environment: `pypi`
+
+Create the matching `pypi` environment in the repository's GitHub settings.
+See the [PyPI trusted publishing guide](https://docs.pypi.org/trusted-publishers/adding-a-publisher/)
+and [MCP Registry GitHub Actions guide](https://github.com/modelcontextprotocol/registry/blob/main/docs/modelcontextprotocol-io/github-actions.mdx).
+
+For each release, synchronize the version in `pyproject.toml`, the source
+fallback in `mcp_biomodelling_servers/__init__.py`, and all four `server.json`
+files, including their pinned `--from` arguments. Build with `python -m build`,
+check with `python -m twine check --strict dist/*`, and run
+`python scripts/check_release.py --tag v<version>` using Python 3.12+.
+Start with a clean `dist/` directory. Commit and push the reviewed changes before
+creating and pushing the matching `v<version>` tag to trigger publication.
+
+If PyPI succeeds but MCP registration fails, manually dispatch the release
+workflow **on the same release tag**, with `publish_pypi` disabled. This retries
+registration without trying to upload the existing PyPI version again.
+
 ## License
 
 The package metadata declares the project under the MIT license. The wrapped

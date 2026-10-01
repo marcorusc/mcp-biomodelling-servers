@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mcp-biomodelling-servers"
-version = "2.3.0"
+version = "2.4.0"
 description = "MCP servers for NeKo signalling-network construction, MaBoSS Boolean simulation, PhysiCell configuration, and BioMASS ODE construction"
 readme = "README.md"
 license = { text = "MIT" }
