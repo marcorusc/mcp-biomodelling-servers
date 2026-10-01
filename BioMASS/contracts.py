@@ -23,6 +23,12 @@ WRITE = ToolAnnotations(
     idempotent_hint=False,
     open_world_hint=False,
 )
+DESTRUCTIVE_WRITE = ToolAnnotations(
+    read_only_hint=False,
+    destructive_hint=True,
+    idempotent_hint=False,
+    open_world_hint=False,
+)
 DELETE = ToolAnnotations(
     read_only_hint=False,
     destructive_hint=True,

@@ -25,6 +25,7 @@ from mcp_biomodelling_servers.structured_outputs import (
 from .app import mcp
 from .contracts import (
     DELETE,
+    DESTRUCTIVE_WRITE,
     READ_ONLY,
     WRITE,
     DocumentLineEdit,
@@ -187,7 +188,7 @@ def import_neko_handoff(
         return state(sess)
 
 
-@tool(annotations=WRITE, structured_output=True)
+@tool(annotations=DESTRUCTIVE_WRITE, structured_output=True)
 def import_text(
     text: Annotated[
         NonEmpty, Field(description="Complete Text2Model document; preserved verbatim.")
@@ -249,7 +250,7 @@ def set_evidence(
         return state(sess)
 
 
-@tool(annotations=WRITE, structured_output=True)
+@tool(annotations=DESTRUCTIVE_WRITE, structured_output=True)
 def set_reactions(
     reactions: Annotated[
         list[ReactionRecord],
@@ -288,7 +289,7 @@ def set_reactions(
         return state(sess)
 
 
-@tool(annotations=WRITE, structured_output=True)
+@tool(annotations=DESTRUCTIVE_WRITE, structured_output=True)
 def import_text_file(
     path: Annotated[
         NonEmpty,
@@ -408,7 +409,7 @@ def inspect_reactions(
         return result
 
 
-@tool(annotations=WRITE, structured_output=True)
+@tool(annotations=DESTRUCTIVE_WRITE, structured_output=True)
 def build_reactions(
     expected_version: Annotated[
         int,
@@ -567,7 +568,7 @@ def build_reactions(
             return result
 
 
-@tool(annotations=WRITE, structured_output=True)
+@tool(annotations=DESTRUCTIVE_WRITE, structured_output=True)
 def configure_model(
     configuration: Annotated[
         ModelConfiguration,
