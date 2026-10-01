@@ -88,9 +88,9 @@ def read_ode_handoff(path: str) -> tuple[NeKoToBioMASSHandoffManifest, ODENetwor
     manifest = NeKoToBioMASSHandoffManifest.model_validate_json(
         manifest_path.read_bytes()
     )
-    network_path = verify_handoff_artifact(manifest.network_file)
-    if network_path.stat().st_size > 10 * MAX_HANDOFF_MANIFEST_BYTES:
+    if manifest.network_file.size_bytes > 10 * MAX_HANDOFF_MANIFEST_BYTES:
         raise ValueError("Network artifact exceeds 10 MiB.")
+    network_path = verify_handoff_artifact(manifest.network_file)
     content = network_path.read_bytes()
     if hashlib.sha256(content).hexdigest() != manifest.network_file.sha256:
         raise ValueError("Network artifact changed while importing.")
