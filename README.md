@@ -58,6 +58,15 @@ platform-specific instructions.
 python -m pip install mcp-biomodelling-servers
 ```
 
+NeKo (`nekomata`) 1.10.1 or newer (below 2.0) is required to preserve SIF
+evidence references. This minimum is enforced by the source dependency metadata
+and CI. Until a package release includes this metadata change, install the
+already published pair explicitly:
+
+```bash
+python -m pip install "mcp-biomodelling-servers==2.4.0" "nekomata==1.10.1"
+```
+
 The installation provides four console entry points:
 
 ```bash
