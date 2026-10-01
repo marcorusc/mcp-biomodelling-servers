@@ -178,7 +178,10 @@ def export_bundle(directory: Path, source: Path, revision: str) -> Path:
             for path, prefix in candidates:
                 for artifact in files(path):
                     bundle.write(artifact, f"{prefix}/{artifact.relative_to(path)}")
-            bundle.writestr("requirements.txt", "biomass==0.14.0\n")
+            bundle.writestr(
+                "requirements.txt",
+                f"biomass=={json.loads((source / 'model_summary.json').read_text(encoding='utf-8'))['biomass_version']}\n",
+            )
             bundle.writestr("run_simulation.py", REPRODUCE)
         return destination
     except BaseException:
