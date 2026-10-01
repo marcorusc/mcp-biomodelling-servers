@@ -64,7 +64,7 @@ and CI. Until a package release includes this metadata change, install the
 already published pair explicitly:
 
 ```bash
-python -m pip install "mcp-biomodelling-servers==2.4.0" "nekomata==1.10.1"
+python -m pip install "mcp-biomodelling-servers==2.3.0" "nekomata==1.10.1"
 ```
 
 The installation provides four console entry points:
