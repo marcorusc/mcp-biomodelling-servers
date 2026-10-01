@@ -43,6 +43,7 @@ ServerName: TypeAlias = Literal["NeKo", "MaBoSS", "PhysiCell"]
 HandoffType: TypeAlias = Literal["neko-to-maboss", "maboss-to-physicell"]
 ArtifactRole: TypeAlias = Literal[
     "neko_bnet",
+    "neko_ode_network",
     "maboss_bnd",
     "maboss_cfg",
     "maboss_result",
@@ -56,6 +57,7 @@ JsonScalar: TypeAlias = bool | int | float | str | None
 
 _ROLE_SUFFIXES: dict[ArtifactRole, str] = {
     "neko_bnet": ".bnet",
+    "neko_ode_network": ".json",
     "maboss_bnd": ".bnd",
     "maboss_cfg": ".cfg",
     "maboss_result": ".csv",
@@ -63,6 +65,7 @@ _ROLE_SUFFIXES: dict[ArtifactRole, str] = {
 }
 _ROLE_MEDIA_TYPES: dict[ArtifactRole, str] = {
     "neko_bnet": "text/plain",
+    "neko_ode_network": "application/json",
     "maboss_bnd": "text/plain",
     "maboss_cfg": "text/plain",
     "maboss_result": "text/csv",

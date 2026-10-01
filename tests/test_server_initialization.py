@@ -6,6 +6,10 @@ from typing import Literal
 import pytest
 from mcp import Client
 
+from BioMASS import server as biomass_server
+from BioMASS.guidance import BIOMASS_SERVER_INSTRUCTIONS
+from mcp_biomodelling_servers import __version__
+
 
 async def _initialization_metadata(
     mode: Literal["auto", "legacy"],
@@ -16,6 +20,7 @@ async def _initialization_metadata(
     from tests import test_physicell_mcp_errors as physicell_tests
 
     server_modules = {
+        "BioMASS": biomass_server,
         "MaBoSS": maboss_tests.maboss_server,
         "NeKo": neko_tests.neko_server,
         "PhysiCell": physicell_tests.physicell_server,
@@ -43,11 +48,15 @@ def test_all_servers_publish_initialization_instructions(
     from tests import test_physicell_mcp_errors as physicell_tests
 
     expected = {
+        "BioMASS": {
+            "version": __version__,
+            "instructions": BIOMASS_SERVER_INSTRUCTIONS,
+            "manual": "docs://biomass/agent_manual",
+            "prompt": "biomass_workflow_prompt",
+        },
         "MaBoSS": {
             "version": maboss_tests.maboss_server.__version__,
-            "instructions": (
-                maboss_tests.maboss_server.MABOSS_SERVER_INSTRUCTIONS
-            ),
+            "instructions": (maboss_tests.maboss_server.MABOSS_SERVER_INSTRUCTIONS),
             "manual": "docs://maboss/agent_manual",
             "prompt": "maboss_workflow_prompt",
         },

@@ -316,3 +316,22 @@ def test_markdown_and_http_runtime_dependencies_are_installed() -> None:
         assert "TP53" in markdown
         """
     )
+
+
+def test_biomass_runtime_exposes_construction_and_graph_interfaces() -> None:
+    _run_in_clean_interpreter(
+        """
+        import inspect
+        from importlib.metadata import version
+        from biomass import Text2Model, create_model
+        from biomass.dynamics.solver import solve_ode
+
+        assert version("biomass").startswith("0.14.")
+        assert callable(Text2Model.convert)
+        assert callable(create_model)
+        assert callable(solve_ode)
+        assert isinstance(Text2Model.graph, property)
+        assert "gviz_prog" in inspect.signature(Text2Model.static_plot).parameters
+        assert "show" in inspect.signature(Text2Model.dynamic_plot).parameters
+        """
+    )

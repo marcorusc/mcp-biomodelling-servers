@@ -84,3 +84,19 @@ the predicted edge-count delta without committing.
   If outputs are omitted, MaBoSS must select a small output set before running.
 * **Token Frugality:** In iterative loops, ALWAYS use `verbosity='summary'`.
 """
+
+
+NEKO_AGENT_MANUAL += """
+
+## ODE construction with BioMASS
+For an ODE model, use export_biomass_handoff with the biological context, then
+BioMASS.import_neko_handoff. This preserves complete references and available
+mechanism metadata, including disconnected and unsigned interactions. Read the
+papers with the calling agent's literature tools and record evidence or explicit
+assumptions in BioMASS. A signed edge does not uniquely determine a biochemical
+reaction or kinetic law. Existing export_neko_handoff remains the MaBoSS route.
+"""
+NEKO_SERVER_INSTRUCTIONS += (
+    " For ODE construction, use export_biomass_handoff to preserve references "
+    "and available mechanisms for BioMASS evidence-backed reaction authoring."
+)

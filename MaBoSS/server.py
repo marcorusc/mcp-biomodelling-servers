@@ -53,7 +53,7 @@ from mcp_biomodelling_servers.structured_outputs import (
     artifact_file_summary,
     structured_report,
 )
-from .app import mcp
+from .app import mcp, tool
 from .contracts import (
     DESTRUCTIVE as _DESTRUCTIVE_TOOL,
     IDEMPOTENT as _IDEMPOTENT_TOOL,
@@ -74,6 +74,7 @@ from .locking import (
 )
 from .services.artifacts import (
     link_artifact_without_overwrite as _link_artifact_without_overwrite,
+    preserve_simulation_result as _preserve_simulation_result,
     require_unused_artifact_paths as _require_unused_artifact_paths,
     rollback_artifacts as _rollback_artifacts,
 )
@@ -161,7 +162,7 @@ def resource_generated_files(session_id: str) -> str:
 # Session management tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool(
+@tool(
     title="Create MaBoSS session",
     annotations=_NON_IDEMPOTENT_TOOL,
     structured_output=True,
@@ -190,7 +191,7 @@ def create_session(
     return f"Session created: {sid}{label_info}" + (" (set as default)" if set_as_default else "")
 
 
-@mcp.tool(
+@tool(
     title="List MaBoSS sessions",
     annotations=_READ_ONLY_TOOL,
     structured_output=True,
@@ -237,7 +238,7 @@ def list_sessions() -> Annotated[CallToolResult, MaBoSSSessionListResult]:
     return structured_report("\n".join(lines), payload)
 
 
-@mcp.tool(
+@tool(
     title="List MaBoSS artifact sessions",
     annotations=_READ_ONLY_TOOL,
     structured_output=True,
@@ -291,7 +292,7 @@ def list_artifact_sessions(
     return structured_report("\n".join(lines), payload)
 
 
-@mcp.tool(
+@tool(
     title="Set default MaBoSS session",
     annotations=_IDEMPOTENT_TOOL,
     structured_output=True,
@@ -308,7 +309,7 @@ def set_default_session(
     raise ValueError(f"Session not found: {session_id}")
 
 
-@mcp.tool(
+@tool(
     title="Delete MaBoSS session",
     annotations=_DESTRUCTIVE_TOOL,
     structured_output=True,
@@ -342,7 +343,7 @@ def delete_session(
 # Pipeline tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool(
+@tool(
     title="Import NeKo handoff",
     annotations=_NON_IDEMPOTENT_TOOL,
     structured_output=True,
@@ -542,7 +543,7 @@ def import_neko_handoff(
     return structured_report(text, payload)
 
 
-@mcp.tool(
+@tool(
     title="Convert BNET to MaBoSS files",
     annotations=_IDEMPOTENT_TOOL,
     structured_output=True,
@@ -599,7 +600,7 @@ def bnet_to_bnd_and_cfg(
     return structured_report(text, payload)
 
 
-@mcp.tool(
+@tool(
     title="Build MaBoSS simulation",
     annotations=_IDEMPOTENT_TOOL,
     structured_output=True,
@@ -662,7 +663,7 @@ def build_simulation(
         )
 
 
-@mcp.tool(
+@tool(
     title="Run MaBoSS simulation",
     annotations=_NON_IDEMPOTENT_TOOL,
     structured_output=True,
@@ -726,6 +727,7 @@ async def run_simulation(
             saved_csv_path = None
             try:
                 art_dir = get_artifact_dir(_SERVER_ROOT, sess.session_id)
+                _preserve_simulation_result(run_result, art_dir, sess.session_id)
                 csv_path = safe_artifact_path(art_dir, "result.csv")
                 df_result = run_result.get_last_states_probtraj()
                 row_count = len(df_result)
@@ -790,7 +792,7 @@ async def run_simulation(
     )
     return structured_report(text, payload)
 
-@mcp.tool(
+@tool(
     title="Export MaBoSS BND and CFG",
     annotations=_NON_IDEMPOTENT_TOOL,
     structured_output=True,
@@ -892,7 +894,7 @@ def export_maboss_bnd_cfg(
         raise RuntimeError(f"Error exporting MaBoSS model: {e}") from e
 
 
-@mcp.tool(
+@tool(
     title="Export MaBoSS handoff",
     annotations=_NON_IDEMPOTENT_TOOL,
     structured_output=True,
@@ -1210,7 +1212,7 @@ def export_maboss_handoff(
 # Inspection tools (read-only, no side effects)
 # ---------------------------------------------------------------------------
 
-@mcp.tool(
+@tool(
     title="Get MaBoSS nodes",
     annotations=_READ_ONLY_TOOL,
     structured_output=True,
@@ -1247,7 +1249,7 @@ def get_maboss_nodes(
     return structured_report(text, payload)
 
 
-@mcp.tool(
+@tool(
     title="Get MaBoSS initial state",
     annotations=_READ_ONLY_TOOL,
     structured_output=True,
@@ -1281,7 +1283,7 @@ def get_maboss_initial_state(
     except Exception as e:
         raise RuntimeError(f"Error retrieving initial state: {e}") from e
 
-@mcp.tool(
+@tool(
     title="Get MaBoSS logical rules",
     annotations=_READ_ONLY_TOOL,
     structured_output=True,
@@ -1313,7 +1315,7 @@ def get_maboss_logical_rules(
         raise RuntimeError(f"Error retrieving logical rules: {e}") from e
 
 
-@mcp.tool(
+@tool(
     title="Change MaBoSS logical rule",
     annotations=_IDEMPOTENT_TOOL,
     structured_output=True,
@@ -1418,7 +1420,7 @@ def change_maboss_rule(
         raise RuntimeError(f"Error changing MaBoSS rule: {e}") from e
 
 
-@mcp.tool(
+@tool(
     title="Get MaBoSS mutations",
     annotations=_READ_ONLY_TOOL,
     structured_output=True,
@@ -1454,7 +1456,7 @@ def get_maboss_mutations(
 # Configuration tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool(
+@tool(
     title="Update MaBoSS parameters",
     annotations=_IDEMPOTENT_TOOL,
     structured_output=True,
@@ -1540,7 +1542,7 @@ def update_maboss_parameters(
         raise RuntimeError(f"Error updating MaBoSS parameters: {e}") from e
 
 
-@mcp.tool(
+@tool(
     title="Set MaBoSS output nodes",
     annotations=_IDEMPOTENT_TOOL,
     structured_output=True,
@@ -1580,7 +1582,7 @@ def set_maboss_output_nodes(
         raise RuntimeError(f"Error setting MaBoSS output nodes: {e}") from e
 
 
-@mcp.tool(
+@tool(
     title="Set MaBoSS initial state",
     annotations=_IDEMPOTENT_TOOL,
     structured_output=True,
@@ -1672,7 +1674,7 @@ def set_maboss_initial_state(
 # Analysis tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool(
+@tool(
     title="Simulate MaBoSS mutation",
     annotations=_READ_ONLY_TOOL,
     structured_output=True,
@@ -1813,7 +1815,7 @@ async def simulate_mutation(
     return structured_report(text, payload)
 
 
-@mcp.tool(
+@tool(
     title="Visualize MaBoSS trajectories",
     annotations=_IDEMPOTENT_TOOL,
     structured_output=True,
@@ -1911,7 +1913,7 @@ def visualize_network_trajectories(
             plt.close(fig)
 
 
-@mcp.tool(
+@tool(
     title="Get MaBoSS simulation result",
     annotations=_READ_ONLY_TOOL,
     structured_output=True,
@@ -1976,7 +1978,7 @@ def get_simulation_result(
 # Housekeeping tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool(
+@tool(
     title="List MaBoSS generated files",
     annotations=_READ_ONLY_TOOL,
     structured_output=True,
@@ -2028,7 +2030,7 @@ def list_generated_files(
     return structured_report(text, payload)
 
 
-@mcp.tool(
+@tool(
     title="Clean MaBoSS generated files",
     annotations=_IDEMPOTENT_DESTRUCTIVE_TOOL,
     structured_output=True,

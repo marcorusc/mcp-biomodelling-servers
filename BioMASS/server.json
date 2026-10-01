@@ -1,0 +1,34 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.marcorusc/BioMASS",
+  "title": "BioMASS ODE Model Builder",
+  "description": "Construct, inspect, visualize, and simulate evidence-backed ODE models with BioMASS",
+  "repository": {
+    "url": "https://github.com/marcorusc/mcp-biomodelling-servers",
+    "source": "github",
+    "subfolder": "BioMASS"
+  },
+  "version": "2.3.0",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "mcp-biomodelling-servers",
+      "version": "2.3.0",
+      "runtimeHint": "uvx",
+      "runtimeArguments": [
+        {
+          "type": "named",
+          "name": "--from",
+          "value": "mcp-biomodelling-servers"
+        },
+        {
+          "type": "positional",
+          "value": "mcp-biomass-server"
+        }
+      ],
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

@@ -455,3 +455,18 @@ files before calling `delete_session()`.
 - [NeKo source](https://github.com/sysbio-curie/Neko)
 - [MCP Python SDK v2 structured output](https://py.sdk.modelcontextprotocol.io/servers/structured-output/)
 - [MCP Python SDK v2 resources](https://py.sdk.modelcontextprotocol.io/servers/resources/)
+
+
+## Export an ODE-construction handoff
+
+`export_biomass_handoff(biological_context, artifact_prefix="neko_to_biomass",
+session_id=...)` writes a network JSON and integrity-protected
+`neko-to-biomass` manifest. It preserves original node identifiers, stable edge
+IDs, all references, and available mechanism/database/context columns. Duplicate
+identical interactions merge their reference lists. Disconnected and unsigned
+interactions remain available for evidence curation.
+
+Import the manifest with BioMASS's `import_neko_handoff`. The calling agent then
+reads literature and proposes reactions with evidence or explicit assumptions.
+This export does not assign rate laws or kinetic parameters. The existing
+`export_neko_handoff` continues to export Boolean models for MaBoSS.

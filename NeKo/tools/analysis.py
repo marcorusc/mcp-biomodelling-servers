@@ -9,7 +9,7 @@ from pydantic import Field
 
 from mcp_biomodelling_servers.structured_outputs import structured_report
 
-from ..app import mcp
+from ..app import mcp, tool
 from ..contracts import (
     READ_ONLY_CLOSED,
     NonEmptyString,
@@ -47,7 +47,7 @@ from ..src.structured_outputs import (
 from ..utils import clean_for_markdown
 
 
-@mcp.tool(
+@tool(
     title="Analyze gene set",
     annotations=READ_ONLY_CLOSED,
     structured_output=True,
@@ -232,7 +232,7 @@ def analyze_gene_set(
     return structured_report("\n\n".join(details), payload)
 
 
-@mcp.tool(
+@tool(
     title="Analyze network connectivity",
     annotations=READ_ONLY_CLOSED,
     structured_output=True,

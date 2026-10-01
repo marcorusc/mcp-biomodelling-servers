@@ -297,6 +297,27 @@ templates:
 `maboss_workflow_prompt` exposes the same recommended operating rules as an
 MCP prompt.
 
+## Preserved simulation runs
+
+Each successful file-backed `run_simulation` preserves a unique `run_<uuid>`
+artifact set before pyMaBoSS releases its temporary directory:
+
+- Exact BND/CFG inputs and the engine's actual output files.
+- Full state-probability and node-marginal CSV tables, including their original
+  time index labelled `Time`.
+- A JSON inventory with session/run identity, reported timepoints, file sizes and
+  SHA-256 hashes. The inventory is published after its files.
+
+`list_generated_files` exposes these flat artifacts. Repeated runs keep distinct
+sets. The legacy `result.csv`, result resource and tool response retain their
+latest final-snapshot behavior; use the per-run tables for time courses. Saving
+results does not fill missing timepoints or validate numerical/biological behavior.
+
+A copy, parsing or publication error fails the operation without rerunning the
+engine. Partial publication rolls back only that attempt's new links. Previously
+saved runs remain intact. This path expects pyMaBoSS's file-backed result interface;
+it does not extend mutation-analysis exports or add a new simulation backend.
+
 ## Errors and artifact cleanup
 
 Invalid parameters, unknown nodes, missing model state, missing simulation
