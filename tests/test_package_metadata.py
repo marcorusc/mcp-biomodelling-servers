@@ -48,7 +48,7 @@ def test_biomass_entrypoint_dependency_and_graph_extra() -> None:
 def test_project_requires_coordinated_neko_release() -> None:
     assert (
         re.search(
-            r'^\s*"nekomata>=1\.10\.0,<2",$',
+            r'^\s*"nekomata>=1\.10\.1,<2",$',
             _project_text(),
             flags=re.MULTILINE,
         )
