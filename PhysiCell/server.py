@@ -45,7 +45,7 @@ from mcp_biomodelling_servers.structured_outputs import (
     artifact_file_summary,
     structured_report,
 )
-from .app import mcp
+from .app import mcp, tool
 from .contracts import (
     DESTRUCTIVE as _DESTRUCTIVE_TOOL,
     IDEMPOTENT as _IDEMPOTENT_TOOL,
@@ -491,7 +491,7 @@ def physicell_files_resource(session_id: str) -> str:
 # SESSION MANAGEMENT TOOLS
 # ============================================================================
 
-@mcp.tool(
+@tool(
     title="Create PhysiCell session",
     annotations=_NON_IDEMPOTENT_TOOL,
     structured_output=True,
@@ -531,7 +531,7 @@ def create_session(
     
     return result
 
-@mcp.tool(
+@tool(
     title="List PhysiCell sessions",
     annotations=_READ_ONLY_TOOL,
     structured_output=True,
@@ -601,7 +601,7 @@ def list_sessions() -> Annotated[CallToolResult, PhysiCellSessionListResult]:
 
     return structured_report(result, payload)
 
-@mcp.tool(
+@tool(
     title="List PhysiCell artifact sessions",
     annotations=_READ_ONLY_TOOL,
     structured_output=True,
@@ -652,7 +652,7 @@ def list_artifact_sessions() -> Annotated[
             lines.append("  Files: (none)")
     return structured_report("\n".join(lines), payload)
 
-@mcp.tool(
+@tool(
     title="Set default PhysiCell session",
     annotations=_IDEMPOTENT_TOOL,
     structured_output=True,
@@ -673,7 +673,7 @@ def set_default_session(
         return f"**Switched to session:** {session.session_id[:8]}... (Progress: {progress:.0f}%)"
     raise ValueError(f"Session not found: {session_id}")
 
-@mcp.tool(
+@tool(
     title="Get PhysiCell workflow status",
     annotations=_READ_ONLY_TOOL,
     structured_output=True,
@@ -699,7 +699,7 @@ def get_workflow_status(
         _workflow_status_payload(session),
     )
 
-@mcp.tool(
+@tool(
     title="Delete PhysiCell session",
     annotations=_DESTRUCTIVE_TOOL,
     structured_output=True,
@@ -717,7 +717,7 @@ def delete_session(
         return f"**Session deleted:** {session_id[:8]}..."
     raise ValueError(f"Session not found: {session_id}")
 
-@mcp.tool(
+@tool(
     title="Import MaBoSS handoff",
     annotations=_DESTRUCTIVE_TOOL,
     structured_output=True,
@@ -773,7 +773,7 @@ def import_maboss_handoff(
     return structured_report(text, payload)
 
 
-@mcp.tool(
+@tool(
     title="Set MaBoSS context",
     annotations=_IDEMPOTENT_TOOL,
     structured_output=True,
@@ -825,7 +825,7 @@ def set_maboss_context(
     
     return result
 
-@mcp.tool(
+@tool(
     title="Get MaBoSS context",
     annotations=_READ_ONLY_TOOL,
     structured_output=True,
@@ -911,7 +911,7 @@ def get_maboss_context(
 # XML CONFIGURATION LOADING
 # ============================================================================
 
-@mcp.tool(
+@tool(
     title="Load PhysiCell XML configuration",
     annotations=_IDEMPOTENT_DESTRUCTIVE_TOOL,
     structured_output=True,
@@ -979,7 +979,7 @@ def load_xml_configuration(
     )
     return result
 
-@mcp.tool(
+@tool(
     title="Validate PhysiCell XML",
     annotations=_READ_ONLY_TOOL,
     structured_output=True,
@@ -1020,7 +1020,7 @@ def validate_xml_file(
     )
     return structured_report(text, payload)
 
-@mcp.tool(
+@tool(
     title="Analyze loaded PhysiCell configuration",
     annotations=_IDEMPOTENT_TOOL,
     structured_output=True,
@@ -1083,7 +1083,7 @@ def analyze_loaded_configuration(
     )
     return structured_report("\n".join(lines), payload)
 
-@mcp.tool(
+@tool(
     title="List loaded PhysiCell components",
     annotations=_READ_ONLY_TOOL,
     structured_output=True,
@@ -1183,7 +1183,7 @@ def list_loaded_components(
 # BIOLOGICAL SCENARIO ANALYSIS
 # ============================================================================
 
-@mcp.tool(
+@tool(
     title="Analyze biological scenario",
     annotations=_IDEMPOTENT_TOOL,
     structured_output=True,
@@ -1216,7 +1216,7 @@ def analyze_biological_scenario(
 # SIMULATION SETUP
 # ============================================================================
 
-@mcp.tool(
+@tool(
     title="Create PhysiCell simulation domain",
     annotations=_IDEMPOTENT_DESTRUCTIVE_TOOL,
     structured_output=True,
@@ -1297,7 +1297,7 @@ def create_simulation_domain(
     
     return result
 
-@mcp.tool(
+@tool(
     title="Add PhysiCell substrate",
     annotations=_DESTRUCTIVE_TOOL,
     structured_output=True,
@@ -1380,7 +1380,7 @@ def add_single_substrate(
     
     return result
 
-@mcp.tool(
+@tool(
     title="Add PhysiCell cell type",
     annotations=_DESTRUCTIVE_TOOL,
     structured_output=True,
@@ -1428,7 +1428,7 @@ def add_single_cell_type(
 
 
 
-@mcp.tool(
+@tool(
     title="Configure PhysiCell parameters",
     annotations=_IDEMPOTENT_TOOL,
     structured_output=True,
@@ -1549,7 +1549,7 @@ def configure_cell_parameters(
             f"Could not configure cell type '{cell_type}': {exc}"
         ) from exc
 
-@mcp.tool(
+@tool(
     title="Set PhysiCell substrate interaction",
     annotations=_IDEMPOTENT_TOOL,
     structured_output=True,
@@ -1669,7 +1669,7 @@ def set_substrate_interaction(
 # PARAMETER DISCOVERY AND DEFAULTS
 # ============================================================================
 
-@mcp.tool(
+@tool(
     title="Get available PhysiCell cycle models",
     annotations=_READ_ONLY_TOOL,
     structured_output=True,
@@ -1711,7 +1711,7 @@ def get_available_cycle_models(
 # SIGNAL AND BEHAVIOR DISCOVERY
 # ============================================================================
 
-@mcp.tool(
+@tool(
     title="List PhysiCell signals",
     annotations=_READ_ONLY_TOOL,
     structured_output=True,
@@ -1797,7 +1797,7 @@ def list_all_available_signals(
     )
     return structured_report(result, payload)
 
-@mcp.tool(
+@tool(
     title="List PhysiCell behaviors",
     annotations=_READ_ONLY_TOOL,
     structured_output=True,
@@ -1888,7 +1888,7 @@ def list_all_available_behaviors(
 # CELL RULES AND PHYSIBOSS
 # ============================================================================
 
-@mcp.tool(
+@tool(
     title="Add PhysiCell cell rule",
     annotations=_NON_IDEMPOTENT_TOOL,
     structured_output=True,
@@ -1976,7 +1976,7 @@ def add_single_cell_rule(
     
     return result
 
-@mcp.tool(
+@tool(
     title="Add PhysiBoSS model",
     annotations=_DESTRUCTIVE_TOOL,
     structured_output=True,
@@ -2037,7 +2037,7 @@ def add_physiboss_model(
     except Exception as exc:
         raise RuntimeError(f"Could not add the PhysiBoSS model: {exc}") from exc
 
-@mcp.tool(
+@tool(
     title="Configure PhysiBoSS settings",
     annotations=_IDEMPOTENT_TOOL,
     structured_output=True,
@@ -2144,7 +2144,7 @@ def configure_physiboss_settings(
             f"Could not configure PhysiBoSS settings: {exc}"
         ) from exc
 
-@mcp.tool(
+@tool(
     title="Add PhysiBoSS input link",
     annotations=_NON_IDEMPOTENT_TOOL,
     structured_output=True,
@@ -2196,7 +2196,7 @@ def add_physiboss_input_link(
             f"Could not add the PhysiBoSS input link: {exc}"
         ) from exc
 
-@mcp.tool(
+@tool(
     title="Add PhysiBoSS output link",
     annotations=_NON_IDEMPOTENT_TOOL,
     structured_output=True,
@@ -2251,7 +2251,7 @@ def add_physiboss_output_link(
             f"Could not add the PhysiBoSS output link: {exc}"
         ) from exc
 
-@mcp.tool(
+@tool(
     title="Apply PhysiBoSS mutation",
     annotations=_NON_IDEMPOTENT_TOOL,
     structured_output=True,
@@ -2300,7 +2300,7 @@ def apply_physiboss_mutation(
 # UTILITY AND EXPORT TOOLS
 # ============================================================================
 
-@mcp.tool(
+@tool(
     title="Get PhysiCell simulation summary",
     annotations=_READ_ONLY_TOOL,
     structured_output=True,
@@ -2397,7 +2397,7 @@ def _format_simulation_summary(session: Optional[SessionState]) -> str:
 
     return result
 
-@mcp.tool(
+@tool(
     title="Export PhysiCell XML configuration",
     annotations=_IDEMPOTENT_TOOL,
     structured_output=True,
@@ -2490,7 +2490,7 @@ def export_xml_configuration(
             f"Could not export the PhysiCell XML configuration: {exc}"
         ) from exc
 
-@mcp.tool(
+@tool(
     title="Export PhysiCell rules CSV",
     annotations=_IDEMPOTENT_TOOL,
     structured_output=True,
@@ -2578,7 +2578,7 @@ def clean_for_markdown(text: str) -> str:
         text = str(text)
     return text.replace("|", "\\|").replace("\n", " ").strip()
 
-@mcp.tool(
+@tool(
     title="List PhysiCell generated files",
     annotations=_READ_ONLY_TOOL,
     structured_output=True,
@@ -2645,7 +2645,7 @@ def list_generated_files(
     return structured_report(result, payload)
 
 
-@mcp.tool(
+@tool(
     title="Clean PhysiCell generated files",
     annotations=_IDEMPOTENT_DESTRUCTIVE_TOOL,
     structured_output=True,
@@ -2678,7 +2678,7 @@ def clean_generated_files(
             f"Could not clean generated PhysiCell files: {exc}"
         ) from exc
 
-@mcp.tool(
+@tool(
     title="Get PhysiCell help",
     annotations=_READ_ONLY_TOOL,
     structured_output=True,

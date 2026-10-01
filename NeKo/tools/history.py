@@ -5,7 +5,7 @@ from typing import Annotated, Literal
 from mcp.server.mcpserver.exceptions import ResourceNotFoundError
 from pydantic import Field
 
-from ..app import mcp
+from ..app import mcp, tool
 from ..contracts import (
     DESTRUCTIVE_IDEMPOTENT_CLOSED,
     NON_IDEMPOTENT_CLOSED,
@@ -56,7 +56,7 @@ def network_history_resource(session_id: str) -> str:
         ) from exc
 
 
-@mcp.tool(
+@tool(
     title="List network history",
     annotations=READ_ONLY_CLOSED,
     structured_output=True,
@@ -79,7 +79,7 @@ def list_network_history(
     )
 
 
-@mcp.tool(
+@tool(
     title="Navigate network history",
     annotations=NON_IDEMPOTENT_CLOSED,
     structured_output=True,
@@ -158,7 +158,7 @@ def navigate_network_history(
     )
 
 
-@mcp.tool(
+@tool(
     title="Compare network states",
     annotations=READ_ONLY_CLOSED,
     structured_output=True,
@@ -190,7 +190,7 @@ def compare_network_states(
     )
 
 
-@mcp.tool(
+@tool(
     title="Set network history limit",
     annotations=DESTRUCTIVE_IDEMPOTENT_CLOSED,
     structured_output=True,

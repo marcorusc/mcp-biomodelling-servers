@@ -53,7 +53,7 @@ from mcp_biomodelling_servers.ode_handoff import (
 )
 from .services.ode_exporting import ode_network
 
-from .app import mcp
+from .app import mcp, tool
 from .contracts import (
     AtopoStrategy,
     BridgeMode,
@@ -206,7 +206,7 @@ def _network_history_state_id(network) -> int | None:
     return state_id if state_id >= 0 else None
 
 
-@mcp.tool(
+@tool(
     title="Create signalling network",
     annotations=_DESTRUCTIVE_NON_IDEMPOTENT_OPEN,
     structured_output=True,
@@ -396,7 +396,7 @@ async def create_network(
     await ctx.report_progress(4, 4)
     return response
 
-@mcp.tool(
+@tool(
     title="Add genes",
     annotations=_NON_IDEMPOTENT_OPEN,
     structured_output=True,
@@ -448,7 +448,7 @@ def add_nodes(
     )
     return f"Added {added}/{len(genes)} genes. {autoconnect_note} {SUMMARY_HINT}"
 
-@mcp.tool(
+@tool(
     title="Remove gene",
     annotations=_DESTRUCTIVE_NON_IDEMPOTENT_CLOSED,
     structured_output=True,
@@ -505,7 +505,7 @@ def remove_gene(
     except Exception as e:
         raise RuntimeError(f"Error removing gene {gene}: {e}") from e
 
-@mcp.tool(
+@tool(
     title="Remove interaction",
     annotations=_DESTRUCTIVE_NON_IDEMPOTENT_CLOSED,
     structured_output=True,
@@ -552,7 +552,7 @@ def remove_interaction(
 
 # TO DO: implement GO enrichment
 
-@mcp.tool(
+@tool(
     title="Export network",
     annotations=_IDEMPOTENT_CLOSED,
     structured_output=True,
@@ -662,7 +662,7 @@ def export_network(
         return structured_report(text, payload)
 
 
-@mcp.tool(
+@tool(
     title="Export NeKo to MaBoSS handoff",
     annotations=_NON_IDEMPOTENT_CLOSED,
     structured_output=True,
@@ -831,7 +831,7 @@ def export_neko_handoff(
     return structured_report(text, payload)
 
 
-@mcp.tool(
+@tool(
     title="List genes and interactions",
     annotations=_READ_ONLY_CLOSED,
     structured_output=True,
@@ -928,7 +928,7 @@ def list_genes_and_interactions(
     except Exception as e:
         raise RuntimeError(f"Unable to retrieve network data: {e}") from e
 
-@mcp.tool(
+@tool(
     title="Find network paths",
     annotations=_READ_ONLY_CLOSED,
     structured_output=True,
@@ -989,7 +989,7 @@ def find_paths(
             sys.stdout = old_stdout
             buffer.close()
 
-@mcp.tool(
+@tool(
     title="Reset network",
     annotations=_DESTRUCTIVE_IDEMPOTENT_CLOSED,
     structured_output=True,
@@ -1006,7 +1006,7 @@ def reset_network(
     return f"Session {sess.session_id} network reset."
 
 
-@mcp.tool(
+@tool(
     title="Clean generated files",
     annotations=_DESTRUCTIVE_IDEMPOTENT_CLOSED,
     structured_output=True,
@@ -1028,7 +1028,7 @@ def clean_generated_files(
     except Exception as e:
         raise RuntimeError(f"Error during cleanup: {e}") from e
 
-@mcp.tool(
+@tool(
     title="Remove bimodal interactions",
     annotations=_DESTRUCTIVE_IDEMPOTENT_CLOSED,
     structured_output=True,
@@ -1053,7 +1053,7 @@ def remove_bimodal_interactions(
     removed = before - after
     return f"Removed {removed} bimodal interactions from the network."
 
-@mcp.tool(
+@tool(
     title="Remove undefined interactions",
     annotations=_DESTRUCTIVE_IDEMPOTENT_CLOSED,
     structured_output=True,
@@ -1079,7 +1079,7 @@ def remove_undefined_interactions(
     return f"Removed {removed} undefined interactions from the network."
 
 
-@mcp.tool(
+@tool(
     title="List Boolean network files",
     annotations=_READ_ONLY_CLOSED,
     structured_output=True,
@@ -1113,7 +1113,7 @@ def list_bnet_files(
     )
     return structured_report(text, payload)
 
-@mcp.tool(
+@tool(
     title="Get interaction references",
     annotations=_READ_ONLY_CLOSED,
     structured_output=True,
@@ -1198,7 +1198,7 @@ def get_references(
     )
     return structured_report(md, payload)
 
-@mcp.tool(
+@tool(
     title="Set connection defaults",
     annotations=_IDEMPOTENT_CLOSED,
     structured_output=True,
@@ -1222,7 +1222,7 @@ def set_default_params(
     )
     return "Defaults updated." 
 
-@mcp.tool(
+@tool(
     title="Filter interactions",
     annotations=_READ_ONLY_CLOSED,
     structured_output=True,
@@ -1329,7 +1329,7 @@ def filter_interactions(
     return structured_report(text, payload)
 
 
-@mcp.tool(
+@tool(
     title="Create modelling session",
     annotations=_NON_IDEMPOTENT_CLOSED,
     structured_output=True,
@@ -1353,7 +1353,7 @@ def create_session(
     label_info = f" ({label})" if label else ""
     return f"Created session: {sid}{label_info}"
 
-@mcp.tool(
+@tool(
     title="List active sessions",
     annotations=_READ_ONLY_CLOSED,
     structured_output=True,
@@ -1386,7 +1386,7 @@ def list_sessions() -> Annotated[CallToolResult, NeKoSessionListResult]:
         lines.append(f"- {sid}: has_network={meta['has_network']} nodes={meta['nodes']} edges={meta['edges']}")
     return structured_report("\n".join(lines), payload)
 
-@mcp.tool(
+@tool(
     title="List artifact sessions",
     annotations=_READ_ONLY_CLOSED,
     structured_output=True,
@@ -1438,7 +1438,7 @@ def list_artifact_sessions(
             lines.append("  Files: (none)")
     return structured_report("\n".join(lines), payload)
 
-@mcp.tool(
+@tool(
     title="Set default session",
     annotations=_IDEMPOTENT_CLOSED,
     structured_output=True,
@@ -1451,7 +1451,7 @@ def set_default_session(
         raise ValueError(f"Session not found: {session_id}")
     return "Default set."
 
-@mcp.tool(
+@tool(
     title="Delete session",
     annotations=_DESTRUCTIVE_NON_IDEMPOTENT_CLOSED,
     structured_output=True,
@@ -1464,7 +1464,7 @@ def delete_session(
         raise ValueError(f"Session not found: {session_id}")
     return "Deleted."
 
-@mcp.tool(
+@tool(
     title="Show network status",
     annotations=_READ_ONLY_CLOSED,
     structured_output=True,
@@ -1502,7 +1502,7 @@ def status(
     return structured_report(text, payload)
 
 # ===== Component & Strategy Tools =====
-@mcp.tool(
+@tool(
     title="Preview connection impact",
     annotations=_READ_ONLY_OPEN,
     structured_output=True,
@@ -1660,7 +1660,7 @@ def preview_connection_impact(
         
     return structured_report("\n".join(lines), payload)
 
-@mcp.tool(
+@tool(
     title="Bridge network components",
     annotations=_NON_IDEMPOTENT_OPEN,
     structured_output=True,
@@ -1711,7 +1711,7 @@ def bridge_components(
     except Exception as e:
         raise RuntimeError(f"Bridging failed: {e}") from e
 
-@mcp.tool(
+@tool(
     title="Connect targeted genes",
     annotations=_NON_IDEMPOTENT_OPEN,
     structured_output=True,
@@ -1771,7 +1771,7 @@ def connect_targeted_nodes(
     except Exception as e:
         raise RuntimeError(f"Targeted strategy failed: {e}") from e
 
-@mcp.tool(
+@tool(
     title="Apply global connection strategy",
     annotations=_NON_IDEMPOTENT_OPEN,
     structured_output=True,
@@ -1858,7 +1858,7 @@ def apply_global_connection(
     except Exception as e:
         raise RuntimeError(f"Global strategy failed: {e}") from e
 
-@mcp.tool(
+@tool(
     title="Export NeKo to BioMASS handoff",
     annotations=_NON_IDEMPOTENT_CLOSED,
     structured_output=True,
