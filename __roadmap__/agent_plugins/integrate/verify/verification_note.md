@@ -46,14 +46,22 @@ marketplace entries, so regenerating does not undo this.
 | Codex GUI | local marketplace with `path` sources | marketplace, discovery and install work; the agent found the NeKo tools and used them |
 | VS Code | git URL | untestable before merge: no ref field, defaults to `main` |
 | VS Code | local folder with only `.agents/plugins/marketplace.json` and plugins at `<x>/` | "no plugin or marketplace manifest" |
-| VS Code | `chat.plugins.marketplaces` = `LittleCoinCoin/mcp-biomodelling-servers#feat/agent-plugins` (after the deviation) | "does not appear to be a valid plugin marketplace": the `#ref` looks ignored and the fork's `main` has no marketplace yet. `sysbio-curie/MCP_Hackaton`, which has the same layout, installs remotely from `main` |
+| VS Code | `chat.plugins.marketplaces` = `LittleCoinCoin/mcp-biomodelling-servers#feat/agent-plugins` (after the deviation) | "does not appear to be a valid plugin marketplace" (cause not established, see below) |
 | VS Code | local folder = this worktree (after the deviation) | all four plugins discovered and installable |
 
-Which marketplace file VS Code reads, if any, is not established. A local plugin location
-(`chat.pluginLocations`) can discover `plugins/<x>/plugin.json` without any marketplace file. The `#ref` failure is consistent
-with the ref being ignored. On the fork's `main` both marketplace files had working sources. What is
-established is that VS Code reads the Agent Plugins 1.0 `plugin.json` and `mcp.json`, and installs and
-runs the plugins, both locally and over git.
+VS Code's marketplace format is Claude Code's. The VS Code docs
+(code.visualstudio.com/docs/agent-customization/agent-plugins#_configure-plugin-marketplaces) refer to the
+Claude Code plugin marketplace documentation for the marketplace schema, use `anthropics/claude-code` as
+the example marketplace, and register extra marketplaces through `extraKnownMarketplaces` in
+`.claude/settings.json`. So VS Code reads `.claude-plugin/marketplace.json`, which is consistent with the
+rejected Codex-only folder above. The docs also say relative-path plugin entries are verified against the
+repository, the resolved revision and the path, which is the shape the relative-source change ships.
+The local worktree test does not discriminate on its own, because a local plugin location
+(`chat.pluginLocations`) can find `plugins/<x>/plugin.json` without a marketplace file.
+
+The same docs section says `#<ref>` selects a branch, tag or commit in `chat.plugins.marketplaces`, so the
+`#feat/agent-plugins` failure is not explained by refs being unsupported. The slash in the branch name is
+one unverified possibility.
 
 VS Code sends a `plugin.json` that carries the Agent Plugins `$schema` to a loader that does not
 substitute `${PLUGIN_ROOT}` or set a working directory (microsoft/vscode #303219, #305310).
