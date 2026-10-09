@@ -1,0 +1,19 @@
+{
+  "name": "maboss",
+  "displayName": "MaBoSS Boolean Simulator",
+  "version": "2.4.0",
+  "description": "Configure, simulate, and analyze stochastic Boolean models with MaBoSS.",
+  "author": {
+    "name": "Marco Ruscone"
+  },
+  "homepage": "https://github.com/marcorusc/mcp-biomodelling-servers",
+  "repository": "https://github.com/marcorusc/mcp-biomodelling-servers",
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "systems-biology",
+    "bioinformatics",
+    "maboss"
+  ],
+  "mcpServers": "./.claude-plugin/mcp.json"
+}

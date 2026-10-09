@@ -1,0 +1,45 @@
+{
+  "name": "marcorusc",
+  "description": "marcorusc marketplace: MCP servers for mechanistic and systems-biology modelling.",
+  "owner": {
+    "name": "Marco Ruscone"
+  },
+  "plugins": [
+    {
+      "name": "neko",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/marcorusc/mcp-biomodelling-servers.git",
+        "path": "./plugins/neko"
+      },
+      "description": "Build and analyze signalling networks from interaction databases with NeKo."
+    },
+    {
+      "name": "maboss",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/marcorusc/mcp-biomodelling-servers.git",
+        "path": "./plugins/maboss"
+      },
+      "description": "Configure, simulate, and analyze stochastic Boolean models with MaBoSS."
+    },
+    {
+      "name": "physicell",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/marcorusc/mcp-biomodelling-servers.git",
+        "path": "./plugins/physicell"
+      },
+      "description": "Build, inspect, and export PhysiCell and PhysiBoSS configuration files."
+    },
+    {
+      "name": "biomass",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/marcorusc/mcp-biomodelling-servers.git",
+        "path": "./plugins/biomass"
+      },
+      "description": "Construct, visualize, and simulate evidence-backed ODE models with BioMASS."
+    }
+  ]
+}

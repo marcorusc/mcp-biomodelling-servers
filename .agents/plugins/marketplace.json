@@ -1,0 +1,60 @@
+{
+  "name": "marcorusc",
+  "interface": {
+    "displayName": "marcorusc"
+  },
+  "plugins": [
+    {
+      "name": "neko",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/marcorusc/mcp-biomodelling-servers.git",
+        "path": "./plugins/neko"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Research"
+    },
+    {
+      "name": "maboss",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/marcorusc/mcp-biomodelling-servers.git",
+        "path": "./plugins/maboss"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Research"
+    },
+    {
+      "name": "physicell",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/marcorusc/mcp-biomodelling-servers.git",
+        "path": "./plugins/physicell"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Research"
+    },
+    {
+      "name": "biomass",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/marcorusc/mcp-biomodelling-servers.git",
+        "path": "./plugins/biomass"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Research"
+    }
+  ]
+}

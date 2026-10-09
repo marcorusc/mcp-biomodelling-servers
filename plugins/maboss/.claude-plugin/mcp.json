@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "maboss": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "mcp-biomodelling-servers==2.4.0",
+        "mcp-maboss-server"
+      ]
+    }
+  }
+}

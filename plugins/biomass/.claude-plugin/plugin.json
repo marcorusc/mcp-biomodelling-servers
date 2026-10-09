@@ -1,0 +1,19 @@
+{
+  "name": "biomass",
+  "displayName": "BioMASS ODE Builder",
+  "version": "2.4.0",
+  "description": "Construct, visualize, and simulate evidence-backed ODE models with BioMASS.",
+  "author": {
+    "name": "Marco Ruscone"
+  },
+  "homepage": "https://github.com/marcorusc/mcp-biomodelling-servers",
+  "repository": "https://github.com/marcorusc/mcp-biomodelling-servers",
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "systems-biology",
+    "bioinformatics",
+    "biomass"
+  ],
+  "mcpServers": "./.claude-plugin/mcp.json"
+}

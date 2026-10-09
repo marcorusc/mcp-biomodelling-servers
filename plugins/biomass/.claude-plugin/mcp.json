@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "biomass": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "mcp-biomodelling-servers==2.4.0",
+        "mcp-biomass-server"
+      ]
+    }
+  }
+}

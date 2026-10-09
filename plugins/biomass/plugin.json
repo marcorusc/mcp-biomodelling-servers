@@ -1,0 +1,36 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "biomass",
+  "version": "2.4.0",
+  "description": "Construct, visualize, and simulate evidence-backed ODE models with BioMASS.",
+  "author": {
+    "name": "Marco Ruscone"
+  },
+  "homepage": "https://github.com/marcorusc/mcp-biomodelling-servers",
+  "repository": "https://github.com/marcorusc/mcp-biomodelling-servers",
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "systems-biology",
+    "bioinformatics",
+    "biomass"
+  ],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "BioMASS ODE Builder",
+        "shortDescription": "Evidence-backed ODE model construction",
+        "longDescription": "Construct, visualize, and simulate evidence-backed ODE models with BioMASS. Runs the BioMASS MCP server from the published mcp-biomodelling-servers package with uvx.",
+        "developerName": "Marco Ruscone",
+        "category": "Research",
+        "capabilities": [
+          "Read",
+          "Write"
+        ],
+        "defaultPrompt": [
+          "Turn a signalling network into ODEs"
+        ]
+      }
+    }
+  }
+}

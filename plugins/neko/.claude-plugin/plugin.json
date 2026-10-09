@@ -1,0 +1,19 @@
+{
+  "name": "neko",
+  "displayName": "NeKo Network Builder",
+  "version": "2.4.0",
+  "description": "Build and analyze signalling networks from interaction databases with NeKo.",
+  "author": {
+    "name": "Marco Ruscone"
+  },
+  "homepage": "https://github.com/marcorusc/mcp-biomodelling-servers",
+  "repository": "https://github.com/marcorusc/mcp-biomodelling-servers",
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "systems-biology",
+    "bioinformatics",
+    "neko"
+  ],
+  "mcpServers": "./.claude-plugin/mcp.json"
+}

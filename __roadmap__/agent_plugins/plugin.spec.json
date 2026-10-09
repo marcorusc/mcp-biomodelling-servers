@@ -1,0 +1,173 @@
+{
+  "name": "mcp-biomodelling-servers",
+  "displayName": "MCP Bio-Modelling Servers",
+  "description": "MCP servers for NeKo signalling-network construction, MaBoSS Boolean simulation, PhysiCell configuration, and BioMASS ODE construction",
+  "author": {
+    "name": "Marco Ruscone"
+  },
+  "homepage": "https://github.com/marcorusc/mcp-biomodelling-servers",
+  "repository": "https://github.com/marcorusc/mcp-biomodelling-servers",
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "systems-biology",
+    "bioinformatics"
+  ],
+  "ecosystems": [
+    "claude",
+    "codex",
+    "agent-plugins"
+  ],
+  "version_from": "pyproject:pyproject.toml",
+  "claude_marketplace": {
+    "name": "marcorusc",
+    "description": "marcorusc marketplace: MCP servers for mechanistic and systems-biology modelling."
+  },
+  "codex": {
+    "marketplace_name": "marcorusc",
+    "marketplace_displayName": "marcorusc",
+    "category": "Research",
+    "capabilities": [
+      "Read",
+      "Write"
+    ]
+  },
+  "plugins": [
+    {
+      "name": "neko",
+      "dir": "plugins/neko",
+      "displayName": "NeKo Network Builder",
+      "description": "Build and analyze signalling networks from interaction databases with NeKo.",
+      "version_from": "pyproject:pyproject.toml",
+      "keywords": [
+        "mcp",
+        "systems-biology",
+        "bioinformatics",
+        "neko"
+      ],
+      "mcp": {
+        "server": "neko",
+        "command": "uvx",
+        "args": [
+          "--from",
+          "mcp-biomodelling-servers=={version}",
+          "mcp-neko-server"
+        ]
+      },
+      "codex": {
+        "shortDescription": "Signalling networks from interaction databases",
+        "longDescription": "Build and analyze signalling networks from interaction databases with NeKo. Runs the NeKo MCP server from the published mcp-biomodelling-servers package with uvx.",
+        "category": "Research",
+        "capabilities": [
+          "Read",
+          "Write"
+        ],
+        "defaultPrompt": [
+          "Build a signalling network for TP53"
+        ]
+      }
+    },
+    {
+      "name": "maboss",
+      "dir": "plugins/maboss",
+      "displayName": "MaBoSS Boolean Simulator",
+      "description": "Configure, simulate, and analyze stochastic Boolean models with MaBoSS.",
+      "version_from": "pyproject:pyproject.toml",
+      "keywords": [
+        "mcp",
+        "systems-biology",
+        "bioinformatics",
+        "maboss"
+      ],
+      "mcp": {
+        "server": "maboss",
+        "command": "uvx",
+        "args": [
+          "--from",
+          "mcp-biomodelling-servers=={version}",
+          "mcp-maboss-server"
+        ]
+      },
+      "codex": {
+        "shortDescription": "Stochastic Boolean model simulation",
+        "longDescription": "Configure, simulate, and analyze stochastic Boolean models with MaBoSS. Runs the MaBoSS MCP server from the published mcp-biomodelling-servers package with uvx.",
+        "category": "Research",
+        "capabilities": [
+          "Read",
+          "Write"
+        ],
+        "defaultPrompt": [
+          "Simulate a Boolean model with MaBoSS"
+        ]
+      }
+    },
+    {
+      "name": "physicell",
+      "dir": "plugins/physicell",
+      "displayName": "PhysiCell Configurator",
+      "description": "Build, inspect, and export PhysiCell and PhysiBoSS configuration files.",
+      "version_from": "pyproject:pyproject.toml",
+      "keywords": [
+        "mcp",
+        "systems-biology",
+        "bioinformatics",
+        "physicell"
+      ],
+      "mcp": {
+        "server": "physicell",
+        "command": "uvx",
+        "args": [
+          "--from",
+          "mcp-biomodelling-servers=={version}",
+          "mcp-physicell-server"
+        ]
+      },
+      "codex": {
+        "shortDescription": "PhysiCell and PhysiBoSS configuration",
+        "longDescription": "Build, inspect, and export PhysiCell and PhysiBoSS configuration files. Runs the PhysiCell MCP server from the published mcp-biomodelling-servers package with uvx.",
+        "category": "Research",
+        "capabilities": [
+          "Read",
+          "Write"
+        ],
+        "defaultPrompt": [
+          "Set up a PhysiCell tumour simulation"
+        ]
+      }
+    },
+    {
+      "name": "biomass",
+      "dir": "plugins/biomass",
+      "displayName": "BioMASS ODE Builder",
+      "description": "Construct, visualize, and simulate evidence-backed ODE models with BioMASS.",
+      "version_from": "pyproject:pyproject.toml",
+      "keywords": [
+        "mcp",
+        "systems-biology",
+        "bioinformatics",
+        "biomass"
+      ],
+      "mcp": {
+        "server": "biomass",
+        "command": "uvx",
+        "args": [
+          "--from",
+          "mcp-biomodelling-servers=={version}",
+          "mcp-biomass-server"
+        ]
+      },
+      "codex": {
+        "shortDescription": "Evidence-backed ODE model construction",
+        "longDescription": "Construct, visualize, and simulate evidence-backed ODE models with BioMASS. Runs the BioMASS MCP server from the published mcp-biomodelling-servers package with uvx.",
+        "category": "Research",
+        "capabilities": [
+          "Read",
+          "Write"
+        ],
+        "defaultPrompt": [
+          "Turn a signalling network into ODEs"
+        ]
+      }
+    }
+  ]
+}

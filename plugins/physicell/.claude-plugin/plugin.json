@@ -1,0 +1,19 @@
+{
+  "name": "physicell",
+  "displayName": "PhysiCell Configurator",
+  "version": "2.4.0",
+  "description": "Build, inspect, and export PhysiCell and PhysiBoSS configuration files.",
+  "author": {
+    "name": "Marco Ruscone"
+  },
+  "homepage": "https://github.com/marcorusc/mcp-biomodelling-servers",
+  "repository": "https://github.com/marcorusc/mcp-biomodelling-servers",
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "systems-biology",
+    "bioinformatics",
+    "physicell"
+  ],
+  "mcpServers": "./.claude-plugin/mcp.json"
+}

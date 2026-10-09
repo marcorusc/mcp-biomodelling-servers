@@ -1,0 +1,36 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "maboss",
+  "version": "2.4.0",
+  "description": "Configure, simulate, and analyze stochastic Boolean models with MaBoSS.",
+  "author": {
+    "name": "Marco Ruscone"
+  },
+  "homepage": "https://github.com/marcorusc/mcp-biomodelling-servers",
+  "repository": "https://github.com/marcorusc/mcp-biomodelling-servers",
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "systems-biology",
+    "bioinformatics",
+    "maboss"
+  ],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "MaBoSS Boolean Simulator",
+        "shortDescription": "Stochastic Boolean model simulation",
+        "longDescription": "Configure, simulate, and analyze stochastic Boolean models with MaBoSS. Runs the MaBoSS MCP server from the published mcp-biomodelling-servers package with uvx.",
+        "developerName": "Marco Ruscone",
+        "category": "Research",
+        "capabilities": [
+          "Read",
+          "Write"
+        ],
+        "defaultPrompt": [
+          "Simulate a Boolean model with MaBoSS"
+        ]
+      }
+    }
+  }
+}
