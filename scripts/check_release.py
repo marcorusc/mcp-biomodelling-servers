@@ -44,28 +44,41 @@ def main() -> None:
             {"type": "positional", "value": command},
         ], server
         assert f"<!-- mcp-name: {manifest['name']} -->" in readme, server
-        x = server.lower()
-        for path in ("plugin.json", ".claude-plugin/plugin.json"):
-            plugin = json.loads((ROOT / "plugins" / x / path).read_text())
-            assert plugin["name"] == x, server
-            assert plugin["version"] == version, server
-        for path in ("mcp.json", ".claude-plugin/mcp.json"):
-            launch = json.loads((ROOT / "plugins" / x / path).read_text())
-            assert launch["mcpServers"][x]["command"] == "uvx", server
-            assert launch["mcpServers"][x]["args"] == [
-                "--from",
-                f"{project['name']}=={version}",
-                command,
-            ], server
-        launch = json.loads((ROOT / "plugins" / x / "mcp.json").read_text())
-        assert launch["mcpServers"][x]["type"] == "stdio", server
+        plugin_name = server.lower()
+        plugin_dir = ROOT / "plugins" / plugin_name
+        launch = {
+            "command": "uvx",
+            "args": ["--from", f"{project['name']}=={version}", command],
+        }
+        for path, mcp_pointer, mcp_path, mcp_server in (
+            ("plugin.json", None, "mcp.json", {"type": "stdio", **launch}),
+            (
+                ".claude-plugin/plugin.json",
+                "./.claude-plugin/mcp.json",
+                ".claude-plugin/mcp.json",
+                launch,
+            ),
+        ):
+            plugin = json.loads((plugin_dir / path).read_text())
+            assert plugin["name"] == plugin_name, f"{server} {path}"
+            assert plugin["version"] == version, f"{server} {path}"
+            assert plugin.get("mcpServers") == mcp_pointer, f"{server} {path}"
+            servers = json.loads((plugin_dir / mcp_path).read_text())["mcpServers"]
+            assert servers == {plugin_name: mcp_server}, f"{server} {mcp_path}"
         manifests.append(manifest)
     for path in (".claude-plugin/marketplace.json", ".agents/plugins/marketplace.json"):
         entries = json.loads((ROOT / path).read_text())["plugins"]
         assert sorted(e["name"] for e in entries) == sorted(
             s.lower() for s in SERVERS
         ), path
-        assert all("version" not in e for e in entries), path
+        for entry in entries:
+            # A version or a git ref/sha here would pin a stale plugin release.
+            assert "version" not in entry, f"{path} {entry['name']}"
+            assert entry["source"] == {
+                "source": "git-subdir",
+                "url": f"{project['urls']['Repository']}.git",
+                "path": f"./plugins/{entry['name']}",
+            }, f"{path} {entry['name']}"
     assert (
         f'__version__ = "{version}"'
         in (ROOT / "mcp_biomodelling_servers" / "__init__.py").read_text()
