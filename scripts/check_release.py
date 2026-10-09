@@ -44,7 +44,28 @@ def main() -> None:
             {"type": "positional", "value": command},
         ], server
         assert f"<!-- mcp-name: {manifest['name']} -->" in readme, server
+        x = server.lower()
+        for path in ("plugin.json", ".claude-plugin/plugin.json"):
+            plugin = json.loads((ROOT / "plugins" / x / path).read_text())
+            assert plugin["name"] == x, server
+            assert plugin["version"] == version, server
+        for path in ("mcp.json", ".claude-plugin/mcp.json"):
+            launch = json.loads((ROOT / "plugins" / x / path).read_text())
+            assert launch["mcpServers"][x]["command"] == "uvx", server
+            assert launch["mcpServers"][x]["args"] == [
+                "--from",
+                f"{project['name']}=={version}",
+                command,
+            ], server
+        launch = json.loads((ROOT / "plugins" / x / "mcp.json").read_text())
+        assert launch["mcpServers"][x]["type"] == "stdio", server
         manifests.append(manifest)
+    for path in (".claude-plugin/marketplace.json", ".agents/plugins/marketplace.json"):
+        entries = json.loads((ROOT / path).read_text())["plugins"]
+        assert sorted(e["name"] for e in entries) == sorted(
+            s.lower() for s in SERVERS
+        ), path
+        assert all("version" not in e for e in entries), path
     assert (
         f'__version__ = "{version}"'
         in (ROOT / "mcp_biomodelling_servers" / "__init__.py").read_text()
@@ -107,7 +128,7 @@ def main() -> None:
     }
     assert all(alias.asname is None for alias in exports.names)
     print(
-        f"Release {version}: four server manifests, ownership markers and entry points agree."
+        f"Release {version}: four server manifests, plugin manifests and marketplaces, ownership markers and entry points agree."
     )
 
 
