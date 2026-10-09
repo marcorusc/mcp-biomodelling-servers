@@ -61,3 +61,16 @@ substitute `${PLUGIN_ROOT}` or set a working directory (microsoft/vscode #303219
 `uvx --from mcp-biomodelling-servers==<v> mcp-<x>-server`, uses no placeholder and does not depend on the
 working directory.
 
+
+## Remote installs from the fork's `main`
+
+`feat/agent-plugins` was fast-forwarded onto `LittleCoinCoin/mcp-biomodelling-servers` `main`, which is
+the head of the PR, so every host could install over git with no ref, as users will after the merge.
+For the Codex test only, commit `2009a39` pointed the Codex `git-subdir` URLs at the fork, and the next
+commit reverts it. `check_release.py` rejects the test state, and passes again after the revert.
+
+| Host | Source | Outcome |
+|---|---|---|
+| Claude Code (agent) | `claude plugin marketplace add LittleCoinCoin/mcp-biomodelling-servers`, install ×4 | all four installed and `✔ Connected`; removed afterwards |
+| Codex (Eliott) | marketplace from the fork URL, `main` | installs and runs |
+| VS Code (Eliott) | git URL of the fork | installs and runs, so the `$schema` loader issue above does not affect these plugins |
