@@ -21,8 +21,8 @@ Four plugins (`neko`, `maboss`, `physicell`, `biomass`) listed by a `marcorusc` 
 ## Status
 ```mermaid
 graph TD
-    plugin_manifests[Plugin manifests]:::planned
-    integrate[Release guard and docs]:::planned
+    plugin_manifests[Plugin manifests]:::done
+    integrate[Release guard and docs]:::inprogress
     classDef done       fill:#166534,color:#bbf7d0
     classDef inprogress fill:#854d0e,color:#fef08a
     classDef planned    fill:#374151,color:#e5e7eb
@@ -33,8 +33,8 @@ graph TD
 ## Nodes
 | Node | Type | Status |
 |:-----|:-----|:-------|
-| `plugin_manifests.md` | 📄 Leaf Task | ⬜ Planned |
-| `integrate/` | 📁 Directory | ⬜ Planned |
+| `plugin_manifests.md` | 📄 Leaf Task | ✅ Done |
+| `integrate/` | 📁 Directory | 🔄 In Progress |
 
 ## Amendment Log
 | ID | Date | Source | Nodes Added | Rationale |
