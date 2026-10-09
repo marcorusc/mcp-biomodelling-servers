@@ -14,10 +14,11 @@ Run 2026-10-09 on macOS with Claude Code 2.1.273 and uv 0.9.18, against the plug
 | Marketplace install (local copies) | scratch marketplace, `claude plugin install <x>@scratch-biomod-local` ×4, `claude mcp list` | all four installed (version 2.4.0) and `✔ Connected` |
 | Marketplace install (shipped `git-subdir` form) | scratch marketplace copying the committed sources with `url` = the fork and `ref` = `feat/agent-plugins`; installed `neko` and `biomass` | both installed from GitHub and `✔ Connected`, so `path: "./plugins/<x>"` is accepted |
 | Release guard | clean `dist/` build, `scripts/check_release.py --tag v2.4.0` | passes; 45 hand-edit mutations each fail it (adversarial review, two rounds) |
+| Real marketplace from the fork branch (after the relative-source change) | `claude plugin marketplace add LittleCoinCoin/mcp-biomodelling-servers#feat/agent-plugins`, `claude plugin install <x>@marcorusc` ×4, `claude mcp list` | all four installed and `✔ Connected`; removed afterwards |
 | Cleanup | `claude plugin list`, `claude plugin marketplace list` | no scratch plugin or marketplace left |
 
-The real marketplace (`marcorusc/mcp-biomodelling-servers`) points its `git-subdir` sources at the upstream
-default branch, so an install through it can only work once this lands on `main`.
+Claude Code (and VS Code) installs resolve relative to the marketplace checkout. Codex's `git-subdir` sources
+fetch upstream, so a remote Codex install only works once this lands on `main`.
 
 ## Codex and VS Code (manual, by Eliott)
 
