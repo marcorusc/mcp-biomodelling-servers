@@ -17,7 +17,7 @@
 Inside the existing `for server in SERVERS` loop, with `x = server.lower()` and the loop's existing `command`:
 both `plugins/<x>/plugin.json` and `plugins/<x>/.claude-plugin/plugin.json` have `name == x` and `version == version`;
 both `plugins/<x>/mcp.json` and `plugins/<x>/.claude-plugin/mcp.json` have `mcpServers[x]` with `command == "uvx"` and
-`args == ["--from", f"{project['name']}=={version}", command]` (the exact `value`s of the server.json runtimeArguments the loop already asserts);
+`args == ["--from", f"{project['name']}=={version}", command]` (the server.json runtimeArguments the loop already asserts, flattened);
 the agent-plugins `mcp.json` server also has `type == "stdio"`.
 After the loop: `.claude-plugin/marketplace.json` and `.agents/plugins/marketplace.json` each list exactly the four names and no entry carries `version`.
 All of this runs before the archive section, so a missing `dist/` cannot hide it. Match the script's idiom: bare `assert ..., server`,

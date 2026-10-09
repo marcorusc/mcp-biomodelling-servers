@@ -7,7 +7,7 @@
 **Success Gates**:
 - ⬜ `python3 $SK/scripts/check_plugin.py --root . --spec __roadmap__/agent_plugins/plugin.spec.json` prints `ok`
 - ⬜ `claude plugin validate .` passes and `claude plugin validate plugins/<x>/.claude-plugin/plugin.json` passes for all four
-- ⬜ Every plugin's launch args equal the `value`s of its `<Server>/server.json` `runtimeArguments`, in both `mcp.json` files
+- ⬜ Every plugin's launch args equal its `<Server>/server.json` `runtimeArguments` flattened (`name` then `value` for named, `value` for positional), in both `mcp.json` files
 - ⬜ No root plugin, no root `.mcp.json`, no `version` key on any marketplace entry
 **References**: [skill SKILL.md](~/.claude/plugins/cache/cracking-shells/spawning-agent-plugins/1.0.0/skills/spawning-agent-plugins/SKILL.md) — workflow steps 2-4; `references/manifests.md#multi-plugin-repositories` — `plugins[]` mechanics
 
