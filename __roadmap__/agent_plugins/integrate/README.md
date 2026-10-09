@@ -16,9 +16,9 @@ Plugin versions and pins are enforced by `check_release.py`, and the README and 
 ## Status
 ```mermaid
 graph TD
-    release_guard[Release guard]:::planned
-    docs[Install docs]:::planned
-    verify[Install verification]:::planned
+    release_guard[Release guard]:::done
+    docs[Install docs]:::done
+    verify[Install verification]:::done
     classDef done       fill:#166534,color:#bbf7d0
     classDef inprogress fill:#854d0e,color:#fef08a
     classDef planned    fill:#374151,color:#e5e7eb
@@ -29,9 +29,9 @@ graph TD
 ## Nodes
 | Node | Type | Status |
 |:-----|:-----|:-------|
-| `release_guard.md` | 📄 Leaf Task | ⬜ Planned |
-| `docs.md` | 📄 Leaf Task | ⬜ Planned |
-| `verify/` | 📁 Directory | ⬜ Planned |
+| `release_guard.md` | 📄 Leaf Task | ✅ Done |
+| `docs.md` | 📄 Leaf Task | ✅ Done |
+| `verify/` | 📁 Directory | ✅ Done |
 
 ## Amendment Log
 | ID | Date | Source | Nodes Added | Rationale |
