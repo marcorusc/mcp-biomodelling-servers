@@ -89,6 +89,47 @@ Conda is optional. It remains useful when you want one explicitly managed
 environment for local development or additional native scientific software,
 but it is not required for the packaged entry points.
 
+### Install as an agent plugin
+
+Claude Code, Codex, and Agent Plugins 1.0 clients such as Visual Studio Code can
+install each server as a plugin, with one install per server. A plugin starts its
+server with `uvx` (so `uv` must be installed) and pins it to the matching
+published `mcp-biomodelling-servers` release, so no client configuration file
+needs to be written by hand. Install only the servers you need.
+
+| Plugin | Server | Install string |
+|---|---|---|
+| `neko` | NeKo | `neko@marcorusc` |
+| `maboss` | MaBoSS | `maboss@marcorusc` |
+| `physicell` | PhysiCell | `physicell@marcorusc` |
+| `biomass` | BioMASS | `biomass@marcorusc` |
+
+In Claude Code, add the marketplace once, then install each plugin you want:
+
+```bash
+claude plugin marketplace add marcorusc/mcp-biomodelling-servers
+claude plugin install neko@marcorusc
+```
+
+Add `--scope project` to the marketplace command to declare it in the
+repository's own `.claude/settings.json` instead of your user settings.
+
+In Codex:
+
+```bash
+codex plugin marketplace add marcorusc/mcp-biomodelling-servers
+codex plugin add neko@marcorusc
+```
+
+Agent Plugins 1.0 clients (Cursor, GitHub Copilot, VS Code, Kiro) define the
+plugin package, `plugin.json` and `mcp.json`, and leave installation to the
+client. Each plugin here is the `plugins/<name>` directory of this repository.
+In VS Code, open the Command Palette, run **Chat: Install Plugin from Source**,
+choose a git repository, and enter `marcorusc/mcp-biomodelling-servers`.
+
+The BioMASS plugin runs the server without the `biomass-graph` extra. For graph
+rendering, use the manual configuration below.
+
 ## Configure an MCP client
 
 The following example uses `uvx` and works with clients that accept the common

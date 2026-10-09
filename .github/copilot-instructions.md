@@ -274,6 +274,12 @@ rewrite into an unrelated change.
 The root and installed copies of `artifact_manager.py` must remain identical
 until that packaging duplication is deliberately redesigned.
 
+`plugins/` holds the generated plugin manifests, one per server, and the two
+marketplace files `.claude-plugin/marketplace.json` and
+`.agents/plugins/marketplace.json`. A release moves each plugin's `version` and
+both `mcp.json` pins together with every `server.json`; do not hand-edit one
+site alone. `scripts/check_release.py` enforces this.
+
 ## Verification Workflow
 
 Run checks in proportion to the change. For public tool, session, or scientific
