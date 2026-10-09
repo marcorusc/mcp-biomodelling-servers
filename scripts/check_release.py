@@ -74,11 +74,17 @@ def main() -> None:
         for entry in entries:
             # A version or a git ref/sha here would pin a stale plugin release.
             assert "version" not in entry, f"{path} {entry['name']}"
-            assert entry["source"] == {
-                "source": "git-subdir",
-                "url": f"{project['urls']['Repository']}.git",
-                "path": f"./plugins/{entry['name']}",
-            }, f"{path} {entry['name']}"
+            plugin_path = f"./plugins/{entry['name']}"
+            if path.startswith(".claude-plugin/"):
+                # Relative to the marketplace checkout, so any branch or fork installs itself.
+                source = plugin_path
+            else:
+                source = {
+                    "source": "git-subdir",
+                    "url": f"{project['urls']['Repository']}.git",
+                    "path": plugin_path,
+                }
+            assert entry["source"] == source, f"{path} {entry['name']}"
     assert (
         f'__version__ = "{version}"'
         in (ROOT / "mcp_biomodelling_servers" / "__init__.py").read_text()

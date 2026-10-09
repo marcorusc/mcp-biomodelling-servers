@@ -7,38 +7,22 @@
   "plugins": [
     {
       "name": "neko",
-      "source": {
-        "source": "git-subdir",
-        "url": "https://github.com/marcorusc/mcp-biomodelling-servers.git",
-        "path": "./plugins/neko"
-      },
+      "source": "./plugins/neko",
       "description": "Build and analyze signalling networks from interaction databases with NeKo."
     },
     {
       "name": "maboss",
-      "source": {
-        "source": "git-subdir",
-        "url": "https://github.com/marcorusc/mcp-biomodelling-servers.git",
-        "path": "./plugins/maboss"
-      },
+      "source": "./plugins/maboss",
       "description": "Configure, simulate, and analyze stochastic Boolean models with MaBoSS."
     },
     {
       "name": "physicell",
-      "source": {
-        "source": "git-subdir",
-        "url": "https://github.com/marcorusc/mcp-biomodelling-servers.git",
-        "path": "./plugins/physicell"
-      },
+      "source": "./plugins/physicell",
       "description": "Build, inspect, and export PhysiCell and PhysiBoSS configuration files."
     },
     {
       "name": "biomass",
-      "source": {
-        "source": "git-subdir",
-        "url": "https://github.com/marcorusc/mcp-biomodelling-servers.git",
-        "path": "./plugins/biomass"
-      },
+      "source": "./plugins/biomass",
       "description": "Construct, visualize, and simulate evidence-backed ODE models with BioMASS."
     }
   ]

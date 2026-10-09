@@ -22,3 +22,29 @@ default branch, so an install through it can only work once this lands on `main`
 ## Codex and VS Code (manual, by Eliott)
 
 Pending. A local Codex marketplace with `path` sources is prepared for the check.
+
+## Deviation from the generator: relative Claude marketplace sources
+
+The skill writes `git-subdir` sources with the upstream URL for sibling plugins in both marketplaces.
+In the Claude marketplace that pins every install to upstream `main`, even when the marketplace was
+added from a fork branch or a local path. Two things fail as a result:
+
+- a Codex install from the fork branch (Codex reads its own `git-subdir` sources, which also fetch upstream);
+- a VS Code local-path install of a folder that held only the Codex marketplace (VS Code reads
+  `.claude-plugin/marketplace.json`).
+
+`.claude-plugin/marketplace.json` now uses relative sources (`"./plugins/<x>"`). These resolve inside
+whichever checkout the marketplace came from. This is the shape of `sysbio-curie/MCP_Hackaton`, which
+installs in Claude Code, Codex and VS Code. The Codex marketplace keeps `git-subdir`, which is what the
+skill's checker requires for siblings and what MCP_Hackaton ships. `check_plugin.py` accepts both
+shapes, and `check_release.py` asserts each file's own shape. A later `spawn` never overwrites existing
+marketplace entries, so regenerating does not undo this.
+
+## Codex and VS Code (manual, by Eliott, before the deviation)
+
+| Host | Source | Outcome |
+|---|---|---|
+| Codex GUI | fork URL + `feat/agent-plugins` ref | marketplace added, four plugins listed; install failed for all four (the sources fetch upstream `main`, which has no `plugins/` yet) |
+| Codex GUI | local marketplace with `path` sources | marketplace, discovery and install work; the agent found the NeKo tools and used them |
+| VS Code | git URL | untestable before merge: no ref field, defaults to `main` |
+| VS Code | local folder with only `.agents/plugins/marketplace.json` | "no plugin or marketplace manifest" (VS Code reads the Claude marketplace file) |
