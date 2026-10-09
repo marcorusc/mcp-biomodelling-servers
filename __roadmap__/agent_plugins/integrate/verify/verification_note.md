@@ -31,8 +31,11 @@ In the Claude marketplace that pins every install to upstream `main`, even when 
 added from a fork branch or a local path. Two things fail as a result:
 
 - a Codex install from the fork branch (Codex reads its own `git-subdir` sources, which also fetch upstream);
-- a VS Code local-path install of a folder that held only the Codex marketplace (VS Code reads
-  `.claude-plugin/marketplace.json`).
+- a VS Code install of a multi-plugin repo. The Agent Plugins 1.0 spec defines no marketplace format,
+  and VS Code's docs defer to Claude Code's marketplace format without naming the file. Observed here: a
+  folder with only `.agents/plugins/marketplace.json` is rejected ("no plugin or marketplace manifest"),
+  while the worktree, which also has `.claude-plugin/marketplace.json`, installs all four plugins. So
+  VS Code reads the Claude marketplace file and resolves its sources.
 
 `.claude-plugin/marketplace.json` now uses relative sources (`"./plugins/<x>"`). These resolve inside
 whichever checkout the marketplace came from. This is the shape of `sysbio-curie/MCP_Hackaton`, which
@@ -41,7 +44,7 @@ skill's checker requires for siblings and what MCP_Hackaton ships. `check_plugin
 shapes, and `check_release.py` asserts each file's own shape. A later `spawn` never overwrites existing
 marketplace entries, so regenerating does not undo this.
 
-## Codex and VS Code (manual, by Eliott, before the deviation)
+## Codex and VS Code (manual, by Eliott)
 
 | Host | Source | Outcome |
 |---|---|---|
@@ -49,3 +52,12 @@ marketplace entries, so regenerating does not undo this.
 | Codex GUI | local marketplace with `path` sources | marketplace, discovery and install work; the agent found the NeKo tools and used them |
 | VS Code | git URL | untestable before merge: no ref field, defaults to `main` |
 | VS Code | local folder with only `.agents/plugins/marketplace.json` | "no plugin or marketplace manifest" (VS Code reads the Claude marketplace file) |
+| VS Code | `chat.plugins.marketplaces` = `LittleCoinCoin/mcp-biomodelling-servers#feat/agent-plugins` (after the deviation) | "does not appear to be a valid plugin marketplace": the `#ref` looks ignored and the fork's `main` has no marketplace yet. `sysbio-curie/MCP_Hackaton`, which has the same layout, installs remotely from `main` |
+| VS Code | local folder = this worktree (after the deviation) | all four plugins discovered and installable |
+
+VS Code sends a `plugin.json` that carries the Agent Plugins `$schema` to a loader that does not
+substitute `${PLUGIN_ROOT}` or set a working directory (microsoft/vscode #303219, #305310).
+`sysbio-curie/MCP_Hackaton` drops `$schema` for that reason. These plugins keep it: their launch,
+`uvx --from mcp-biomodelling-servers==<v> mcp-<x>-server`, uses no placeholder and does not depend on the
+working directory.
+
