@@ -27,15 +27,9 @@ Pending. A local Codex marketplace with `path` sources is prepared for the check
 ## Deviation from the generator: relative Claude marketplace sources
 
 The skill writes `git-subdir` sources with the upstream URL for sibling plugins in both marketplaces.
-In the Claude marketplace that pins every install to upstream `main`, even when the marketplace was
-added from a fork branch or a local path. Two things fail as a result:
-
-- a Codex install from the fork branch (Codex reads its own `git-subdir` sources, which also fetch upstream);
-- a VS Code install of a multi-plugin repo. The Agent Plugins 1.0 spec defines no marketplace format,
-  and VS Code's docs defer to Claude Code's marketplace format without naming the file. Observed here: a
-  folder with only `.agents/plugins/marketplace.json` is rejected ("no plugin or marketplace manifest"),
-  while the worktree, which also has `.claude-plugin/marketplace.json`, installs all four plugins. So
-  VS Code reads the Claude marketplace file and resolves its sources.
+In the Claude marketplace that pins every Claude Code install to upstream `main`, even when the
+marketplace was added from a fork branch or a local path. The Codex marketplace has the same property:
+a Codex install from the fork branch failed because its `git-subdir` sources fetch upstream.
 
 `.claude-plugin/marketplace.json` now uses relative sources (`"./plugins/<x>"`). These resolve inside
 whichever checkout the marketplace came from. This is the shape of `sysbio-curie/MCP_Hackaton`, which
@@ -51,9 +45,15 @@ marketplace entries, so regenerating does not undo this.
 | Codex GUI | fork URL + `feat/agent-plugins` ref | marketplace added, four plugins listed; install failed for all four (the sources fetch upstream `main`, which has no `plugins/` yet) |
 | Codex GUI | local marketplace with `path` sources | marketplace, discovery and install work; the agent found the NeKo tools and used them |
 | VS Code | git URL | untestable before merge: no ref field, defaults to `main` |
-| VS Code | local folder with only `.agents/plugins/marketplace.json` | "no plugin or marketplace manifest" (VS Code reads the Claude marketplace file) |
+| VS Code | local folder with only `.agents/plugins/marketplace.json` and plugins at `<x>/` | "no plugin or marketplace manifest" |
 | VS Code | `chat.plugins.marketplaces` = `LittleCoinCoin/mcp-biomodelling-servers#feat/agent-plugins` (after the deviation) | "does not appear to be a valid plugin marketplace": the `#ref` looks ignored and the fork's `main` has no marketplace yet. `sysbio-curie/MCP_Hackaton`, which has the same layout, installs remotely from `main` |
 | VS Code | local folder = this worktree (after the deviation) | all four plugins discovered and installable |
+
+Which marketplace file VS Code reads, if any, is not established. A local plugin location
+(`chat.pluginLocations`) can discover `plugins/<x>/plugin.json` without any marketplace file. The `#ref` failure is consistent
+with the ref being ignored. On the fork's `main` both marketplace files had working sources. What is
+established is that VS Code reads the Agent Plugins 1.0 `plugin.json` and `mcp.json`, and installs and
+runs the plugins, both locally and over git.
 
 VS Code sends a `plugin.json` that carries the Agent Plugins `$schema` to a loader that does not
 substitute `${PLUGIN_ROOT}` or set a working directory (microsoft/vscode #303219, #305310).
