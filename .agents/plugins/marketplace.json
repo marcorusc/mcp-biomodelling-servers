@@ -8,7 +8,7 @@
       "name": "neko",
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/marcorusc/mcp-biomodelling-servers.git",
+        "url": "https://github.com/LittleCoinCoin/mcp-biomodelling-servers.git",
         "path": "./plugins/neko"
       },
       "policy": {
@@ -21,7 +21,7 @@
       "name": "maboss",
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/marcorusc/mcp-biomodelling-servers.git",
+        "url": "https://github.com/LittleCoinCoin/mcp-biomodelling-servers.git",
         "path": "./plugins/maboss"
       },
       "policy": {
@@ -34,7 +34,7 @@
       "name": "physicell",
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/marcorusc/mcp-biomodelling-servers.git",
+        "url": "https://github.com/LittleCoinCoin/mcp-biomodelling-servers.git",
         "path": "./plugins/physicell"
       },
       "policy": {
@@ -47,7 +47,7 @@
       "name": "biomass",
       "source": {
         "source": "git-subdir",
-        "url": "https://github.com/marcorusc/mcp-biomodelling-servers.git",
+        "url": "https://github.com/LittleCoinCoin/mcp-biomodelling-servers.git",
         "path": "./plugins/biomass"
       },
       "policy": {
