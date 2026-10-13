@@ -94,6 +94,11 @@ def import_maboss_handoff_transaction(
             raise ValueError(
                 "The NeKo and MaBoSS output-node selections do not match."
             )
+        if loaded_manifest.schema_version == "2.0":
+            inherited = [entry for entry in loaded_manifest.source_ancestry or []
+                         if entry.source.server == "NeKo"]
+            if inherited != (loaded_parent.source_ancestry or []):
+                raise ValueError("MaBoSS source ancestry does not match its NeKo stage parent.")
         neko_manifest = loaded_parent
 
     target_cell_type = loaded_manifest.target.cell_type

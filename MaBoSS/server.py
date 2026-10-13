@@ -1169,7 +1169,14 @@ def export_maboss_handoff(
             if include_result_artifact
             else None
         )
+        source_ancestry = []
+        if sess.source_import is not None:
+            source_ancestry = [sess.source_import]
+        elif parent_manifest is not None:
+            source_ancestry = parent_manifest.source_ancestry or []
         manifest = MaBoSSToPhysiCellHandoffManifest(
+            schema_version="2.0",
+            source_ancestry=source_ancestry,
             source=HandoffProvenance(
                 server="MaBoSS",
                 session_id=sess.session_id,

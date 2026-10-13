@@ -794,6 +794,8 @@ def export_neko_handoff(
             role="neko_bnet",
         )
         manifest = NeKoToMaBoSSHandoffManifest(
+            schema_version="2.0",
+            source_ancestry=[sess.source_import] if sess.source_import else [],
             source=HandoffProvenance(
                 server="NeKo",
                 session_id=sess.session_id,

@@ -323,3 +323,8 @@ existing overwrite protection. This extension does not validate SIF ancestry
 through Boolean or ODE handoff contracts, does not add BNET import to NeKo, and
 does not propagate ordinary source sidecars through BioMASS or PhysiCell imports.
 Existing aware timestamps and numeric session clocks retain their formats.
+
+Boolean NeKo/MaBoSS handoff exports now use v2 portable source ancestry while
+retaining v1 reading and exact stage-parent validation. See
+[Boolean lineage v2](docs/boolean-lineage-v2.md) for derivative semantics,
+approval boundaries, offline verification and safe capture helpers.

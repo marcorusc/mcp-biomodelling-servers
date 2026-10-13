@@ -1220,7 +1220,8 @@ def test_neko_handoff_exports_typed_provenance_and_translated_outputs(
         manifest_path
     )
     manifest = result.structured_content["manifest"]
-    assert manifest["schema_version"] == "1.0"
+    assert manifest["schema_version"] == "2.0"
+    assert manifest["source_ancestry"] == []
     assert manifest["handoff_type"] == "neko-to-maboss"
     assert manifest["history_state_id"] == 7
     assert manifest["biological_context"] == "Test A/B signalling."

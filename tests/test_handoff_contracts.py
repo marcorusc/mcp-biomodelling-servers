@@ -581,7 +581,7 @@ def test_manifest_models_reject_extra_fields_and_unsupported_versions(
         NeKoToMaBoSSHandoffManifest.model_validate(payload)
 
     payload = manifest.model_dump(mode="json")
-    payload["schema_version"] = "2.0"
+    payload["schema_version"] = "3.0"
     with pytest.raises(ValidationError, match="Input should be '1.0'"):
         NeKoToMaBoSSHandoffManifest.model_validate(payload)
 
