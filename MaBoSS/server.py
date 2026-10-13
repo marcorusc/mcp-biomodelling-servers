@@ -41,6 +41,12 @@ from mcp_biomodelling_servers.handoff import (
     verify_handoff_manifest,
     write_handoff_manifest,
 )
+from mcp_biomodelling_servers.import_lineage import (
+    SourceExport,
+    capture_import,
+    write_source_export,
+    write_source_import,
+)
 from mcp_biomodelling_servers.structured_outputs import (
     ArtifactSessionSummary,
     MaBoSSArtifactCleanupResult,
@@ -261,6 +267,8 @@ def list_artifact_sessions(
         count=len(sessions),
         sessions=[
             ArtifactSessionSummary(
+                artifact_directory=session.get("artifact_directory"),
+                legacy=bool(session.get("legacy", False)),
                 session_id=str(session["session_id"]),
                 server=str(session.get("server") or "unknown"),
                 label=str(session["label"]) if session.get("label") else None,
@@ -558,14 +566,22 @@ def bnet_to_bnd_and_cfg(
         default=None,
         description="Session to write the output files into. Omit to use the active default session.",
     ),
+    parent_manifest: Annotated[NonEmptyString | None, Field(description="Path to a verified source-lineage sidecar or supported typed parent manifest; records provenance, not approval.")] = None,
+    derived_from: Annotated[NonEmptyString | None, Field(description="Exact original artifact path recorded by parent_manifest, required for an edited derivative.")] = None,
 ) -> Annotated[CallToolResult, MaBoSSBnetConversionResult]:
     """Convert a BNET file to MaBoSS BND and CFG files.
 
     Output files are written to the session artifact directory
-    (<server>/artifacts/<session_id>/output.bnd and output.cfg).
+    (output.bnd and output.cfg under the configured/cache artifact root).
     After conversion, call build_simulation() to load the simulation.
+
+    parent_manifest names a verified source-lineage sidecar or NeKo handoff.
+    For edited copies, derived_from must name its original BNET artifact path.
+    These arguments record provenance; they do not grant scientific approval.
     """
     sess = ensure_session(session_id)
+    source_import = capture_import(bnet_path, server="MaBoSS", session_id=sess.session_id,
+                                   parent_manifest=parent_manifest, derived_from=derived_from)
     art_dir = get_artifact_dir(_SERVER_ROOT, sess.session_id)
     bnd_out = str(safe_artifact_path(art_dir, "output.bnd"))
     cfg_out = str(safe_artifact_path(art_dir, "output.cfg"))
@@ -583,6 +599,13 @@ def bnet_to_bnd_and_cfg(
                 f"Expected {label} file was not created at {path}."
             )
 
+    verify_handoff_artifact(source_import.source)
+    for output in (bnd_out, cfg_out):
+        write_source_export(output, server="MaBoSS", session_id=sess.session_id,
+                            imports=[source_import])
+    write_source_import(art_dir, source_import)
+    sess.pending_source_import = source_import
+    sess.import_history.append(source_import)
     logger.info("BND and CFG files created: %s, %s", bnd_out, cfg_out)
     text = (
         f"MaBoSS .bnd and .cfg files created successfully.\n"
@@ -639,6 +662,19 @@ def build_simulation(
     if cfg_path is None:
         cfg_path = str(art_dir / "output.cfg")
 
+    imported_source = None
+    expected = [(art_dir / name).resolve() for name in ("output.bnd", "output.cfg")]
+    candidate = sess.pending_source_import or sess.source_import
+    if candidate is not None and [Path(bnd_path).resolve(), Path(cfg_path).resolve()] == expected:
+        for output in expected:
+            record = SourceExport.model_validate_json(
+                output.with_name(output.name + ".lineage.json").read_bytes()
+            )
+            if record.artifact.path != str(output) or record.imports != [candidate]:
+                raise ValueError("Converted model provenance changed; convert the BNET again.")
+            verify_handoff_artifact(record.artifact)
+        imported_source = candidate
+
     logger.info("Loading MaBoSS simulation: BND=%s CFG=%s", bnd_path, cfg_path)
 
     try:
@@ -649,6 +685,7 @@ def build_simulation(
 
     if loaded_sim:
         sess.set_simulation(loaded_sim, bnd_path, cfg_path)
+        sess.source_import = imported_source
         logger.info("MaBoSS simulation loaded successfully")
         parameters_str = "\n".join(f"{k}: {v}" for k, v in loaded_sim.param.items())
         return (
@@ -817,7 +854,7 @@ def export_maboss_bnd_cfg(
 ) -> Annotated[CallToolResult, MaBoSSModelExportResult]:
     """Export the current in-memory MaBoSS simulation to .bnd and .cfg files.
 
-    Writes files to: <server>/artifacts/<session_id>/<prefix>.bnd and <prefix>.cfg
+    Writes <prefix>.bnd and <prefix>.cfg into the configured/cache session artifact directory.
     """
     sess = ensure_session(session_id)
     if sess.sim is None:
@@ -865,6 +902,9 @@ def export_maboss_bnd_cfg(
                     f"Expected {label} file was not created at {path}."
                 )
 
+        for output in (bnd_out, cfg_out):
+            write_source_export(output, server="MaBoSS", session_id=sess.session_id,
+                                imports=[sess.source_import] if sess.source_import else [])
         logger.info("Export complete: %s, %s", bnd_out, cfg_out)
         text = (
             f"Exported current MaBoSS model successfully.\n"
@@ -1167,6 +1207,10 @@ def export_maboss_handoff(
             verify_handoff_manifest(parent_manifest)
         write_handoff_manifest(manifest_path, manifest)
         created_paths.append(manifest_path)
+        if sess.source_import is not None:
+            created_paths.append(write_source_export(
+                manifest_path, server="MaBoSS", session_id=sess.session_id,
+                imports=[sess.source_import], overwrite=False))
         manifest_file = handoff_artifact(
             manifest_path,
             server="MaBoSS",

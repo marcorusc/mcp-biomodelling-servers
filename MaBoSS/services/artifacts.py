@@ -7,10 +7,10 @@ import os
 import shutil
 import tempfile
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 
 from mcp_biomodelling_servers.artifact_manager import safe_artifact_path
+from mcp_biomodelling_servers.timestamps import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +116,7 @@ def preserve_simulation_result(result, artifact_dir: Path, session_id: str) -> P
         manifest_name = run_id + ".json"
         manifest = {
             "server": "MaBoSS", "session_id": session_id, "run_id": run_id,
-            "preserved_at": datetime.now(timezone.utc).isoformat(),
+            "preserved_at": utc_now().isoformat(),
             "engine_result_prefix": prefix,
             "state_timepoints": states.index.tolist(),
             "node_timepoints": nodes.index.tolist(),

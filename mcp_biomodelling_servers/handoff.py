@@ -13,7 +13,7 @@ import math
 import os
 import re
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
@@ -33,6 +33,8 @@ from mcp_biomodelling_servers.structured_outputs import (
     artifact_file_summary,
 )
 
+from .timestamps import utc_now as _utc_now
+
 HANDOFF_SCHEMA_NAME: Literal[
     "mcp-biomodelling-handoff"
 ] = "mcp-biomodelling-handoff"
@@ -43,6 +45,7 @@ ServerName: TypeAlias = Literal["NeKo", "MaBoSS", "PhysiCell"]
 HandoffType: TypeAlias = Literal["neko-to-maboss", "maboss-to-physicell"]
 ArtifactRole: TypeAlias = Literal[
     "neko_bnet",
+    "neko_sif",
     "neko_ode_network",
     "maboss_bnd",
     "maboss_cfg",
@@ -57,6 +60,7 @@ JsonScalar: TypeAlias = bool | int | float | str | None
 
 _ROLE_SUFFIXES: dict[ArtifactRole, str] = {
     "neko_bnet": ".bnet",
+    "neko_sif": ".sif",
     "neko_ode_network": ".json",
     "maboss_bnd": ".bnd",
     "maboss_cfg": ".cfg",
@@ -65,6 +69,7 @@ _ROLE_SUFFIXES: dict[ArtifactRole, str] = {
 }
 _ROLE_MEDIA_TYPES: dict[ArtifactRole, str] = {
     "neko_bnet": "text/plain",
+    "neko_sif": "text/tab-separated-values",
     "neko_ode_network": "application/json",
     "maboss_bnd": "text/plain",
     "maboss_cfg": "text/plain",
@@ -80,11 +85,6 @@ _BND_NODE_DECLARATION = re.compile(
     r"(?im)^[ \t]*Node[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*\{"
 )
 _BND_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
-
-
-def _utc_now() -> datetime:
-    """Return an aware UTC timestamp for manifest defaults."""
-    return datetime.now(timezone.utc)
 
 
 def _require_unique(values: list[str], field_name: str) -> list[str]:

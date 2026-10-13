@@ -15,6 +15,8 @@ from typing import Any
 
 import pytest
 from mcp import Client, MCPError
+from mcp_biomodelling_servers.artifact_manager import artifact_base
+
 
 
 def _install_physicell_import_stubs() -> None:
@@ -807,7 +809,7 @@ def test_session_resources_return_meaningful_configuration_snapshots(
             physicell_server.WorkflowStep.CELL_TYPES_ADDED,
         }
     )
-    artifact_dir = tmp_path / "artifacts" / session_id
+    artifact_dir = artifact_base(tmp_path) / session_id
     artifact_dir.mkdir(parents=True)
     artifact = artifact_dir / "PhysiCell_settings.xml"
     artifact.write_text("<PhysiCell_settings/>", encoding="utf-8")
@@ -932,7 +934,7 @@ def test_files_resource_does_not_create_artifact_directory(
     tmp_path: Path,
 ) -> None:
     session_id = _create_session()
-    artifacts_dir = tmp_path / "artifacts"
+    artifacts_dir = artifact_base(tmp_path)
     assert not artifacts_dir.exists()
 
     result = _run(
@@ -1005,9 +1007,13 @@ def test_list_sessions_returns_structured_physicell_state() -> None:
     assert result.structured_content["count"] == 1
 
 
+@pytest.mark.parametrize("legacy", [False, True])
 def test_list_artifact_sessions_returns_structured_metadata(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    legacy: bool,
 ) -> None:
+    directory = (tmp_path / "artifacts" if legacy else artifact_base(tmp_path)) / "listed-session"
     monkeypatch.setattr(
         physicell_server,
         "_list_artifact_sessions_on_disk",
@@ -1017,6 +1023,8 @@ def test_list_artifact_sessions_returns_structured_metadata(
                 "server": "PhysiCell",
                 "label": "tumour spheroid",
                 "created_at": "2026-07-30T10:20:30+00:00",
+                "artifact_directory": str(directory),
+                "legacy": legacy,
                 "files": ["PhysiCell_settings.xml"],
             }
         ],
@@ -1035,6 +1043,8 @@ def test_list_artifact_sessions_returns_structured_metadata(
                 "server": "PhysiCell",
                 "label": "tumour spheroid",
                 "created_at": "2026-07-30T10:20:30+00:00",
+                "artifact_directory": str(directory),
+                "legacy": legacy,
                 "files": ["PhysiCell_settings.xml"],
             }
         ],
@@ -1809,7 +1819,7 @@ def test_import_maboss_handoff_requires_explicit_replacement(
     session = session_manager.get_session(session_id)
     assert session is not None
     assert session.config is original_config
-    assert not (tmp_path / "artifacts" / session_id).exists()
+    assert not (artifact_base(tmp_path) / session_id).exists()
 
     replaced = _run(
         _call_tool(
@@ -1875,7 +1885,7 @@ def test_import_maboss_handoff_candidate_failures_preserve_session(
     assert session is not None
     assert session.config is config
     assert session.maboss_contexts == {}
-    artifact_dir = tmp_path / "artifacts" / session_id
+    artifact_dir = artifact_base(tmp_path) / session_id
     assert not artifact_dir.exists() or not list(artifact_dir.iterdir())
 
 
@@ -1984,7 +1994,7 @@ def test_import_maboss_handoff_rolls_back_partial_artifact_publication(
     assert session is not None
     assert session.config is config
     assert session.maboss_contexts == {}
-    artifact_dir = tmp_path / "artifacts" / session_id
+    artifact_dir = artifact_base(tmp_path) / session_id
     assert list(artifact_dir.glob("maboss_import*")) == []
 
 
@@ -1996,7 +2006,7 @@ def test_import_maboss_handoff_refuses_existing_artifact_prefix(
     manifest_path = _create_maboss_handoff(tmp_path)
     config = _handoff_config("tumour")
     session_id = _create_session(config)
-    artifact_dir = tmp_path / "artifacts" / session_id
+    artifact_dir = artifact_base(tmp_path) / session_id
     artifact_dir.mkdir(parents=True)
     existing = artifact_dir / "maboss_import.cfg"
     existing.write_text("keep\n", encoding="utf-8")
@@ -2148,7 +2158,7 @@ def test_valid_xml_export_stays_in_session_artifacts(
 
     result = _run(_call_tool("export_xml_configuration", arguments))
 
-    output_path = tmp_path / "artifacts" / session_id / expected_name
+    output_path = artifact_base(tmp_path) / session_id / expected_name
     assert result.is_error is False
     assert generate_calls == ["generate_xml"]
     assert output_path.read_text(encoding="utf-8") == "<PhysiCell_settings/>"
@@ -2182,7 +2192,7 @@ def test_loaded_xml_export_returns_structured_source_provenance(
         )
     )
 
-    output_path = tmp_path / "artifacts" / session_id / "modified.xml"
+    output_path = artifact_base(tmp_path) / session_id / "modified.xml"
     assert result.is_error is False
     assert "Modified 2 times from baseline.xml" in result.content[0].text
     assert result.structured_content is not None
@@ -2215,7 +2225,7 @@ def test_valid_csv_export_stays_in_session_artifacts(
 
     result = _run(_call_tool("export_cell_rules_csv", arguments))
 
-    output_path = tmp_path / "artifacts" / session_id / expected_name
+    output_path = artifact_base(tmp_path) / session_id / expected_name
     assert result.is_error is False
     assert generate_calls == [str(output_path)]
     assert output_path.read_text(encoding="utf-8").startswith("cell_type")
@@ -2244,8 +2254,8 @@ def test_physicell_artifact_listing_and_cleanup_are_structured(
 ) -> None:
     first_id = _create_session()
     second_id = _create_session()
-    first_dir = tmp_path / "artifacts" / first_id
-    second_dir = tmp_path / "artifacts" / second_id
+    first_dir = artifact_base(tmp_path) / first_id
+    second_dir = artifact_base(tmp_path) / second_id
     first_dir.mkdir(parents=True)
     second_dir.mkdir(parents=True)
     first_xml = first_dir / "PhysiCell_settings.xml"
@@ -2253,6 +2263,11 @@ def test_physicell_artifact_listing_and_cleanup_are_structured(
     first_xml.write_text("<PhysiCell_settings/>", encoding="utf-8")
     second_csv.write_text("cell_type,signal\n", encoding="utf-8")
     (second_dir / "notes.txt").write_text("ignored", encoding="utf-8")
+
+    legacy_dir = tmp_path / "artifacts" / first_id
+    legacy_dir.mkdir(parents=True)
+    legacy_file = legacy_dir / "PhysiCell_settings.xml"
+    legacy_file.write_text("legacy snapshot\n", encoding="utf-8")
 
     session_result = _run(
         _call_tool("list_generated_files", {"session_id": first_id})
@@ -2268,12 +2283,12 @@ def test_physicell_artifact_listing_and_cleanup_are_structured(
     assert session_result.structured_content is not None
     assert session_result.structured_content["scope"] == "session"
     assert session_result.structured_content["session_id"] == first_id
-    assert session_result.structured_content["count"] == 1
+    assert session_result.structured_content["count"] == 2
     assert session_result.structured_content["files"][0]["path"] == str(first_xml)
     assert all_result.structured_content is not None
     assert all_result.structured_content["scope"] == "all"
     assert all_result.structured_content["session_id"] is None
-    assert all_result.structured_content["count"] == 2
+    assert all_result.structured_content["count"] == 3
     assert {
         file_record["session_id"]
         for file_record in all_result.structured_content["files"]
@@ -2284,6 +2299,12 @@ def test_physicell_artifact_listing_and_cleanup_are_structured(
         "server": "PhysiCell",
     }
     assert not first_xml.exists()
+
+    assert {record["path"] for record in session_result.structured_content["files"]} == {
+        str(first_xml), str(legacy_file),
+    }
+    assert legacy_file.read_text(encoding="utf-8") == "legacy snapshot\n"
+    assert second_dir.is_dir()
 
 
 def test_empty_status_results_remain_successful() -> None:
@@ -3174,7 +3195,7 @@ def test_artifact_cleanup_waits_for_same_session_export(
     assert "concurrent.xml" in export_result.content[0].text
     assert "Cleaned 1 artifact file" in cleanup_result.content[0].text
     assert not (
-        tmp_path / "artifacts" / session_id / "concurrent.xml"
+        artifact_base(tmp_path) / session_id / "concurrent.xml"
     ).exists()
 
 
@@ -3228,7 +3249,7 @@ def test_files_resource_waits_for_same_session_export_only(
         resource_text = blocked_resource.result(timeout=2)
 
     expected_path = (
-        tmp_path / "artifacts" / blocked_id / "concurrent.xml"
+        artifact_base(tmp_path) / blocked_id / "concurrent.xml"
     )
     assert str(expected_path) in resource_text
 

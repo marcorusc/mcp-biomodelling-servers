@@ -14,6 +14,9 @@ from typing import Any
 import pandas as pd
 import pytest
 from mcp import Client, MCPError
+from mcp_biomodelling_servers.artifact_manager import artifact_base
+from mcp_biomodelling_servers.import_lineage import SourceExport
+from mcp_biomodelling_servers.handoff import handoff_artifact
 
 
 def _install_neko_import_stubs() -> None:
@@ -386,9 +389,13 @@ def test_list_sessions_returns_structured_neko_state() -> None:
     assert result.structured_content["count"] == 1
 
 
+@pytest.mark.parametrize("legacy", [False, True])
 def test_list_artifact_sessions_returns_structured_metadata(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    legacy: bool,
 ) -> None:
+    directory = (tmp_path / "artifacts" if legacy else artifact_base(tmp_path)) / "listed-session"
     monkeypatch.setattr(
         neko_server,
         "_list_artifact_sessions_on_disk",
@@ -398,6 +405,8 @@ def test_list_artifact_sessions_returns_structured_metadata(
                 "server": "NeKo",
                 "label": "connected network",
                 "created_at": "2026-07-30T10:20:30+00:00",
+                "artifact_directory": str(directory),
+                "legacy": legacy,
                 "files": ["Network.sif"],
             }
         ],
@@ -416,6 +425,8 @@ def test_list_artifact_sessions_returns_structured_metadata(
                 "server": "NeKo",
                 "label": "connected network",
                 "created_at": "2026-07-30T10:20:30+00:00",
+                "artifact_directory": str(directory),
+                "legacy": legacy,
                 "files": ["Network.sif"],
             }
         ],
@@ -1116,7 +1127,7 @@ def test_bnet_export_returns_structured_sanitization_metadata(
 
     network = _network_stub()
     session_id = _create_session(network)
-    artifact_dir = tmp_path / "artifacts" / session_id
+    artifact_dir = artifact_base(tmp_path) / session_id
     artifact_dir.mkdir(parents=True)
     stale_path = artifact_dir / "AAA_previous.bnet"
     stale_path.write_text("STALE, STALE\n", encoding="utf-8")
@@ -1174,7 +1185,7 @@ def test_neko_handoff_exports_typed_provenance_and_translated_outputs(
 
     network = _network_stub(current_state_id=7)
     session_id = _create_session(network)
-    artifact_dir = tmp_path / "artifacts" / session_id
+    artifact_dir = artifact_base(tmp_path) / session_id
     artifact_dir.mkdir(parents=True)
     monkeypatch.setattr(neko_server, "Exports", RecordingExports)
     monkeypatch.setattr(neko_server, "is_connected", lambda _network: True)
@@ -1249,7 +1260,7 @@ def test_neko_handoff_rejects_multiple_generated_models(
             Path(f"{prefix}_2.bnet").write_text("B, B\n", encoding="utf-8")
 
     session_id = _create_session(_network_stub())
-    artifact_dir = tmp_path / "artifacts" / session_id
+    artifact_dir = artifact_base(tmp_path) / session_id
     artifact_dir.mkdir(parents=True)
     monkeypatch.setattr(neko_server, "Exports", MultipleModelExports)
     monkeypatch.setattr(neko_server, "is_connected", lambda _network: True)
@@ -1305,7 +1316,7 @@ def test_neko_handoff_rejects_invalid_outputs_without_partial_artifacts(
             )
 
     session_id = _create_session(_network_stub())
-    artifact_dir = tmp_path / "artifacts" / session_id
+    artifact_dir = artifact_base(tmp_path) / session_id
     artifact_dir.mkdir(parents=True)
     monkeypatch.setattr(neko_server, "Exports", RecordingExports)
     monkeypatch.setattr(neko_server, "is_connected", lambda _network: True)
@@ -1338,7 +1349,7 @@ def test_neko_handoff_refuses_existing_artifacts(
     tmp_path: Path,
 ) -> None:
     session_id = _create_session(_network_stub())
-    artifact_dir = tmp_path / "artifacts" / session_id
+    artifact_dir = artifact_base(tmp_path) / session_id
     artifact_dir.mkdir(parents=True)
     existing_bnet = artifact_dir / "retained.bnet"
     existing_bnet.write_text("original\n", encoding="utf-8")
@@ -1379,7 +1390,7 @@ def test_neko_handoff_allows_empty_declared_outputs(
             Path(f"{prefix}.bnet").write_text("A, A\n", encoding="utf-8")
 
     session_id = _create_session(_network_stub())
-    artifact_dir = tmp_path / "artifacts" / session_id
+    artifact_dir = artifact_base(tmp_path) / session_id
     artifact_dir.mkdir(parents=True)
     monkeypatch.setattr(neko_server, "Exports", RecordingExports)
     monkeypatch.setattr(neko_server, "is_connected", lambda _network: True)
@@ -1411,11 +1422,16 @@ def test_neko_bnet_listing_and_cleanup_are_structured(
 ) -> None:
     session_id = _create_session()
     monkeypatch.setattr(neko_server, "_SERVER_ROOT", tmp_path)
-    artifact_dir = tmp_path / "artifacts" / session_id
+    artifact_dir = artifact_base(tmp_path) / session_id
     artifact_dir.mkdir(parents=True)
     bnet_path = artifact_dir / "Network.bnet"
     bnet_path.write_text("A, A\n", encoding="utf-8")
     (artifact_dir / "Network.sif").write_text("A\t1\tA\n", encoding="utf-8")
+
+    legacy_dir = tmp_path / "artifacts" / session_id
+    legacy_dir.mkdir(parents=True)
+    legacy_file = legacy_dir / "Network.bnet"
+    legacy_file.write_text("legacy snapshot\n", encoding="utf-8")
 
     listing_result = _run(
         _call_tool("list_bnet_files", {"session_id": session_id})
@@ -1425,11 +1441,11 @@ def test_neko_bnet_listing_and_cleanup_are_structured(
     )
 
     assert listing_result.is_error is False
-    assert listing_result.content[0].text == "Network.bnet"
+    assert listing_result.content[0].text == "Network.bnet\nNetwork.bnet"
     assert listing_result.structured_content is not None
     assert listing_result.structured_content["scope"] == "session"
     assert listing_result.structured_content["session_id"] == session_id
-    assert listing_result.structured_content["count"] == 1
+    assert listing_result.structured_content["count"] == 2
     assert listing_result.structured_content["files"][0]["path"] == str(bnet_path)
     assert cleanup_result.structured_content == {
         "session_id": session_id,
@@ -1437,6 +1453,11 @@ def test_neko_bnet_listing_and_cleanup_are_structured(
         "server": "NeKo",
     }
     assert not artifact_dir.exists()
+
+    assert {record["path"] for record in listing_result.structured_content["files"]} == {
+        str(bnet_path), str(legacy_file),
+    }
+    assert legacy_file.read_text(encoding="utf-8") == "legacy snapshot\n"
 
 
 def test_unknown_default_session_is_tool_error() -> None:
@@ -2331,6 +2352,7 @@ def test_case_insensitive_public_options_remain_compatible(
 
         def export_sif(self, path: str) -> None:
             self.paths.append(path)
+            Path(path).write_text("TP53\t1\tTP53\n", encoding="utf-8")
 
     network = _network_stub(
         nodes=pd.DataFrame(
@@ -2381,6 +2403,11 @@ def test_case_insensitive_public_options_remain_compatible(
 
     assert export_result.is_error is False
     assert RecordingExports.paths == [str(tmp_path / "Network.sif")]
+    sidecar = SourceExport.model_validate_json((tmp_path / "Network.sif.lineage.json").read_bytes())
+    assert sidecar.artifact == handoff_artifact(
+        tmp_path / "Network.sif", server="NeKo", session_id=session_id, role="neko_sif"
+    )
+    assert sidecar.imports == []
     assert export_result.structured_content is not None
     assert export_result.structured_content["session_id"] == session_id
     assert export_result.structured_content["format"] == "sif"
@@ -2411,7 +2438,7 @@ def test_list_bnet_files_does_not_create_artifact_directory(
 
     assert result.is_error is False
     assert "No .bnet files found" in result.content[0].text
-    assert not (tmp_path / "artifacts").exists()
+    assert not (artifact_base(tmp_path)).exists()
 
 
 @pytest.mark.parametrize(

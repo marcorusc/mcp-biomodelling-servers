@@ -336,3 +336,11 @@ files needed for reproducibility before calling them.
 - [pyMaBoSS source](https://github.com/colomoto/pyMaBoSS)
 - [MCP Python SDK v2 media results](https://py.sdk.modelcontextprotocol.io/servers/media/)
 - [MCP Python SDK v2 structured output](https://py.sdk.modelcontextprotocol.io/servers/structured-output/)
+
+Artifact storage uses the shared cache root or `MCP_BIOMODELLING_ARTIFACT_ROOT`,
+with the `MaBoSS/<session_id>` namespace. Legacy artifacts remain discoverable.
+`bnet_to_bnd_and_cfg` accepts optional `parent_manifest` (a verified BNET source
+sidecar or NeKo handoff) and `derived_from` (the intact parent artifact path for
+edited copies). Conversion and model exports retain hashes in `.lineage.json`
+sidecars. Ordinary provenance does not replace `import_neko_handoff` or confer
+approval. See the root README for exact path and provenance semantics.

@@ -57,7 +57,7 @@ MABOSS_AGENT_MANUAL = """
 
 ## 5. Critical Rules
 * Always call `create_session()` before any simulation tool.
-* All file I/O is scoped to `<server>/artifacts/<session_id>/`.
+* All file I/O is scoped to `<configured-or-user-cache-root>/MaBoSS/<session_id>/`.
 * Pass `session_id` explicitly when running multiple simulations in parallel.
 * Call `update_maboss_parameters` with no args to list all valid keys.
 * Set `thread_count` early to speed up iteration.

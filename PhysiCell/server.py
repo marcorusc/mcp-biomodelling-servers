@@ -625,6 +625,8 @@ def list_artifact_sessions() -> Annotated[
         count=len(sessions),
         sessions=[
             ArtifactSessionSummary(
+                artifact_directory=session.get("artifact_directory"),
+                legacy=bool(session.get("legacy", False)),
                 session_id=session["session_id"],
                 server=str(session.get("server") or "PhysiCell"),
                 label=session.get("label") or None,

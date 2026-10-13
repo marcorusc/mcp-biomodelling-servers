@@ -123,6 +123,6 @@ other five require a configured simulation.
 - `export_xml_configuration()` writes the PhysiCell settings XML.
 - `export_cell_rules_csv()` writes the CBHG cell-rules file when rules exist.
 
-All generated files are confined to `PhysiCell/artifacts/<session_id>/`.
+All generated files are confined to `<configured-or-user-cache-root>/PhysiCell/<session_id>/`.
 Use `list_artifact_sessions()` to rediscover files after a server restart.
 """
