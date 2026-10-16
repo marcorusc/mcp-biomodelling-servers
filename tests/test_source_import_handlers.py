@@ -74,8 +74,8 @@ def test_bnet_old_call_parent_rejection_and_loaded_lineage(tmp_path, monkeypatch
 def test_sif_handler_rejects_before_backend_and_retains_export(tmp_path, monkeypatch):
     # This module installs NeKo import stubs before importing the server. Merely
     # importing it runs no tests, protocol calls, or scientific initialization.
-    from tests.test_neko_mcp_errors import neko_server as server
     from NeKo.session_manager import NeKoSessionManager
+    from tests.test_neko_mcp_errors import neko_server as server
     manager = NeKoSessionManager()
     sess = manager.get_session(manager.create_session())
     monkeypatch.setattr(server, "session_manager", manager)
@@ -103,10 +103,14 @@ def test_sif_handler_rejects_before_backend_and_retains_export(tmp_path, monkeyp
     parent = write_source_export(source, server="NeKo", session_id="parent", imports=[])
     edited = tmp_path / "edited.sif"
     edited.write_text("A\t-1\tB\n")
-    arguments = dict(list_of_initial_genes=[], ctx=SimpleNamespace(report_progress=progress),
-                     database="omnipath", sif_file=str(edited), max_len=2,
-                     path_policy="one_shortest", reuse_policy="discovered_paths",
-                     only_signed=True, consensus=True, session_id=sess.session_id, verbosity="summary")
+    arguments = {
+        "list_of_initial_genes": [], "ctx": SimpleNamespace(report_progress=progress),
+        "database": "omnipath", "sif_file": str(edited), "max_len": 2,
+        "path_policy": "one_shortest", "reuse_policy": "discovered_paths",
+        "only_signed": True, "consensus": True, "session_id": sess.session_id,
+        "verbosity": "summary",
+    }
+
     with pytest.raises(ValueError, match="match"):
         asyncio.run(server.create_network(**arguments, parent_manifest=str(parent)))
     assert calls == []

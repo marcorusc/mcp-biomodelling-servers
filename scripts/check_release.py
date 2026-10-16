@@ -1,6 +1,7 @@
 """Check release metadata and built archives (run with Python 3.12+)."""
 
 import argparse
+import ast
 import configparser
 import json
 import tarfile
@@ -92,9 +93,19 @@ def main() -> None:
             assert path.name != ".env" and not path.name.startswith(".env."), member
             assert path.suffix not in {".pyc", ".log"}, member
         print(f"Checked {archive.name}")
-    assert (ROOT / "artifact_manager.py").read_bytes() == (
-        ROOT / "mcp_biomodelling_servers" / "artifact_manager.py"
-    ).read_bytes()
+    # The root module is a compatibility re-export, not a second implementation.
+    shim = ast.parse((ROOT / "artifact_manager.py").read_text())
+    assert len(shim.body) == 2 and isinstance(shim.body[0], ast.Expr)
+    exports = shim.body[1]
+    assert isinstance(exports, ast.ImportFrom)
+    assert exports.module == "mcp_biomodelling_servers.artifact_manager"
+    assert exports.level == 0
+    assert {alias.name for alias in exports.names} == {
+        "METADATA_FILENAME", "artifact_base", "artifact_bases", "clean_artifacts",
+        "get_artifact_dir", "list_artifact_sessions", "list_artifacts",
+        "read_session_meta", "safe_artifact_path", "write_session_meta",
+    }
+    assert all(alias.asname is None for alias in exports.names)
     print(
         f"Release {version}: four server manifests, ownership markers and entry points agree."
     )

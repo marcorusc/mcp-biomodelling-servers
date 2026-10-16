@@ -15,8 +15,8 @@ from typing import Any
 
 import pytest
 from mcp import Client, MCPError
-from mcp_biomodelling_servers.artifact_manager import artifact_base
 
+from mcp_biomodelling_servers.artifact_manager import artifact_base
 
 
 def _install_physicell_import_stubs() -> None:

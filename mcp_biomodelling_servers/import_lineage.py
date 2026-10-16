@@ -19,10 +19,12 @@ from pydantic import AwareDatetime, Field, ValidationInfo, model_validator
 from .handoff import (
     MAX_HANDOFF_MANIFEST_BYTES,
     MAX_V2_HANDOFF_MANIFEST_BYTES,
-    SourceImport,
     AncestryBundle,
     ArtifactRole,
     HandoffArtifact,
+    MaBoSSToPhysiCellHandoffManifest,
+    NeKoToMaBoSSHandoffManifest,
+    SourceImport,
     handoff_artifact,
     load_handoff_manifest,
     manifest_artifacts,
@@ -288,6 +290,7 @@ class _Evidence:
             raise ValueError("Ancestry manifest must be an object.")
         if data.get("schema_version") == "1.0" and len(raw) > MAX_HANDOFF_MANIFEST_BYTES:
             raise ValueError("v1 ancestry manifest exceeds size limit.")
+        parsed: SourceExport | NeKoToMaBoSSHandoffManifest | MaBoSSToPhysiCellHandoffManifest
         if data.get("schema_name") == "mcp-biomodelling-source-lineage":
             parsed = SourceExport.model_validate(data, context={"ancestry_snapshot": True})
             candidates = [parsed.artifact]
@@ -307,7 +310,7 @@ class _Evidence:
             self.read(artifact, allow_live=allow_live)
             if artifact.role == "parent_manifest":
                 _, _, stage_parent = self.parent(artifact, depth + 1, allow_live=allow_live)
-                if getattr(parsed, "handoff_type", None) == "maboss-to-physicell":
+                if isinstance(parsed, MaBoSSToPhysiCellHandoffManifest):
                     if getattr(stage_parent, "handoff_type", None) != "neko-to-maboss":
                         raise ValueError("Invalid ancestry stage-parent type.")
                     if parsed.lineage != [stage_parent.source]:
@@ -371,7 +374,7 @@ def copy_source_ancestry(imports: list[SourceImport], destination: str | Path) -
                 output.write(data)
         except FileExistsError:
             if path.read_bytes() != data:
-                raise ValueError("Ancestry destination digest mismatch.")
+                raise ValueError("Ancestry destination digest mismatch.") from None
         paths[digest] = path
     return paths
 

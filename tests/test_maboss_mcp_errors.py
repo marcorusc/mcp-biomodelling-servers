@@ -17,12 +17,11 @@ from maboss.results.baseresult import BaseResult
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 from mcp import Client, MCPError
-from mcp_biomodelling_servers.artifact_manager import artifact_base
-from mcp_biomodelling_servers.import_lineage import SourceExport
 from mcp.types import ImageContent, TextContent
 
 from MaBoSS import server as maboss_server  # noqa: E402
 from MaBoSS.session_manager import session_manager  # noqa: E402
+from mcp_biomodelling_servers.artifact_manager import artifact_base
 from mcp_biomodelling_servers.handoff import (
     HandoffNetwork,
     HandoffPackage,
@@ -31,6 +30,7 @@ from mcp_biomodelling_servers.handoff import (
     handoff_artifact,
     write_handoff_manifest,
 )
+from mcp_biomodelling_servers.import_lineage import SourceExport
 
 mcp = maboss_server.mcp
 

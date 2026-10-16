@@ -14,9 +14,10 @@ from typing import Any
 import pandas as pd
 import pytest
 from mcp import Client, MCPError
+
 from mcp_biomodelling_servers.artifact_manager import artifact_base
-from mcp_biomodelling_servers.import_lineage import SourceExport
 from mcp_biomodelling_servers.handoff import handoff_artifact
+from mcp_biomodelling_servers.import_lineage import SourceExport
 
 
 def _install_neko_import_stubs() -> None:

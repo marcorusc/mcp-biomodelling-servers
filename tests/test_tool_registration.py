@@ -8,7 +8,10 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.shared.exceptions import MCPError
 
-from mcp_biomodelling_servers.tool_registration import INTERNAL_ERROR_MESSAGE, domain_tool
+from mcp_biomodelling_servers.tool_registration import (
+    INTERNAL_ERROR_MESSAGE,
+    domain_tool,
+)
 
 
 @pytest.mark.parametrize('mode', ['auto', 'legacy'])
