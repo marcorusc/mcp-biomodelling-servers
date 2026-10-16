@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mcp-biomodelling-servers"
-version = "2.4.0"
+version = "2.5.0"
 description = "MCP servers for NeKo signalling-network construction, MaBoSS Boolean simulation, PhysiCell configuration, and BioMASS ODE construction"
 readme = "README.md"
 license = { text = "MIT" }
@@ -30,9 +30,9 @@ dependencies = [
     "pydantic>=2.12",
     "pandas>=2.2,<4",
     "matplotlib>=3.8,<4",
-    "nekomata>=1.10.1,<2",
+    "nekomata>=1.10.2,<2",
     "maboss>=0.8.15,<0.9",
-    "physicell-settings>=0.6.2,<0.7",
+    "physicell-settings>=0.6.3,<0.7",
     "requests>=2.31,<3",
     "tabulate>=0.9,<1",
     "biomass>=0.14.0,<0.15",

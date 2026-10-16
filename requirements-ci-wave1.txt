@@ -1,0 +1,4 @@
+# Exact companion PR inputs until the coordinated library releases are available.
+# Normal package dependencies remain version ranges in pyproject.toml.
+nekomata @ git+https://github.com/marcorusc/Neko.git@38f514bedc4aae89f5290919b97a27a44bc1332d
+physicell-settings @ git+https://github.com/marcorusc/PhysiCell_Settings.git@82f66c4504da2408d9e8037b78896ac29551d150
