@@ -425,7 +425,7 @@ XML and CSV filenames must be plain basenames without directory components and
 must use the matching `.xml` or `.csv` suffix. Outputs are confined to:
 
 ```text
-PhysiCell/artifacts/{session_id}/
+<configured-or-user-cache-root>/PhysiCell/{session_id}/
 ```
 
 Reusing an export filename updates that session artifact. Choose distinct
@@ -485,3 +485,9 @@ generated files before calling `delete_session()`.
 - [PhysiBoSS](https://github.com/PhysiBoSS/PhysiBoSS)
 - [MCP Python SDK v2 structured output](https://py.sdk.modelcontextprotocol.io/servers/structured-output/)
 - [MCP Python SDK v2 resources](https://py.sdk.modelcontextprotocol.io/servers/resources/)
+
+The artifact tree above now lives at
+`$MCP_BIOMODELLING_ARTIFACT_ROOT/PhysiCell/<session_id>` or the shared user-cache
+default documented in the root README, rather than the installed package.
+Legacy package-local artifacts remain discoverable with full paths and a
+`legacy` marker. Existing PhysiBoSS handoff and approval requirements are unchanged.

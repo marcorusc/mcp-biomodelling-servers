@@ -11,6 +11,7 @@ from pathlib import Path
 from threading import RLock
 
 from mcp_biomodelling_servers.artifact_manager import (
+    artifact_base,
     get_artifact_dir,
     write_session_meta,
 )
@@ -36,10 +37,10 @@ class BioMASSSessionManager:
         self.lock = RLock()
 
     def directory(self, sid: str) -> Path:
-        path = self.root / "artifacts" / sid
-        if path.is_symlink() or (self.root / "artifacts").is_symlink():
+        path = artifact_base(self.root) / sid
+        if path.is_symlink() or artifact_base(self.root).is_symlink():
             raise ValueError("Symlinked artifact directories are not supported.")
-        path.resolve().relative_to(self.root.resolve())
+        path.resolve().relative_to(artifact_base(self.root).resolve())
         return get_artifact_dir(self.root, sid)
 
     def create(
@@ -104,8 +105,8 @@ class BioMASSSessionManager:
                 raise ValueError("Session is already active.")
             if len(self.sessions) >= self.max_sessions:
                 raise RuntimeError("Session limit reached.")
-            directory = self.root / "artifacts" / sid
-            if directory.is_symlink() or (self.root / "artifacts").is_symlink():
+            directory = artifact_base(self.root) / sid
+            if directory.is_symlink() or artifact_base(self.root).is_symlink():
                 raise ValueError("Symlinked artifact directories are not supported.")
             if any(
                 (directory / name).is_symlink()

@@ -23,6 +23,8 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from threading import Condition, RLock
 
+from mcp_biomodelling_servers.import_lineage import SourceImport
+
 # ---------------------------------------------------------------------------
 # Session dataclass
 # ---------------------------------------------------------------------------
@@ -49,6 +51,9 @@ class MaBoSSSession:
     # These lifecycle fields are protected by MaBoSSSessionManager._condition.
     _lease_count: int = field(default=0, init=False, repr=False, compare=False)
     _retired: bool = field(default=False, init=False, repr=False, compare=False)
+    source_import: SourceImport | None = None
+    pending_source_import: SourceImport | None = None
+    import_history: list[SourceImport] = field(default_factory=list)
 
     def touch(self) -> None:
         with self._operation_lock:
@@ -66,6 +71,8 @@ class MaBoSSSession:
         upstream_neko_manifest_path: str | None = None,
     ) -> None:
         with self._operation_lock:
+            self.source_import = None
+            self.pending_source_import = None
             self.sim = sim_obj
             self.result = None  # reset result when simulation is rebuilt
             self.bnd_path = bnd_path
@@ -81,6 +88,8 @@ class MaBoSSSession:
     def clear(self) -> None:
         """Reset session state (keeps session alive, clears sim data)."""
         with self._operation_lock:
+            self.source_import = None
+            self.pending_source_import = None
             self.sim = None
             self.result = None
             self.bnd_path = None

@@ -266,3 +266,65 @@ registration without trying to upload the existing PyPI version again.
 The package metadata declares the project under the MIT license. The wrapped
 modelling packages retain their own licenses; consult their upstream projects
 for details.
+
+### Artifact storage and ordinary import provenance
+
+All four servers write to
+`$MCP_BIOMODELLING_ARTIFACT_ROOT/<server>/<session_id>/` when the environment
+variable is set to an absolute directory. Otherwise they use
+`${XDG_CACHE_HOME:-~/.cache}/mcp-biomodelling/artifacts/<server>/<session_id>/`.
+Server namespaces are `NeKo`, `MaBoSS`, `PhysiCell`, and `BioMASS`. Set the variable
+before starting a server and keep it stable for that process. The default never
+writes into the package installation. The root-level `artifact_manager` import
+remains available as a compatibility shim for the packaged shared helper.
+
+Listings also discover existing `<server package>/artifacts/<session_id>/`
+directories. Each session listing includes `artifact_directory` and `legacy`;
+identical session IDs at different locations remain separate entries. No legacy
+files are moved or deleted, and cleanup applies only to the current write root.
+BioMASS restore reads snapshots from the current root; legacy snapshots remain
+available for inspection but are not automatically restored or migrated.
+Discovery scans the current installation's legacy directory, not other checkouts
+or previously configured cache roots.
+
+`NeKo.create_network(..., sif_file=..., parent_manifest=None, derived_from=None)`
+and `MaBoSS.bnet_to_bnd_and_cfg(..., parent_manifest=None, derived_from=None)`
+accept optional provenance arguments. Existing calls remain valid and now record
+the imported source's SHA-256 digest. Successful imports retain an active source
+record, a session import history, and a unique `source-import.<id>.json` record
+on disk before reporting success. Import records preserve historical digests even
+if a later export replaces a mutable sidecar. Replacing the model clears its active source
+record; history retains the original import evidence. MaBoSS conversion provenance
+becomes active only when its generated BND/CFG model is loaded.
+
+* `parent_manifest` is a path to a validated source-lineage sidecar or, for BNET,
+  a NeKo-to-MaBoSS handoff manifest. The referenced artifact's size and SHA-256
+  must still match. Arbitrary parent labels are rejected.
+* With only `parent_manifest`, the input must be byte-identical to a matching
+  parent artifact. For edited copies, also supply `derived_from` as the exact
+  path of the original artifact recorded by that parent. Keep the original
+  bytes intact and import an edited copy at a separate path. Equal bytes remain
+  classified as `byte-identical` even if `derived_from` is supplied.
+* Ordinary NeKo SIF/BNET exports and MaBoSS BND/CFG exports write sibling
+  `<filename>.lineage.json` files. NeKo BNET handoff exports also carry this
+  sidecar; MaBoSS handoff exports with an active ordinary import write a sidecar
+  alongside the handoff JSON. The independent
+  `mcp-biomodelling-source-lineage` v1 schema records source/parent digests,
+  `standalone`, `byte-identical`, or `edited-derivative` relationships, and UTC
+  ISO8601 timestamps. Historical digests are retained even if old inputs later
+  change; using an export as a new parent verifies its current exported bytes.
+
+Source lineage is provenance, not approval or evidence of biological equivalence.
+The required handoff v1 fields, accepted lineage rules, and approval checks
+are unchanged; the shared artifact vocabulary adds `neko_sif` for source sidecars,
+while existing Boolean handoff slots still require BNET. Source sidecars do not grant or replace acceptance. Mutable
+`Network.*`/`output.*` files remain mutable, and retained handoff snapshots keep
+existing overwrite protection. This extension does not validate SIF ancestry
+through Boolean or ODE handoff contracts, does not add BNET import to NeKo, and
+does not propagate ordinary source sidecars through BioMASS or PhysiCell imports.
+Existing aware timestamps and numeric session clocks retain their formats.
+
+Boolean NeKo/MaBoSS handoff exports now use v2 portable source ancestry while
+retaining v1 reading and exact stage-parent validation. See
+[Boolean lineage v2](docs/boolean-lineage-v2.md) for derivative semantics,
+approval boundaries, offline verification and safe capture helpers.

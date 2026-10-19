@@ -21,6 +21,7 @@ from mcp.types import ImageContent, TextContent
 
 from MaBoSS import server as maboss_server  # noqa: E402
 from MaBoSS.session_manager import session_manager  # noqa: E402
+from mcp_biomodelling_servers.artifact_manager import artifact_base
 from mcp_biomodelling_servers.handoff import (
     HandoffNetwork,
     HandoffPackage,
@@ -29,6 +30,7 @@ from mcp_biomodelling_servers.handoff import (
     handoff_artifact,
     write_handoff_manifest,
 )
+from mcp_biomodelling_servers.import_lineage import SourceExport
 
 mcp = maboss_server.mcp
 
@@ -486,9 +488,13 @@ def test_loading_standalone_simulation_clears_upstream_neko_lineage() -> None:
     assert session.upstream_neko_manifest_path is None
 
 
+@pytest.mark.parametrize("legacy", [False, True])
 def test_list_artifact_sessions_returns_structured_metadata(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    legacy: bool,
 ) -> None:
+    directory = (tmp_path / "artifacts" if legacy else artifact_base(tmp_path)) / "listed-session"
     monkeypatch.setattr(
         maboss_server,
         "_list_artifact_sessions_on_disk",
@@ -498,6 +504,8 @@ def test_list_artifact_sessions_returns_structured_metadata(
                 "server": "MaBoSS",
                 "label": "baseline",
                 "created_at": "2026-07-30T10:20:30+00:00",
+                "artifact_directory": str(directory),
+                "legacy": legacy,
                 "files": ["model.bnd", "model.cfg"],
             }
         ],
@@ -516,6 +524,8 @@ def test_list_artifact_sessions_returns_structured_metadata(
                 "server": "MaBoSS",
                 "label": "baseline",
                 "created_at": "2026-07-30T10:20:30+00:00",
+                "artifact_directory": str(directory),
+                "legacy": legacy,
                 "files": ["model.bnd", "model.cfg"],
             }
         ],
@@ -665,7 +675,7 @@ def test_run_and_read_simulation_preserve_numeric_trajectory_data(
         _call_tool("get_simulation_result", {"session_id": session_id})
     )
 
-    csv_path = tmp_path / "artifacts" / session_id / "result.csv"
+    csv_path = artifact_base(tmp_path) / session_id / "result.csv"
     assert run_result.is_error is False
     assert run_result.structured_content is not None
     assert run_result.structured_content["result_available"] is True
@@ -787,23 +797,26 @@ def test_bnet_conversion_returns_structured_artifact_metadata(
         convert,
     )
 
+    source = tmp_path / "network.bnet"
+    source.write_text("A, A\n", encoding="utf-8")
+
     result = _run(
         _call_tool(
             "bnet_to_bnd_and_cfg",
             {
-                "bnet_path": "/models/network.bnet",
+                "bnet_path": str(source),
                 "session_id": session_id,
             },
         )
     )
 
-    artifact_dir = tmp_path / "artifacts" / session_id
+    artifact_dir = artifact_base(tmp_path) / session_id
     assert result.is_error is False
     assert "MaBoSS .bnd and .cfg files created successfully" in result.content[0].text
     assert result.structured_content is not None
     assert result.structured_content["server"] == "MaBoSS"
     assert result.structured_content["session_id"] == session_id
-    assert result.structured_content["input_bnet_path"] == "/models/network.bnet"
+    assert result.structured_content["input_bnet_path"] == str(source)
     assert result.structured_content["bnd_file"] == {
         "session_id": session_id,
         "name": "output.bnd",
@@ -855,7 +868,7 @@ def test_import_neko_handoff_loads_verified_model_and_lineage(
         )
     )
 
-    artifact_dir = tmp_path / "artifacts" / session_id
+    artifact_dir = artifact_base(tmp_path) / session_id
     session = session_manager.get_session(session_id)
     assert session is not None
     assert result.is_error is False
@@ -963,7 +976,7 @@ def test_import_neko_handoff_failure_preserves_previous_session_and_files(
     )
 
     session = session_manager.get_session(session_id)
-    artifact_dir = tmp_path / "artifacts" / session_id
+    artifact_dir = artifact_base(tmp_path) / session_id
     assert session is not None
     assert result.is_error is True
     assert "load failed" in result.content[0].text
@@ -1000,7 +1013,7 @@ def test_import_neko_handoff_rejects_modified_bnet_before_session_change(
     assert result.is_error is True
     assert "changed" in result.content[0].text
     assert session.sim is previous_simulation
-    assert not (tmp_path / "artifacts" / session_id).exists()
+    assert not (artifact_base(tmp_path) / session_id).exists()
 
 
 def test_import_neko_handoff_refuses_existing_artifact(
@@ -1010,7 +1023,7 @@ def test_import_neko_handoff_refuses_existing_artifact(
     manifest_path, _manifest = _create_neko_handoff(tmp_path)
     previous_simulation = object()
     session_id = _create_simulation_session(previous_simulation)
-    artifact_dir = tmp_path / "artifacts" / session_id
+    artifact_dir = artifact_base(tmp_path) / session_id
     artifact_dir.mkdir(parents=True)
     existing_cfg = artifact_dir / "retained.cfg"
     existing_cfg.write_text("original\n", encoding="utf-8")
@@ -1066,6 +1079,13 @@ def test_maboss_export_returns_normalized_structured_artifacts(
     assert result.structured_content["overwrite"] is True
     assert result.structured_content["bnd_file"]["name"] == "run_2.bnd"
     assert result.structured_content["cfg_file"]["name"] == "run_2.cfg"
+    for suffix, role in (("bnd", "maboss_bnd"), ("cfg", "maboss_cfg")):
+        output = artifact_base(tmp_path) / session_id / f"run_2.{suffix}"
+        sidecar = SourceExport.model_validate_json(output.with_name(output.name + ".lineage.json").read_bytes())
+        assert sidecar.artifact == handoff_artifact(
+            output, server="MaBoSS", session_id=session_id, role=role
+        )
+        assert sidecar.imports == []
 
 
 def test_export_maboss_handoff_preserves_neko_lineage_and_result(
@@ -1103,7 +1123,7 @@ def test_export_maboss_handoff_preserves_neko_lineage_and_result(
         )
     )
 
-    artifact_dir = tmp_path / "artifacts" / session_id
+    artifact_dir = artifact_base(tmp_path) / session_id
     handoff_path = artifact_dir / "ab_physicell.handoff.json"
     assert result.is_error is False
     assert handoff_path.is_file()
@@ -1181,8 +1201,7 @@ def test_export_maboss_handoff_supports_standalone_model_without_result(
         "No MaBoSS simulation result was stored at export time."
     )
     assert not (
-        tmp_path
-        / "artifacts"
+        artifact_base(tmp_path)
         / session_id
         / "standalone.result.csv"
     ).exists()
@@ -1232,7 +1251,7 @@ def test_export_maboss_handoff_rejects_incomplete_scientific_context(
 
     assert result.is_error is True
     assert message in result.content[0].text
-    artifact_dir = tmp_path / "artifacts" / session_id
+    artifact_dir = artifact_base(tmp_path) / session_id
     if artifact_dir.exists():
         assert list(artifact_dir.iterdir()) == []
 
@@ -1244,7 +1263,7 @@ def test_export_maboss_handoff_refuses_existing_artifact(
     session_id = _create_simulation_session(
         HandoffSimulationStub(outputs=["A"])
     )
-    artifact_dir = tmp_path / "artifacts" / session_id
+    artifact_dir = artifact_base(tmp_path) / session_id
     artifact_dir.mkdir(parents=True)
     existing_bnd = artifact_dir / "retained.bnd"
     existing_bnd.write_text("original\n", encoding="utf-8")
@@ -1301,7 +1320,7 @@ def test_export_maboss_handoff_rejects_stale_neko_lineage(
 
     assert result.is_error is True
     assert "changed" in result.content[0].text
-    assert not (tmp_path / "artifacts" / session_id).exists()
+    assert not (artifact_base(tmp_path) / session_id).exists()
 
 
 def test_export_maboss_handoff_rolls_back_partial_artifact_pair(
@@ -1337,7 +1356,7 @@ def test_export_maboss_handoff_rolls_back_partial_artifact_pair(
         )
     )
 
-    artifact_dir = tmp_path / "artifacts" / session_id
+    artifact_dir = artifact_base(tmp_path) / session_id
     assert result.is_error is True
     assert "CFG finalization failure" in result.content[0].text
     assert list(artifact_dir.iterdir()) == []
@@ -1350,12 +1369,17 @@ def test_maboss_artifact_listing_and_cleanup_are_structured(
     first_id = session_manager.create_session()
     second_id = session_manager.create_session()
     monkeypatch.setattr(maboss_server, "_SERVER_ROOT", tmp_path)
-    first_dir = tmp_path / "artifacts" / first_id
-    second_dir = tmp_path / "artifacts" / second_id
+    first_dir = artifact_base(tmp_path) / first_id
+    second_dir = artifact_base(tmp_path) / second_id
     first_dir.mkdir(parents=True)
     second_dir.mkdir(parents=True)
     (first_dir / "model.bnd").write_text("A\n", encoding="utf-8")
     (second_dir / "result.csv").write_text("state,probability\n", encoding="utf-8")
+
+    legacy_dir = tmp_path / "artifacts" / first_id
+    legacy_dir.mkdir(parents=True)
+    legacy_file = legacy_dir / "model.bnd"
+    legacy_file.write_text("legacy snapshot\n", encoding="utf-8")
 
     session_result = _run(
         _call_tool("list_generated_files", {"session_id": first_id})
@@ -1371,7 +1395,7 @@ def test_maboss_artifact_listing_and_cleanup_are_structured(
     assert session_result.structured_content is not None
     assert session_result.structured_content["scope"] == "session"
     assert session_result.structured_content["session_id"] == first_id
-    assert session_result.structured_content["count"] == 1
+    assert session_result.structured_content["count"] == 2
     assert all_result.structured_content is not None
     assert all_result.structured_content["scope"] == "all"
     assert all_result.structured_content["session_id"] is None
@@ -1385,6 +1409,12 @@ def test_maboss_artifact_listing_and_cleanup_are_structured(
         "server": "MaBoSS",
     }
     assert not (first_dir / "model.bnd").exists()
+
+    assert {record["path"] for record in session_result.structured_content["files"]} == {
+        str(first_dir / "model.bnd"), str(legacy_file),
+    }
+    assert legacy_file.read_text(encoding="utf-8") == "legacy snapshot\n"
+    assert second_dir.is_dir()
 
 
 def test_unknown_default_session_is_tool_error() -> None:
@@ -1488,7 +1518,7 @@ def test_visualize_returns_uncropped_png_and_persists_same_bytes(
 
     returned_png = base64.b64decode(result.content[1].data)
     assert returned_png.startswith(b"\x89PNG\r\n\x1a\n")
-    artifact_path = tmp_path / "artifacts" / session_id / "network_trajectory.png"
+    artifact_path = artifact_base(tmp_path) / session_id / "network_trajectory.png"
     assert artifact_path.read_bytes() == returned_png
     assert fake_result.until == 1.5
     assert save_calls == [
@@ -1537,7 +1567,7 @@ def test_visualize_closes_figure_when_plotting_fails(
     assert result.is_error is True
     assert "plot failed" in result.content[0].text
     assert set(plt.get_fignums()) == figures_before
-    assert not (tmp_path / "artifacts" / session_id / "network_trajectory.png").exists()
+    assert not (artifact_base(tmp_path) / session_id / "network_trajectory.png").exists()
 
 
 def test_pymaboss_plot_contract_supports_until_and_axes() -> None:
@@ -1776,7 +1806,6 @@ def test_all_maboss_tools_publish_safety_annotations() -> None:
     }
     idempotent = {
         "set_default_session",
-        "bnet_to_bnd_and_cfg",
         "build_simulation",
         "change_maboss_rule",
         "update_maboss_parameters",
@@ -1786,6 +1815,7 @@ def test_all_maboss_tools_publish_safety_annotations() -> None:
     }
     non_idempotent = {
         "create_session",
+        "bnet_to_bnd_and_cfg",
         "import_neko_handoff",
         "run_simulation",
         "export_maboss_bnd_cfg",

@@ -211,3 +211,9 @@ Extract the ZIP and run `python run_simulation.py` to list saved scenarios, then
 the recorded actual numerical conditions. `requirements.txt` pins BioMASS 0.14.0.
 Closing a session preserves artifacts; cleanup preserves authoring and lineage
 while removing generated revisions and runs.
+
+Artifacts and restorable session snapshots now use
+`$MCP_BIOMODELLING_ARTIFACT_ROOT/BioMASS/<session_id>` or the shared user-cache
+default documented in the root README. Legacy package-local directories remain
+listed with `legacy=true` and their full location; they are not migrated,
+deleted, or automatically restored.

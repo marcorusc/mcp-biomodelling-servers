@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from threading import Condition, RLock
 from typing import Any, Literal, cast
 
+from mcp_biomodelling_servers.import_lineage import SourceImport
+
 logger = logging.getLogger(__name__)
 
 # Verbosity levels
@@ -60,6 +62,8 @@ class NeKoSession:
     # These lifecycle fields are protected by NeKoSessionManager._condition.
     _lease_count: int = field(default=0, init=False, repr=False, compare=False)
     _retired: bool = field(default=False, init=False, repr=False, compare=False)
+    source_import: SourceImport | None = None
+    import_history: list[SourceImport] = field(default_factory=list)
 
     def touch(self) -> None:
         with self._operation_lock:
@@ -80,6 +84,7 @@ class NeKoSession:
     ) -> None:
         """Replace the network and optionally seed its validated edge cache."""
         with self._operation_lock:
+            self.source_import = None
             self.network = network_obj
             self._edges_cache = edges_df
             self._edges_cache_dirty = network_obj is not None and edges_df is None

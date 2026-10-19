@@ -470,3 +470,12 @@ Import the manifest with BioMASS's `import_neko_handoff`. The calling agent then
 reads literature and proposes reactions with evidence or explicit assumptions.
 This export does not assign rate laws or kinetic parameters. The existing
 `export_neko_handoff` continues to export Boolean models for MaBoSS.
+
+Artifact storage uses the shared cache root or `MCP_BIOMODELLING_ARTIFACT_ROOT`,
+with the `NeKo/<session_id>` namespace. Legacy package-local artifacts remain
+listed with their location. See the root README's artifact storage section.
+
+`create_network` accepts optional `parent_manifest` and `derived_from` for SIF
+imports. A parent is a verified `.lineage.json` from a SIF export; an edited copy
+requires `derived_from` to identify the intact parent SIF. SIF/BNET exports retain
+source hashes in sibling `.lineage.json` files, independently of handoff approval.

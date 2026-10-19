@@ -1,53 +1,47 @@
-"""Shared artifact-directory management for MCP Bio-Modelling servers.
-
-Each server gets a per-session sandbox:
-    <server_root>/artifacts/<session_id>/
-
-All file I/O from MCP tools must go through these helpers so that:
-  - Files are never written to an arbitrary CWD.
-  - Different sessions never clobber each other's output.
-  - Cross-server paths are stable and predictable.
-
-Usage (inside any server.py):
-    import sys
-    from pathlib import Path
-    sys.path.insert(0, str(Path(__file__).parent.parent))
-    from artifact_manager import get_artifact_dir, safe_artifact_path, list_artifacts, clean_artifacts
-
-    _SERVER_ROOT = Path(__file__).parent
-
-    # get (and create) the session artifact directory
-    art_dir = get_artifact_dir(_SERVER_ROOT, session_id)
-
-    # build a safe path for a file inside it
-    out_path = safe_artifact_path(art_dir, "output.bnd")
-"""
+"""Shared cache-backed artifact storage, with read-only legacy discovery."""
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+import os
 from pathlib import Path
 from typing import Any
+
+from .timestamps import utc_now
 
 METADATA_FILENAME = "session_meta.json"
 
 
-def get_artifact_dir(server_root: Path, session_id: str) -> Path:
-    """Return (and create) the per-session artifact directory for a server.
+def artifact_base(server_root: Path) -> Path:
+    """Current write root: configured/cache root, server namespace."""
+    configured = os.environ.get("MCP_BIOMODELLING_ARTIFACT_ROOT")
+    if configured:
+        root = Path(configured).expanduser()
+        if not root.is_absolute():
+            raise ValueError("MCP_BIOMODELLING_ARTIFACT_ROOT must be absolute.")
+    else:
+        cache = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))).expanduser()
+        if not cache.is_absolute():
+            cache = Path.home() / ".cache"
+        root = cache / "mcp-biomodelling" / "artifacts"
+    return root / Path(server_root).name
 
-    Layout:  <server_root>/artifacts/<session_id>/
 
-    Args:
-        server_root: Absolute path to the server directory
-                     (use ``Path(__file__).parent`` in server code).
-        session_id:  Session identifier string (e.g. ``"session_1"``).
-
-    Returns:
-        Path to the session artifact directory (guaranteed to exist).
-    """
+def _validate_session(session_id: str) -> None:
     if not session_id or "/" in session_id or "\\" in session_id or session_id in (".", ".."):
         raise ValueError(f"Invalid session_id for artifact directory: {session_id!r}")
-    artifact_dir = server_root / "artifacts" / session_id
+
+
+def artifact_bases(server_root: Path) -> tuple[Path, ...]:
+    """Current storage first, then the unmoved package-local legacy storage."""
+    return tuple(dict.fromkeys((artifact_base(server_root), server_root / "artifacts")))
+
+
+def get_artifact_dir(server_root: Path, session_id: str) -> Path:
+    """Return and create the current write directory; never resume legacy writes."""
+    _validate_session(session_id)
+    artifact_dir = artifact_base(server_root) / session_id
+    if artifact_dir.is_symlink() or artifact_dir.parent.is_symlink():
+        raise ValueError("Symlinked artifact directories are not supported.")
     artifact_dir.mkdir(parents=True, exist_ok=True)
     return artifact_dir
 
@@ -92,20 +86,17 @@ def list_artifacts(server_root: Path, session_id: str | None = None) -> list[Pat
     Returns:
         Sorted list of ``Path`` objects.
     """
-    base = server_root / "artifacts"
-    if not base.exists():
-        return []
     if session_id is not None:
-        session_dir = base / session_id
-        if not session_dir.exists():
-            return []
-        return sorted(p for p in session_dir.iterdir() if p.is_file())
-    # All sessions
+        _validate_session(session_id)
     files: list[Path] = []
-    for entry in base.iterdir():
-        if entry.is_dir():
-            files.extend(p for p in entry.iterdir() if p.is_file())
-    return sorted(files)
+    for base in artifact_bases(server_root):
+        if not base.is_dir():
+            continue
+        directories = [base / session_id] if session_id is not None else base.iterdir()
+        for entry in directories:
+            if entry.is_dir():
+                files.extend(p for p in entry.iterdir() if p.is_file())
+    return sorted(set(files))
 
 
 def clean_artifacts(server_root: Path, session_id: str) -> int:
@@ -118,7 +109,10 @@ def clean_artifacts(server_root: Path, session_id: str) -> int:
     Returns:
         Number of files removed.
     """
-    session_dir = server_root / "artifacts" / session_id
+    _validate_session(session_id)
+    session_dir = artifact_base(server_root) / session_id
+    if session_dir.is_symlink() or session_dir.parent.is_symlink():
+        raise ValueError("Symlinked artifact directories are not supported.")
     if not session_dir.exists():
         return 0
     count = 0
@@ -159,7 +153,7 @@ def write_session_meta(
     meta: dict[str, Any] = {
         "session_id": session_id,
         "server": server_name,
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": utc_now().isoformat(),
         "label": label or "",
     }
     meta_path = art_dir / METADATA_FILENAME
@@ -176,11 +170,19 @@ def read_session_meta(server_root: Path, session_id: str) -> dict[str, Any] | No
     Returns:
         Parsed JSON dict, or ``None`` if the file does not exist / is invalid.
     """
-    meta_path = server_root / "artifacts" / session_id / METADATA_FILENAME
-    if not meta_path.exists():
-        return None
+    _validate_session(session_id)
+    for base in artifact_bases(server_root):
+        directory = base / session_id
+        if directory.exists():
+            # A current orphan must not inherit metadata from a legacy snapshot.
+            return _read_meta(directory / METADATA_FILENAME)
+    return None
+
+
+def _read_meta(path: Path) -> dict[str, Any] | None:
     try:
-        return json.loads(meta_path.read_text())
+        value = json.loads(path.read_text())
+        return value if isinstance(value, dict) else None
     except (OSError, UnicodeError, json.JSONDecodeError):
         return None
 
@@ -205,33 +207,24 @@ def list_artifact_sessions(
         ``session_id``, ``server``, ``created_at``, ``label``, ``files``.
         Sorted newest-first by ``created_at``.
     """
-    base = server_root / "artifacts"
-    if not base.exists():
-        return []
-
     results: list[dict[str, Any]] = []
-    for entry in sorted(base.iterdir()):
-        if not entry.is_dir():
+    for base in artifact_bases(server_root):
+        if not base.is_dir():
             continue
-        meta = read_session_meta(server_root, entry.name)
-        if meta is None:
-            meta = {
-                "session_id": entry.name,
-                "server": "unknown",
-                "created_at": "",
-                "label": "",
+        for entry in sorted(base.iterdir()):
+            if not entry.is_dir():
+                continue
+            meta = _read_meta(entry / METADATA_FILENAME) or {
+                "session_id": entry.name, "server": "unknown",
+                "created_at": "", "label": "",
             }
-        # Filter by server name when requested
-        if server_name and meta.get("server", "unknown") not in (server_name, "unknown"):
-            continue
-        # Attach non-metadata file listing (skip the meta file itself)
-        files = sorted(
-            f.name for f in entry.iterdir()
-            if f.is_file() and f.name != METADATA_FILENAME
-        )
-        meta["files"] = files
-        results.append(meta)
-
-    # Sort newest-first (empty created_at sorts to the end)
+            if server_name and meta.get("server", "unknown") not in (server_name, "unknown"):
+                continue
+            meta["files"] = sorted(f.name for f in entry.iterdir()
+                                   if f.is_file() and f.name != METADATA_FILENAME)
+            # Keep colliding IDs separate: snapshots in different locations are distinct.
+            meta["artifact_directory"] = str(entry.resolve())
+            meta["legacy"] = base != artifact_base(server_root)
+            results.append(meta)
     results.sort(key=lambda m: m.get("created_at") or "", reverse=True)
     return results

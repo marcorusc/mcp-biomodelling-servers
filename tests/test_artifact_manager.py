@@ -7,6 +7,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from artifact_manager import (
+    artifact_base,
     clean_artifacts,
     get_artifact_dir,
     list_artifacts,
@@ -25,7 +26,7 @@ class TestGetArtifactDir:
 
     def test_layout(self, tmp_path):
         art_dir = get_artifact_dir(tmp_path, "session_42")
-        assert art_dir == tmp_path / "artifacts" / "session_42"
+        assert art_dir == artifact_base(tmp_path) / "session_42"
 
     def test_idempotent(self, tmp_path):
         d1 = get_artifact_dir(tmp_path, "session_1")

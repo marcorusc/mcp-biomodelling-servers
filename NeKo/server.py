@@ -20,6 +20,7 @@ from pydantic import Field
 from mcp_biomodelling_servers import __version__
 from mcp_biomodelling_servers.artifact_manager import (
     clean_artifacts,
+    get_artifact_dir,
     list_artifact_sessions as _list_artifact_sessions_on_disk,
     list_artifacts,
     safe_artifact_path,
@@ -33,8 +34,10 @@ from mcp_biomodelling_servers.handoff import (
     NeKoToMaBoSSHandoffManifest,
     bnet_node_names,
     handoff_artifact,
+    verify_handoff_artifact,
     write_handoff_manifest,
 )
+from mcp_biomodelling_servers.import_lineage import capture_import, write_source_export, write_source_import
 from mcp_biomodelling_servers.structured_outputs import (
     ArtifactSessionSummary,
     NeKoArtifactCleanupResult,
@@ -222,12 +225,18 @@ async def create_network(
                    only_signed: bool = Field(True, description="Restrict to signed (+/-) interactions only. Set False to allow unsigned interactions when network is sparse."),
                    consensus: bool = Field(True, description="Require interactions supported by multiple curated sources (higher confidence)."),
                    session_id: Optional[NonEmptyString] = Field(None, description="Session ID to write the network into. Omit to use the active/default session."),
-                   verbosity: NormalizedVerbosity = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary' (default, token-frugal), 'preview' (truncated tables), 'full'.")) -> str:
+                   verbosity: NormalizedVerbosity = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary' (default, token-frugal), 'preview' (truncated tables), 'full'."),
+                   parent_manifest: Annotated[NonEmptyString | None, Field(description="Path to a verified source-lineage sidecar or supported typed parent manifest; records provenance, not approval.")] = None,
+                   derived_from: Annotated[NonEmptyString | None, Field(description="Exact original artifact path recorded by parent_manifest, required for an edited derivative.")] = None) -> str:
     """Build a NeKo gene regulatory network from seed genes and/or a SIF file.
 
     Calls complete_connection internally to bridge genes via the chosen database.
     After creation, run remove_bimodal_interactions() and analyze_connectivity()
     before exporting. Always call create_session() first.
+
+    For SIF provenance, parent_manifest names a verified source-lineage sidecar.
+    Byte-identical imports need no further argument; edited copies must also
+    name the original artifact path as derived_from. Neither implies approval.
     """
     verbosity = normalize_verbosity(verbosity)
     if database not in ["omnipath", "signor"]:
@@ -236,6 +245,18 @@ async def create_network(
         raise FileNotFoundError(f"SIF file not found: {sif_file}")
     if sif_file is None and not list_of_initial_genes:
         raise ValueError(format_no_input_guidance())
+
+    if sif_file is None and (parent_manifest is not None or derived_from is not None):
+        raise ValueError("Import lineage requires sif_file.")
+    # Validate provenance before resource loading or model construction.
+    source_import = None
+    if sif_file is not None:
+        session_id = ensure_session(session_id).session_id
+        source_import = await anyio.to_thread.run_sync(
+            lambda: capture_import(sif_file, server="NeKo",
+                                   session_id=session_id,
+                                   parent_manifest=parent_manifest, derived_from=derived_from)
+        )
 
     await ctx.report_progress(0, 4)
 
@@ -328,8 +349,17 @@ async def create_network(
                     )
                 )
 
+            if source_import is not None:
+                verify_handoff_artifact(source_import.source)
+                write_source_import(
+                    get_artifact_dir(_SERVER_ROOT, sess.session_id), source_import,
+                )
+
             # Publish only after construction and validation have succeeded.
             sess.set_network(new_network, edges_df=df_edges)
+            sess.source_import = source_import
+            if source_import is not None:
+                sess.import_history.append(source_import)
 
             if df_edges.empty:
                 logger.warning(
@@ -598,6 +628,8 @@ def export_network(
                 f"SIF exported: `{out_path}`\n\n"
                 f"Preview (first 100 rows):\n{preview_md}"
             )
+        write_source_export(out_path, server="NeKo", session_id=sess.session_id,
+                            imports=[sess.source_import] if sess.source_import else [])
         payload = NeKoNetworkExportResult(
             server="NeKo",
             session_id=sess.session_id,
@@ -648,6 +680,8 @@ def export_network(
                 md_lines.append(f"\n**Note:** Removed duplicate rules for (isoforms collapsed to first): "
                                 f"{', '.join(sorted(set(result['duplicates_removed'])))}")
             text = "\n".join(md_lines)
+        write_source_export(out_path, server="NeKo", session_id=sess.session_id,
+                            imports=[sess.source_import] if sess.source_import else [])
         payload = NeKoNetworkExportResult(
             server="NeKo",
             session_id=sess.session_id,
@@ -762,6 +796,8 @@ def export_neko_handoff(
             role="neko_bnet",
         )
         manifest = NeKoToMaBoSSHandoffManifest(
+            schema_version="2.0",
+            source_ancestry=[sess.source_import] if sess.source_import else [],
             source=HandoffProvenance(
                 server="NeKo",
                 session_id=sess.session_id,
@@ -788,6 +824,9 @@ def export_neko_handoff(
         )
         write_handoff_manifest(manifest_path, manifest)
         created_paths.append(manifest_path)
+        created_paths.append(write_source_export(
+            bnet_path, server="NeKo", session_id=sess.session_id,
+            imports=[sess.source_import] if sess.source_import else [], overwrite=False))
         manifest_reference = handoff_artifact(
             manifest_path,
             server="NeKo",
@@ -1408,6 +1447,8 @@ def list_artifact_sessions(
         count=len(sessions),
         sessions=[
             ArtifactSessionSummary(
+                artifact_directory=session.get("artifact_directory"),
+                legacy=bool(session.get("legacy", False)),
                 session_id=str(session["session_id"]),
                 server=str(session.get("server") or "unknown"),
                 label=str(session["label"]) if session.get("label") else None,

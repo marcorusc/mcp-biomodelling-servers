@@ -9,11 +9,12 @@ incompatible files at each boundary.
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import os
 import re
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Literal, TypeAlias
 
@@ -33,16 +34,20 @@ from mcp_biomodelling_servers.structured_outputs import (
     artifact_file_summary,
 )
 
+from .timestamps import utc_now as _utc_now
+
 HANDOFF_SCHEMA_NAME: Literal[
     "mcp-biomodelling-handoff"
 ] = "mcp-biomodelling-handoff"
 HANDOFF_SCHEMA_VERSION: Literal["1.0"] = "1.0"
 MAX_HANDOFF_MANIFEST_BYTES = 1024 * 1024
+MAX_V2_HANDOFF_MANIFEST_BYTES = 24 * 1024 * 1024
 
 ServerName: TypeAlias = Literal["NeKo", "MaBoSS", "PhysiCell"]
 HandoffType: TypeAlias = Literal["neko-to-maboss", "maboss-to-physicell"]
 ArtifactRole: TypeAlias = Literal[
     "neko_bnet",
+    "neko_sif",
     "neko_ode_network",
     "maboss_bnd",
     "maboss_cfg",
@@ -57,6 +62,7 @@ JsonScalar: TypeAlias = bool | int | float | str | None
 
 _ROLE_SUFFIXES: dict[ArtifactRole, str] = {
     "neko_bnet": ".bnet",
+    "neko_sif": ".sif",
     "neko_ode_network": ".json",
     "maboss_bnd": ".bnd",
     "maboss_cfg": ".cfg",
@@ -65,6 +71,7 @@ _ROLE_SUFFIXES: dict[ArtifactRole, str] = {
 }
 _ROLE_MEDIA_TYPES: dict[ArtifactRole, str] = {
     "neko_bnet": "text/plain",
+    "neko_sif": "text/tab-separated-values",
     "neko_ode_network": "application/json",
     "maboss_bnd": "text/plain",
     "maboss_cfg": "text/plain",
@@ -80,11 +87,6 @@ _BND_NODE_DECLARATION = re.compile(
     r"(?im)^[ \t]*Node[ \t]+([A-Za-z_][A-Za-z0-9_]*)[ \t]*\{"
 )
 _BND_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
-
-
-def _utc_now() -> datetime:
-    """Return an aware UTC timestamp for manifest defaults."""
-    return datetime.now(timezone.utc)
 
 
 def _require_unique(values: list[str], field_name: str) -> list[str]:
@@ -172,6 +174,45 @@ class HandoffArtifact(ArtifactFileSummary):
                 f"Artifact role {self.role!r} requires media type "
                 f"{expected_media_type!r}."
             )
+        return self
+
+
+class AncestryBundle(StructuredOutputModel):
+    """Portable content-addressed exact bytes; paths in snapshots are labels."""
+
+    schema_version: Literal["1.0"] = "1.0"
+    blobs: dict[str, str] = Field(max_length=128)
+
+
+class SourceImport(StructuredOutputModel):
+    evidence: AncestryBundle | None = None
+    source: HandoffArtifact
+    recorded_at: AwareDatetime = Field(default_factory=_utc_now)
+    relationship: Literal["standalone", "byte-identical", "edited-derivative"]
+    parent_manifest: HandoffArtifact | None = None
+    derived_from: HandoffArtifact | None = None
+
+    @model_validator(mode="after")
+    def validate_relationship(self) -> SourceImport:
+        if self.source.role not in ("neko_sif", "neko_bnet"):
+            raise ValueError("Source lineage requires a SIF or BNET source.")
+        if self.relationship == "standalone":
+            if self.parent_manifest is not None or self.derived_from is not None:
+                raise ValueError("Standalone imports cannot declare a parent.")
+        else:
+            if self.parent_manifest is None or self.derived_from is None:
+                raise ValueError("Derived imports require both parent references.")
+            if self.parent_manifest.role != "parent_manifest":
+                raise ValueError("Invalid parent manifest role.")
+            if (self.parent_manifest.server, self.parent_manifest.session_id) != (
+                self.derived_from.server, self.derived_from.session_id
+            ):
+                raise ValueError("Parent manifest and ancestor ownership differ.")
+            if self.derived_from.suffix != self.source.suffix:
+                raise ValueError("Derived imports require the same source format.")
+            identical = self.source.sha256 == self.derived_from.sha256
+            if identical != (self.relationship == "byte-identical"):
+                raise ValueError("Import relationship does not match source digests.")
         return self
 
 
@@ -290,16 +331,39 @@ class PhysiCellTarget(StructuredOutputModel):
 
 
 class HandoffManifestBase(StructuredOutputModel):
-    """Fields shared by every version 1.0 model handoff document."""
+    """Shared Boolean handoff fields; v2 adds portable source ancestry."""
 
     schema_name: Literal["mcp-biomodelling-handoff"] = HANDOFF_SCHEMA_NAME
-    schema_version: Literal["1.0"] = HANDOFF_SCHEMA_VERSION
+    schema_version: Literal["1.0", "2.0"] = HANDOFF_SCHEMA_VERSION
+    source_ancestry: list[SourceImport] | None = Field(
+        default=None, max_length=128, exclude_if=lambda value: value is None,
+    )
     handoff_type: HandoffType
     created_at: AwareDatetime = Field(default_factory=_utc_now)
     source: HandoffProvenance
     lineage: list[HandoffProvenance] = Field(default_factory=list)
     biological_context: NonEmptyString | None = None
     network: HandoffNetwork
+
+    @model_validator(mode="after")
+    def validate_source_ancestry(self, info: ValidationInfo) -> HandoffManifestBase:
+        if self.schema_version == "1.0":
+            if self.source_ancestry is not None:
+                raise ValueError("v1 handoffs cannot declare source_ancestry.")
+        else:
+            if self.source_ancestry is None:
+                raise ValueError("v2 handoffs require explicit source_ancestry.")
+            owners = {(self.source.server, self.source.session_id)}
+            owners.update((p.server, p.session_id) for p in self.lineage)
+            for imported in self.source_ancestry:
+                if (imported.source.server, imported.source.session_id) not in owners:
+                    raise ValueError("Source ancestry owner is not a current or stage-parent owner.")
+                if imported.evidence is None:
+                    raise ValueError("v2 source ancestry requires embedded evidence.")
+            if not (info.context or {}).get("ancestry_snapshot"):
+                from .import_lineage import verify_source_ancestry
+                verify_source_ancestry(self.source_ancestry)
+        return self
 
     @field_validator("created_at")
     @classmethod
@@ -885,8 +949,24 @@ def verify_handoff_manifest(
     manifest: ModelHandoffManifest,
 ) -> ModelHandoffManifest:
     """Verify every artifact referenced by an already parsed manifest."""
+    manifest = _HANDOFF_ADAPTER.validate_python(manifest.model_dump())
+    if manifest.schema_version == "2.0":
+        from .import_lineage import verify_source_ancestry
+        verify_source_ancestry(manifest.source_ancestry or [])
     for artifact in manifest_artifacts(manifest):
         verify_handoff_artifact(artifact)
+    if (manifest.schema_version == "2.0"
+            and isinstance(manifest, MaBoSSToPhysiCellHandoffManifest)
+            and manifest.parent_manifest is not None):
+        parent = load_handoff_manifest(
+            manifest.parent_manifest.path, expected_handoff_type="neko-to-maboss",
+        )
+        if manifest.lineage != [parent.source]:
+            raise ValueError("Source stage-parent identity mismatch.")
+        inherited = [entry for entry in manifest.source_ancestry or []
+                     if entry.source.server == "NeKo"]
+        if inherited != (parent.source_ancestry or []):
+            raise ValueError("MaBoSS source ancestry does not match its NeKo stage parent.")
     return manifest
 
 
@@ -910,18 +990,29 @@ def load_handoff_manifest(
         )
 
     size_bytes = manifest_path.stat().st_size
-    if size_bytes > MAX_HANDOFF_MANIFEST_BYTES:
+    if size_bytes > MAX_V2_HANDOFF_MANIFEST_BYTES:
         raise ValueError(
             f"Handoff manifest exceeds the "
-            f"{MAX_HANDOFF_MANIFEST_BYTES}-byte limit."
+            f"{MAX_V2_HANDOFF_MANIFEST_BYTES}-byte limit."
         )
 
     try:
-        manifest = _HANDOFF_ADAPTER.validate_json(manifest_path.read_bytes())
+        raw = manifest_path.read_bytes()
+        if size_bytes > MAX_HANDOFF_MANIFEST_BYTES:
+            try:
+                envelope = json.loads(raw)
+            except ValueError as exc:
+                raise ValueError("Manifest exceeds v1 size limit and is not valid v2 JSON.") from exc
+            if not isinstance(envelope, dict) or envelope.get("schema_version") != "2.0":
+                raise ValueError("Manifest exceeds v1 size limit.")
+        manifest = _HANDOFF_ADAPTER.validate_json(raw)
     except (OSError, UnicodeError, ValueError) as exc:
         raise ValueError(
             f"Invalid handoff manifest {manifest_path}: {exc}"
         ) from exc
+
+    if manifest.schema_version == "1.0" and size_bytes > MAX_HANDOFF_MANIFEST_BYTES:
+        raise ValueError("v1 handoff manifest exceeds size limit.")
 
     if (
         expected_handoff_type is not None
@@ -957,11 +1048,15 @@ def write_handoff_manifest(
             f"Refusing to overwrite existing handoff manifest: {manifest_path}"
         )
 
-    serialized = manifest.model_dump_json(indent=2) + "\n"
-    if len(serialized.encode("utf-8")) > MAX_HANDOFF_MANIFEST_BYTES:
+    manifest = _HANDOFF_ADAPTER.validate_python(manifest.model_dump())
+    serialized = manifest.model_dump_json(
+        indent=2, exclude={"source_ancestry"} if manifest.schema_version == "1.0" else None,
+    ) + "\n"
+    limit = MAX_HANDOFF_MANIFEST_BYTES if manifest.schema_version == "1.0" else MAX_V2_HANDOFF_MANIFEST_BYTES
+    if len(serialized.encode("utf-8")) > limit:
         raise ValueError(
             f"Handoff manifest exceeds the "
-            f"{MAX_HANDOFF_MANIFEST_BYTES}-byte limit."
+            f"{limit}-byte limit."
         )
     temporary_path: Path | None = None
     try:

@@ -100,6 +100,9 @@ class PhysiCellSessionListResult(StructuredOutputModel):
 class ArtifactSessionSummary(StructuredOutputModel):
     """Metadata for one session artifact directory."""
 
+    artifact_directory: str | None = None
+    legacy: bool = False
+
     session_id: str = Field(
         min_length=1,
         description="Complete session identifier read from artifact metadata.",
