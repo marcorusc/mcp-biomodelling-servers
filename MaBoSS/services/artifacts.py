@@ -15,6 +15,39 @@ from mcp_biomodelling_servers.timestamps import utc_now
 logger = logging.getLogger(__name__)
 
 
+def publish_replacing_artifacts(
+    staged: list[Path], artifact_dir: Path, *, import_record: Path,
+) -> None:
+    """Publish a staged conversion set, restoring old files on failure.
+
+    The caller holds the session lease and keeps the staging directory alive
+    until this returns. Backups are made before any destination is replaced;
+    the immutable import event is linked last without overwriting history.
+    """
+    destinations = [safe_artifact_path(artifact_dir, path.name) for path in staged]
+    backups = {}
+    for source, destination in zip(staged, destinations, strict=True):
+        if destination.exists():
+            backup = source.with_name(source.name + ".backup")
+            shutil.copyfile(destination, backup)
+            backups[destination] = backup
+    published = []
+    try:
+        for source, destination in zip(staged, destinations, strict=True):
+            os.replace(source, destination)
+            published.append(destination)
+        link_artifact_without_overwrite(
+            import_record, safe_artifact_path(artifact_dir, import_record.name),
+        )
+    except BaseException:
+        for destination in reversed(published):
+            if destination in backups:
+                os.replace(backups[destination], destination)
+            else:
+                destination.unlink(missing_ok=True)
+        raise
+
+
 def require_unused_artifact_paths(paths: list[Path]) -> None:
     """Reject a handoff prefix when any destination already exists."""
     existing = [path for path in paths if path.exists()]

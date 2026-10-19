@@ -252,9 +252,11 @@ async def create_network(
     source_import = None
     if sif_file is not None:
         session_id = ensure_session(session_id).session_id
-        source_import = capture_import(sif_file, server="NeKo",
-                                       session_id=session_id,
-                                       parent_manifest=parent_manifest, derived_from=derived_from)
+        source_import = await anyio.to_thread.run_sync(
+            lambda: capture_import(sif_file, server="NeKo",
+                                   session_id=session_id,
+                                   parent_manifest=parent_manifest, derived_from=derived_from)
+        )
 
     await ctx.report_progress(0, 4)
 

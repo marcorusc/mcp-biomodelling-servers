@@ -100,10 +100,17 @@ def test_registration_preserves_control_flow_and_explicit_errors(asynchronous, e
 
     handler = async_fail if asynchronous else fail
     assert domain_tool(server)(handler) is handler
-    with pytest.raises(type(error)) as caught:
-        if asynchronous:
-            asyncio.run(server.handler())
-        else:
+    if asynchronous:
+        async def exercise():
+            # Check the wrapper directly: Python 3.10's task boundary may
+            # recreate CancelledError when asyncio.run retrieves the result.
+            with pytest.raises(type(error)) as caught:
+                await server.handler()
+            assert caught.value is error
+
+        asyncio.run(exercise())
+    else:
+        with pytest.raises(type(error)) as caught:
             server.handler()
-    assert caught.value is error
+        assert caught.value is error
     assert not caplog.records

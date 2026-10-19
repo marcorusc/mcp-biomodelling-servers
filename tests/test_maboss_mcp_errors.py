@@ -1806,7 +1806,6 @@ def test_all_maboss_tools_publish_safety_annotations() -> None:
     }
     idempotent = {
         "set_default_session",
-        "bnet_to_bnd_and_cfg",
         "build_simulation",
         "change_maboss_rule",
         "update_maboss_parameters",
@@ -1816,6 +1815,7 @@ def test_all_maboss_tools_publish_safety_annotations() -> None:
     }
     non_idempotent = {
         "create_session",
+        "bnet_to_bnd_and_cfg",
         "import_neko_handoff",
         "run_simulation",
         "export_maboss_bnd_cfg",

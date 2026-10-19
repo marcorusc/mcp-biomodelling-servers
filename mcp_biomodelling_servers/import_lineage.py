@@ -170,8 +170,13 @@ def capture_import(
 
 def write_source_export(path: str | Path, *, server: Literal["NeKo", "MaBoSS"],
                         session_id: str, imports: list[SourceImport],
-                        overwrite: bool = True) -> Path:
-    """Write a v2 sibling sidecar with durable, verified source snapshots."""
+                        overwrite: bool = True,
+                        published_path: str | Path | None = None) -> Path:
+    """Write a v2 sibling sidecar with durable, verified source snapshots.
+
+    For staged publication, hash ``path`` but record ``published_path`` as the
+    artifact's final location. The caller must publish both files together.
+    """
     path = Path(path)
     roles: dict[str, ArtifactRole] = {
         ".sif": "neko_sif", ".bnet": "neko_bnet", ".bnd": "maboss_bnd",
@@ -179,8 +184,13 @@ def write_source_export(path: str | Path, *, server: Literal["NeKo", "MaBoSS"],
     }
     role = roles[path.suffix.lower()]
     imports = [snapshot_source_import(imported) for imported in imports]
-    record = SourceExport(schema_version="2.0", artifact=handoff_artifact(path, server=server,
-                          session_id=session_id, role=role), imports=imports)
+    artifact = handoff_artifact(path, server=server, session_id=session_id, role=role)
+    if published_path is not None:
+        final = Path(published_path).resolve()
+        if final.name != path.name:
+            raise ValueError("Staged and published artifact names must match.")
+        artifact = artifact.model_copy(update={"path": str(final)})
+    record = SourceExport(schema_version="2.0", artifact=artifact, imports=imports)
     destination = path.with_name(path.name + ".lineage.json")
     return _write_record(destination, record, overwrite=overwrite)
 
@@ -369,12 +379,22 @@ def copy_source_ancestry(imports: list[SourceImport], destination: str | Path) -
         path = root / digest
         if path.is_symlink():
             raise ValueError("Ancestry destination cannot be a symlink.")
+        descriptor, name = tempfile.mkstemp(prefix=".ancestry-", suffix=".tmp", dir=root)
+        temporary = Path(name)
         try:
-            with path.open("xb") as output:
+            with os.fdopen(descriptor, "wb") as output:
                 output.write(data)
-        except FileExistsError:
-            if path.read_bytes() != data:
-                raise ValueError("Ancestry destination digest mismatch.") from None
+                output.flush()
+                os.fsync(output.fileno())
+            try:
+                os.link(temporary, path)
+            except FileExistsError:
+                if path.is_symlink():
+                    raise ValueError("Ancestry destination cannot be a symlink.") from None
+                if path.read_bytes() != data:
+                    raise ValueError("Ancestry destination digest mismatch.") from None
+        finally:
+            temporary.unlink(missing_ok=True)
         paths[digest] = path
     return paths
 

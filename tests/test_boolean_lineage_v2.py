@@ -119,6 +119,58 @@ def test_portable_copy_after_all_historical_files_disappear(tmp_path, monkeypatc
     assert lineage.copy_source_ancestry([imported], tmp_path / "portable") == copied
 
 
+@pytest.mark.parametrize("failure", ["flush", "link"])
+def test_ancestry_publication_failure_is_retryable(tmp_path, monkeypatch, failure):
+    imported, _, _, _ = derivative(tmp_path)
+    destination = tmp_path / "portable"
+
+    def fail(*args):
+        raise OSError("interrupted publication")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(lineage.os, "fsync" if failure == "flush" else "link", fail)
+        with pytest.raises(OSError, match="interrupted publication"):
+            lineage.copy_source_ancestry([imported], destination)
+    assert list(destination.iterdir()) == []
+    copied = lineage.copy_source_ancestry([imported], destination)
+    assert copied[imported.source.sha256].read_bytes() == b"A\t-1\tC\n"
+
+
+@pytest.mark.parametrize("competing", ["identical", "different", "symlink"])
+def test_ancestry_concurrent_publication_never_overwrites(tmp_path, monkeypatch, competing):
+    imported, _, _, _ = derivative(tmp_path)
+    destination = tmp_path / "portable"
+    link = lineage.os.link
+    collided = []
+
+    def concurrent_link(source, target):
+        source, target = Path(source), Path(target)
+        # The final name must remain absent until all bytes are flushed.
+        assert not target.exists()
+        assert source.read_bytes() == base64.b64decode(imported.evidence.blobs[target.name])
+        if not collided:
+            collided.append(target)
+            if competing == "symlink":
+                other = tmp_path / "other"
+                other.write_bytes(source.read_bytes())
+                target.symlink_to(other)
+            else:
+                target.write_bytes(source.read_bytes() if competing == "identical" else b"other")
+        return link(source, target)
+
+    monkeypatch.setattr(lineage.os, "link", concurrent_link)
+    if competing == "identical":
+        lineage.copy_source_ancestry([imported], destination)
+    else:
+        with pytest.raises(ValueError, match="symlink" if competing == "symlink" else "digest mismatch"):
+            lineage.copy_source_ancestry([imported], destination)
+        if competing == "symlink":
+            assert collided[0].is_symlink()
+        else:
+            assert collided[0].read_bytes() == b"other"
+    assert not list(destination.glob(".ancestry-*"))
+
+
 @pytest.mark.parametrize(
     "mutation", ["missing", "tamper", "owner", "ancestor", "relationship", "version"]
 )

@@ -81,6 +81,7 @@ from .locking import (
 from .services.artifacts import (
     link_artifact_without_overwrite as _link_artifact_without_overwrite,
     preserve_simulation_result as _preserve_simulation_result,
+    publish_replacing_artifacts as _publish_replacing_artifacts,
     require_unused_artifact_paths as _require_unused_artifact_paths,
     rollback_artifacts as _rollback_artifacts,
 )
@@ -553,7 +554,7 @@ def import_neko_handoff(
 
 @tool(
     title="Convert BNET to MaBoSS files",
-    annotations=_IDEMPOTENT_TOOL,
+    annotations=_NON_IDEMPOTENT_TOOL,
     structured_output=True,
 )
 @_session_locked
@@ -587,23 +588,31 @@ def bnet_to_bnd_and_cfg(
     cfg_out = str(safe_artifact_path(art_dir, "output.cfg"))
 
     logger.info("Converting %s -> %s, %s", bnet_path, bnd_out, cfg_out)
-    try:
-        maboss.bnet_to_bnd_and_cfg(bnet_path, bnd_out, cfg_out)
-    except Exception as e:
-        logger.exception("bnet_to_bnd_and_cfg failed")
-        raise RuntimeError(f"Error converting .bnet file: {e}") from e
+    with tempfile.TemporaryDirectory(prefix=".bnet-conversion-", dir=art_dir) as temporary:
+        staging = Path(temporary)
+        staged_outputs = [staging / Path(output).name for output in (bnd_out, cfg_out)]
+        try:
+            maboss.bnet_to_bnd_and_cfg(bnet_path, *map(str, staged_outputs))
+        except Exception as e:
+            logger.exception("bnet_to_bnd_and_cfg failed")
+            raise RuntimeError(f"Error converting .bnet file: {e}") from e
 
-    for path, label in [(bnd_out, "BND"), (cfg_out, "CFG")]:
-        if not os.path.exists(path):
-            raise FileNotFoundError(
-                f"Expected {label} file was not created at {path}."
-            )
+        for path, label in zip(staged_outputs, ("BND", "CFG"), strict=True):
+            if not path.is_file():
+                raise FileNotFoundError(
+                    f"Expected {label} file was not created at {path}."
+                )
 
-    verify_handoff_artifact(source_import.source)
-    for output in (bnd_out, cfg_out):
-        write_source_export(output, server="MaBoSS", session_id=sess.session_id,
-                            imports=[source_import])
-    write_source_import(art_dir, source_import)
+        verify_handoff_artifact(source_import.source)
+        staged_sidecars = [
+            write_source_export(output, server="MaBoSS", session_id=sess.session_id,
+                                imports=[source_import], published_path=art_dir / output.name)
+            for output in staged_outputs
+        ]
+        staged_import = write_source_import(staging, source_import)
+        _publish_replacing_artifacts(
+            [*staged_outputs, *staged_sidecars], art_dir, import_record=staged_import,
+        )
     sess.pending_source_import = source_import
     sess.import_history.append(source_import)
     logger.info("BND and CFG files created: %s, %s", bnd_out, cfg_out)
