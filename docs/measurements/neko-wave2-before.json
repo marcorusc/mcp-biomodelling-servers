@@ -1,0 +1,154 @@
+{
+  "fixture": "four saved states, one branch, three nodes, two edges",
+  "input_schema_bytes": 29613,
+  "limitations": "stub library; no client-selection or token benchmark",
+  "list_tools_bytes": 81561,
+  "measurement": "compact UTF-8 JSON bytes; excludes JSON-RPC envelope",
+  "output_schema_bytes": 37234,
+  "packages": {
+    "mcp": "2.2.0",
+    "pydantic": "2.13.5"
+  },
+  "response_bytes": {
+    "compare_network_states": 1378,
+    "history_with_8192_byte_explanation": 18930,
+    "list_genes_and_interactions": 1075,
+    "list_network_history": 2497,
+    "status": 503
+  },
+  "schemas": {
+    "add_nodes": {
+      "input_bytes": 1328,
+      "output_bytes": 124
+    },
+    "analyze_connectivity": {
+      "input_bytes": 740,
+      "output_bytes": 2092
+    },
+    "analyze_gene_set": {
+      "input_bytes": 1443,
+      "output_bytes": 3179
+    },
+    "apply_global_connection": {
+      "input_bytes": 2365,
+      "output_bytes": 138
+    },
+    "bridge_components": {
+      "input_bytes": 1801,
+      "output_bytes": 132
+    },
+    "clean_generated_files": {
+      "input_bytes": 409,
+      "output_bytes": 422
+    },
+    "compare_network_states": {
+      "input_bytes": 621,
+      "output_bytes": 1003
+    },
+    "connect_targeted_nodes": {
+      "input_bytes": 1297,
+      "output_bytes": 137
+    },
+    "create_network": {
+      "input_bytes": 3288,
+      "output_bytes": 129
+    },
+    "create_session": {
+      "input_bytes": 314,
+      "output_bytes": 129
+    },
+    "delete_session": {
+      "input_bytes": 243,
+      "output_bytes": 129
+    },
+    "export_biomass_handoff": {
+      "input_bytes": 835,
+      "output_bytes": 3440
+    },
+    "export_neko_handoff": {
+      "input_bytes": 1285,
+      "output_bytes": 5932
+    },
+    "export_network": {
+      "input_bytes": 767,
+      "output_bytes": 1706
+    },
+    "filter_interactions": {
+      "input_bytes": 2414,
+      "output_bytes": 1811
+    },
+    "find_paths": {
+      "input_bytes": 1001,
+      "output_bytes": 813
+    },
+    "get_references": {
+      "input_bytes": 1049,
+      "output_bytes": 1354
+    },
+    "list_artifact_sessions": {
+      "input_bytes": 75,
+      "output_bytes": 1476
+    },
+    "list_bnet_files": {
+      "input_bytes": 358,
+      "output_bytes": 1682
+    },
+    "list_genes_and_interactions": {
+      "input_bytes": 713,
+      "output_bytes": 2023
+    },
+    "list_network_history": {
+      "input_bytes": 358,
+      "output_bytes": 1946
+    },
+    "list_sessions": {
+      "input_bytes": 66,
+      "output_bytes": 1523
+    },
+    "navigate_network_history": {
+      "input_bytes": 799,
+      "output_bytes": 1063
+    },
+    "preview_connection_impact": {
+      "input_bytes": 1091,
+      "output_bytes": 2272
+    },
+    "remove_bimodal_interactions": {
+      "input_bytes": 361,
+      "output_bytes": 142
+    },
+    "remove_gene": {
+      "input_bytes": 537,
+      "output_bytes": 126
+    },
+    "remove_interaction": {
+      "input_bytes": 663,
+      "output_bytes": 133
+    },
+    "remove_undefined_interactions": {
+      "input_bytes": 363,
+      "output_bytes": 144
+    },
+    "reset_network": {
+      "input_bytes": 356,
+      "output_bytes": 128
+    },
+    "set_default_params": {
+      "input_bytes": 1391,
+      "output_bytes": 133
+    },
+    "set_default_session": {
+      "input_bytes": 296,
+      "output_bytes": 134
+    },
+    "set_network_history_limit": {
+      "input_bytes": 644,
+      "output_bytes": 1068
+    },
+    "status": {
+      "input_bytes": 342,
+      "output_bytes": 571
+    }
+  },
+  "tool_count": 33
+}
