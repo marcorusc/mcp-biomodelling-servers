@@ -52,9 +52,11 @@ def export_sanitized_bnet(
             temporary_bnet = generated_bnets[0]
             companion = temporary_bnet.with_name(temporary_bnet.name + ".neko.json")
             projection = None
+            history = None
             if companion.exists():
                 payload = json.loads(companion.read_bytes())
                 projection = payload["export"]
+                history = payload.get("history")
                 if projection["sha256"] != hashlib.sha256(temporary_bnet.read_bytes()).hexdigest():
                     raise ValueError("NeKo companion does not match the generated BNET.")
             try:
@@ -68,6 +70,9 @@ def export_sanitized_bnet(
                     old = identifier["exported_identifier"]
                     identifier["exported_identifier"] = sanitizer_result.get("name_mapping", {}).get(old, old)
                 sanitizer_result["library_projection"] = projection
+                # The library already serialized this exact source snapshot.
+                # Keep it through finalization instead of traversing history again.
+                sanitizer_result["library_history"] = history
 
             if overwrite:
                 temporary_bnet.replace(destination)

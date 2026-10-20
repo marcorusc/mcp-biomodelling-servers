@@ -3,6 +3,7 @@
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -72,6 +73,24 @@ def test_unrecorded_working_changes_cannot_claim_saved_state(evidence):
         NeKoExportEvidence.model_validate(data)
 
 
+@pytest.mark.parametrize("saved_state", [4, 5])
+def test_reuse_exported_history_without_weakening_state_validation(evidence, saved_state):
+    from NeKo.services.provenance import export_provenance
+
+    artifact, content, _ = evidence
+    def unexpected_traversal():
+        pytest.fail("Must reuse the history already serialized by the library export")
+    network = SimpleNamespace(history_dict=unexpected_traversal,
+                              current_state_id=saved_state, database_name="SIGNOR")
+    session = SimpleNamespace(session_id="session", network_id="network")
+    if saved_state != content.mcp.state_id:
+        with pytest.raises(ValueError, match="identity mismatch"):
+            export_provenance(network, session, artifact, history_payload=content.history)
+    else:
+        reference = export_provenance(network, session, artifact, history_payload=content.history)
+        assert verify_neko_provenance(reference, artifact).history == content.history
+
+
 def test_sanitized_bnet_rebinds_projection_hash_filename_and_identifiers(tmp_path):
     from NeKo.services.exporting import export_sanitized_bnet
     from NeKo.src.helpers import sanitize_bnet_file
@@ -84,6 +103,7 @@ def test_sanitized_bnet_rebinds_projection_hash_filename_and_identifiers(tmp_pat
             path = Path(prefix + "_1.bnet")
             path.write_text("Gene.name, Gene.name\n")
             path.with_name(path.name + ".neko.json").write_text(json.dumps({
+                "history": {"format": "neko-history", "schema_version": 1},
                 "export": {"file": path.name,
                            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                            "identifiers": [{"identifier": "ID:gene", "label": "Gene.name",
@@ -99,3 +119,4 @@ def test_sanitized_bnet_rebinds_projection_hash_filename_and_identifiers(tmp_pat
     assert projection["sha256"] == hashlib.sha256(output.read_bytes()).hexdigest()
     assert projection["identifiers"][0]["exported_identifier"] == "Gene_name"
     assert result["name_mapping"] == {"Gene.name": "Gene_name"}
+    assert result["library_history"] == {"format": "neko-history", "schema_version": 1}

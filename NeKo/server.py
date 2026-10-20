@@ -711,7 +711,8 @@ def export_network(
             text = "\n".join(md_lines)
         curation = export_provenance(network, sess, handoff_artifact(
             out_path, server="NeKo", session_id=sess.session_id, role="neko_bnet"),
-            node_renames=result.get("name_mapping"), projection=result.get("library_projection"))
+            node_renames=result.get("name_mapping"), projection=result.get("library_projection"),
+            history_payload=result.get("library_history"))
         write_source_export(out_path, server="NeKo", session_id=sess.session_id,
                             imports=[sess.source_import] if sess.source_import else [], curation_file=curation)
         payload = NeKoNetworkExportResult(
@@ -830,7 +831,8 @@ def export_neko_handoff(
         )
         curation = export_provenance(network, sess, bnet_reference,
                                     node_renames=node_renames,
-                                    projection=sanitizer_result.get("library_projection"))
+                                    projection=sanitizer_result.get("library_projection"),
+                                    history_payload=sanitizer_result.get("library_history"))
         if curation is not None:
             created_paths.append(Path(curation.path))
         manifest = NeKoToMaBoSSHandoffManifest(

@@ -21,7 +21,8 @@ def history_dict(network):
     return network.history_dict()
 
 
-def export_provenance(network, sess, artifact, *, node_renames=None, projection=None):
+def export_provenance(network, sess, artifact, *, node_renames=None, projection=None,
+                      history_payload=None):
     """Write an immutable typed companion; return None for legacy networks."""
     if not callable(getattr(network, "history_dict", None)):
         if "Provenance" in getattr(getattr(network, "edges", None), "columns", []):
@@ -35,9 +36,9 @@ def export_provenance(network, sess, artifact, *, node_renames=None, projection=
         export=NeKoExportBinding(
             artifact=artifact, node_renames=node_renames or {}, library_projection=projection,
         ),
-        history=history_dict(network),
+        history=history_dict(network) if history_payload is None else history_payload,
     )
-    raw = evidence.model_dump_json(indent=2).encode()
+    raw = evidence.model_dump_json().encode()
     if len(raw) > MAX_NEKO_HISTORY_BYTES:
         raise ValueError("NeKo provenance exceeds 16 MiB; no handoff was published.")
     path = Path(artifact.path).with_name(f"{Path(artifact.path).stem}.{uuid.uuid4().hex}.history.json")
@@ -56,7 +57,7 @@ def export_provenance(network, sess, artifact, *, node_renames=None, projection=
 def export_history(network, sess, directory):
     payload = history_dict(network)
     payload["mcp"] = {"session_id": sess.session_id, "network_id": sess.network_id}
-    raw = json.dumps(payload, ensure_ascii=False, allow_nan=False)
+    raw = json.dumps(payload, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
     path = directory / f"network.{uuid.uuid4().hex}.history.json"
     with path.open("x", encoding="utf-8") as handle:
         try:
