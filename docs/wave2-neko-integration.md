@@ -16,12 +16,16 @@ and `docs_mkdocs/interaction-curation.md`. The wrapper uses public APIs only:
   existing state graph, structured explanations, provenance and restoration.
 - Read-only `database_name` and the structured `Provenance` edge column.
 
-The tested source is the NeKo agent's uncommitted candidate based on official
+The tested source is NeKo 1.10.2 candidate
+`ba87f7631dd6420b5269852daceb303f773e8963` in `marcorusc/Neko`, based on official
 `673875d09e4c49c97d0d760d3ea85bd2603efc82`. Code and contract hashes are in
-[neko-wave2-source.json](measurements/neko-wave2-source.json). This does not
-claim the API is released on PyPI. Before publishing, align the dependency minimum
-and CI source pin with the final NeKo release/commit. Older libraries retain
-existing interfaces but report a missing API for the new editor/history export.
+[neko-wave2-source.json](measurements/neko-wave2-source.json); the committed code
+matches the earlier source-based acceptance run. CI now pins this exact revision
+and requires the Wave 2 integration test. The existing `nekomata>=1.10.2,<2`
+floor matches the candidate metadata. This does not claim the API is released on
+PyPI: verify the published 1.10.2 artifact before replacing the Git candidate pin.
+Older libraries retain existing interfaces but report a missing API for the new
+editor/history export.
 
 ## Editing and inspection
 
@@ -78,6 +82,11 @@ the final bytes and updates exported identifiers. The companion records the
 sanitizer name map. ODE provenance stays nested JSON. Legacy ODE edge IDs are
 unchanged when provenance is absent.
 
+The wrapper reuses the history already serialized by the library BNET export
+within the same session-locked operation. Ownership, state and working-state
+validation still applies. History companions use compact JSON to reduce file
+size without dropping evidence or changing the 16 MiB limit.
+
 | Document | Provenance-bearing version | Older documents readable |
 | --- | --- | --- |
 | NeKo → MaBoSS | 2.1, required `curation_file` | 1.0, 2.0 |
@@ -128,9 +137,15 @@ returned identity/state if nothing intervened. Full evidence adds a resource rea
 The previous manual SIF workaround had no equivalent native single-call baseline.
 
 Tests reject wrong operations and malformed evidence before library mutation.
-No live client/model tool-selection error rate or tokenizer benchmark was run.
+The original acceptance measurements did not include live client/model
+tool-selection error rates or token counts.
 Specialist separation remains intact; task subsets/deferred discovery depend on
 the client and are not assumed or imposed here.
+
+A subsequent [performance and context audit](wave2-neko-performance.md) measures
+real-library runtime, retained Python heap and `o200k_base` token counts. The byte
+measurements above remain the original acceptance baseline; they are not latency
+or live-client context measurements.
 
 ## Validation
 
@@ -155,3 +170,8 @@ tests then passed. The final focused protocol/integrity/real-source/metadata run
 passed 38 tests. Ruff, mypy (16 CI modules), wheel/sdist builds, and wheel module-presence
 checks passed. The initial GUI plotting-backend abort was avoided by using
 `MPLBACKEND=Agg`; no plotting implementation was changed for this feature.
+
+The subsequent dependency/performance audit installed the committed candidate
+through pip (without a source-path override). All 780 tests passed with Wave 2
+required; `pip check`, CI lint/syntax checks and mypy passed. See the
+[audit report](wave2-neko-performance.md) for environment and measurement limits.

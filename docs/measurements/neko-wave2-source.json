@@ -1,6 +1,6 @@
 {
   "source_base": "673875d09e4c49c97d0d760d3ea85bd2603efc82",
-  "source_status": "uncommitted Wave 2 candidate with confirmed public API",
+  "source_status": "Committed and pushed NeKo 1.10.2 review candidate",
   "sha256": {
     "neko/__init__.py": "c3cc9c51f3418f1430485606c9a77756b2e7e9f3e75708873b6b2c187cdd15d4",
     "neko/_annotations/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -40,5 +40,8 @@
     "neko/inputs/db_translator.py": "c5cc1afecf17a890627864a31aad47376891594ad9a672c29d73007667fbb76b",
     "neko/inputs/identifier_mapping.py": "2be90568afe6f41e826167ba58fd38bf69a570149fa34817b1de02f7d8e89b37",
     "docs_mkdocs/interaction-curation.md": "c8c9caa30e90f20b190667b496a8c06abf0d2b13485d3a11e475f6300d5858d7"
-  }
+  },
+  "source_commit": "ba87f7631dd6420b5269852daceb303f773e8963",
+  "source_repository": "https://github.com/marcorusc/Neko",
+  "candidate_version": "1.10.2"
 }
