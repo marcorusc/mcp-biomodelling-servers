@@ -83,6 +83,9 @@ class NeKoPathSearchResult(NeKoScientificResult):
     has_output: bool
     output_line_count: int = Field(ge=0)
     path_output_lines: list[str]
+    status: str = "unknown"
+    diagnostics: list[str] = Field(default_factory=list)
+    truncated: bool = False
 
 
 class NeKoReferenceQueryResult(NeKoScientificResult):

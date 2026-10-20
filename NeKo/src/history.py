@@ -183,7 +183,15 @@ def summarize_history(
         )
         for state in listed_states[offset:offset + limit]
     ]
-    full = network.history_dict() if callable(getattr(network, "history_dict", None)) else {}
+    status_reader = getattr(network, "history_status", None)
+    if callable(status_reader):
+        status = status_reader()
+    else:
+        # Compatibility with the pinned candidate until the lightweight API lands.
+        full = network.history_dict() if callable(getattr(network, "history_dict", None)) else {}
+        status = {"pruned_state_count": len(full["pruned_state_ids"]) if "pruned_state_ids" in full else None,
+                  "working_state_matches_current": full.get("working_state_matches_current")}
+
     return NetworkHistorySummary(
         server="NeKo",
         session_id=session_id,
@@ -196,8 +204,8 @@ def summarize_history(
         database_name=getattr(network, "database_name", None),
         offset=offset,
         next_offset=offset + limit if offset + limit < len(listed_states) else None,
-        pruned_state_count=len(full["pruned_state_ids"]) if "pruned_state_ids" in full else None,
-        working_state_matches_current=full.get("working_state_matches_current"),
+        pruned_state_count=status.get("pruned_state_count"),
+        working_state_matches_current=status.get("working_state_matches_current"),
     )
 
 

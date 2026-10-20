@@ -226,14 +226,16 @@ async def create_network(
                    path_policy: PathPolicy = Field("one_shortest", description="Path selection for complete_connection: 'one_shortest' (compact), 'all_shortest' (all equal shortest alternatives), or 'all_bounded' (all paths through max_len)."),
                    reuse_policy: ReusePolicy = Field("discovered_paths", description="Topology reuse during complete_connection: 'none', 'discovered_paths', or 'induced_subgraph'."),
                    only_signed: bool = Field(True, description="Restrict to signed (+/-) interactions only. Set False to allow unsigned interactions when network is sparse."),
-                   consensus: bool = Field(True, description="Require interactions supported by multiple curated sources (higher confidence)."),
+                   consensus: bool = Field(True, description="Use resource-specific consensus sign flags; this does not universally imply multiple databases or greater confidence."),
                    session_id: Optional[NonEmptyString] = Field(None, description="Session ID to write the network into. Omit to use the active/default session."),
                    verbosity: NormalizedVerbosity = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary' (default, token-frugal), 'preview' (truncated tables), 'full'."),
                    parent_manifest: Annotated[NonEmptyString | None, Field(description="Path to a verified source-lineage sidecar or supported typed parent manifest; records provenance, not approval.")] = None,
                    derived_from: Annotated[NonEmptyString | None, Field(description="Exact original artifact path recorded by parent_manifest, required for an edited derivative.")] = None) -> str:
     """Build a NeKo gene regulatory network from seed genes and/or a SIF file.
 
-    Calls complete_connection internally to bridge genes via the chosen database.
+    Seed construction calls complete_connection to bridge genes via the database.
+    SIF import preserves the imported edges, adds requested genes separately,
+    and does not run connection completion.
     After creation, run remove_bimodal_interactions() and analyze_connectivity()
     before exporting. Always call create_session() first.
 
@@ -299,6 +301,7 @@ async def create_network(
                         f"Unable to create network from SIF file: {e}"
                     ) from e
 
+                imported_counts = (len(new_network.nodes), len(new_network.edges))
                 failed_genes = []
                 for gene in list_of_initial_genes:
                     try:
@@ -369,12 +372,18 @@ async def create_network(
             if source_import is not None:
                 sess.import_history.append(source_import)
 
+            operation_summary = (
+                f"SIF imported: nodes={imported_counts[0]} edges={imported_counts[1]}; "
+                f"explicit nodes added={len(new_network.nodes) - imported_counts[0]}; "
+                "connection completion not performed. "
+                if sif_file is not None else "Seed construction with connection completion. "
+            )
             if df_edges.empty:
                 logger.warning(
                     "No interactions found in the network; "
                     "check the input parameters"
                 )
-                return format_empty_network_response(
+                return operation_summary + format_empty_network_response(
                     list_of_initial_genes,
                     database,
                     max_len,
@@ -382,10 +391,7 @@ async def create_network(
                 )
 
             num_edges = len(df_edges)
-            unique_nodes = pd.unique(
-                df_edges[["source", "target"]].values.ravel()
-            )
-            num_nodes = len(unique_nodes)
+            num_nodes = len(new_network.nodes)
             logger.info(
                 "Network created successfully: %s nodes, %s edges",
                 num_nodes,
@@ -394,7 +400,7 @@ async def create_network(
 
             if verbosity == "summary":
                 return (
-                    f"Network created: session={sess.session_id} "
+                    operation_summary + f"Network created: session={sess.session_id} "
                     f"nodes={num_nodes} edges={num_edges}. "
                     "Check connectivity via "
                     f"analyze_connectivity(). {SUMMARY_HINT}"
@@ -412,6 +418,7 @@ async def create_network(
                 tablefmt="plain",
             )
             lines = [
+                operation_summary,
                 f"Network created (session={sess.session_id})",
                 f"Initial genes: {', '.join(list_of_initial_genes)}",
                 f"Nodes: {num_nodes} | Edges: {num_edges}",
@@ -1026,7 +1033,7 @@ def find_paths(
     """Find and display all directed paths between two genes up to maxlen edges.
 
     Useful for verifying biological signal flow before BNET export.
-    Returns 'No paths found' if genes are in disconnected components.
+    No path within maxlen does not establish disconnected components.
     """
     verbosity = normalize_verbosity(verbosity)
     sess, network = _session_network(session_id)
@@ -1046,6 +1053,10 @@ def find_paths(
                 for line in raw_output.splitlines()
                 if line.strip()
             ]
+            diagnostics = [line for line in lines if line.startswith(("Warning:", "Error:"))]
+            lines = [line for line in lines if line not in diagnostics]
+            if any(line.startswith("Error:") for line in diagnostics):
+                raise ValueError("Invalid path endpoints: " + " ".join(diagnostics))
             payload = NeKoPathSearchResult(
                 server="NeKo",
                 session_id=sess.session_id,
@@ -1054,16 +1065,19 @@ def find_paths(
                 max_length=maxlen,
                 has_output=bool(lines),
                 output_line_count=len(lines),
-                path_output_lines=lines,
+                path_output_lines=lines[:100] if verbosity != "summary" else [],
+                diagnostics=diagnostics,
+                status="paths_found" if lines else "no_path_within_bound",
+                truncated=len(lines) > (0 if verbosity == "summary" else 100),
             )
 
             if not lines:
-                return structured_report("No paths found.", payload)
+                return structured_report(f"No directed path found within {maxlen} edges.", payload)
             if verbosity == "summary":
                 text = f"Found {len(lines)} path lines. {SUMMARY_HINT}"
                 return structured_report(text, payload)
             label = "Paths" if verbosity == "preview" else "Paths (full output)"
-            text = f"{label}:\n```\n{raw_output}\n```"
+            text = label + ":\n" + "\n".join(lines[:100])
             return structured_report(text, payload)
 
         except Exception as e:
@@ -1298,7 +1312,7 @@ def set_default_params(
         path_policy: Optional[PathPolicy] = Field(None, description="Default complete_connection path selection: 'one_shortest', 'all_shortest', or 'all_bounded'."),
         reuse_policy: Optional[ReusePolicy] = Field(None, description="Default complete_connection topology reuse: 'none', 'discovered_paths', or 'induced_subgraph'."),
         only_signed: Optional[bool] = Field(None, description="Default signed-only filter for complete_connection."),
-        consensus: Optional[bool] = Field(None, description="Default multi-source consensus requirement."),
+        consensus: Optional[bool] = Field(None, description="Default requirement for resource-specific consensus sign flags."),
         session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session.")) -> str:
     """Persist completion defaults used by previews and later connection calls."""
     sess = ensure_session(session_id)
@@ -1767,7 +1781,7 @@ def bridge_components(
         max_len: int = Field(2, ge=1, description="Maximum path length for connecting edges."),
         mode: BridgeMode = Field("OUT", description="Edge direction mode: 'OUT', 'IN', or 'ALL'."),
         only_signed: Optional[bool] = Field(None, description="Restrict to signed interactions."),
-        consensus: Optional[bool] = Field(None, description="Require multi-source consensus."),
+        consensus: Optional[bool] = Field(None, description="Require resource-specific consensus sign flags."),
         session_id: Optional[NonEmptyString] = Field(None, description="Session ID.")) -> str:
     """Connect two named groups of genes (e.g. two disconnected components) together.
 
