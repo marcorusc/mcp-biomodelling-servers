@@ -18,6 +18,7 @@ from tests.test_neko_mcp_errors import (
     _create_session,
     _HistoryNetwork,
     mcp,
+    session_manager,
 )
 
 
@@ -65,6 +66,26 @@ async def measure() -> dict:
             responses["history_with_8192_byte_explanation"] = size(result.model_dump(
                 mode="json", by_alias=True, exclude_none=True,
             ))
+            if "edit_interactions" in schemas:
+                network.edit_interactions = lambda edits, expected_state_id: {
+                    "changed": True, "previous_state_id": 4, "state_id": 8,
+                    "changes": [{"operation": "add", "source": "P04637", "target": "Q00987",
+                                 "before": None, "after": {"Effect": "inhibition",
+                                 "Provenance": {"origin": "manual"}}}],
+                }
+                result = await client.call_tool("edit_interactions", {
+                    "session_id": session_id,
+                    "expected_network_id": session_manager.get_session(session_id).network_id,
+                    "expected_state_id": 4,
+                    "edits": [{"operation": "add", "source": "TP53", "target": "MDM2",
+                               "effect": "inhibition", "rationale": "Synthetic fixture",
+                               "evidence": {"summary": "Test evidence", "citations": ["Test publication"]}}],
+                })
+                if result.is_error:
+                    raise RuntimeError("Editor measurement failed")
+                responses["edit_interactions_one_change"] = size(result.model_dump(
+                    mode="json", by_alias=True, exclude_none=True,
+                ))
             return {
                 "measurement": "compact UTF-8 JSON bytes; excludes JSON-RPC envelope",
                 "fixture": "four saved states, one branch, three nodes, two edges",
