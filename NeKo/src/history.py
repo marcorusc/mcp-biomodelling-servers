@@ -156,8 +156,19 @@ def summarize_history(
     limit: int = 25,
 ) -> NetworkHistorySummary:
     """Build a structured history summary through NeKo's public graph API."""
-    listed_states = network.list_states()
-    graph = network.history_graph()
+    count = getattr(network, "state_count", None)
+    if type(count) is int:
+        # The coordinated public API slices before copying metadata and carries
+        # relationships directly; no full graph/history materialization is needed.
+        page = network.list_states(offset=offset, limit=limit, detail="summary")
+    else:
+        listed_states = network.list_states()
+        count = len(listed_states)
+        graph = network.history_graph()
+        page = [{**state,
+                 "parent_ids": list(graph.predecessors(state["id"])),
+                 "children_ids": list(graph.successors(state["id"]))}
+                for state in listed_states[offset:offset + limit]]
     current_state_id = network.current_state_id
     root_state_id = network.root_state_id
     states = [
@@ -165,11 +176,11 @@ def summarize_history(
             state_id=int(state["id"]),
             parent_state_ids=sorted(
                 int(parent)
-                for parent in graph.predecessors(state["id"])
+                for parent in state["parent_ids"]
             )[:100],
             child_state_ids=sorted(
                 int(child)
-                for child in graph.successors(state["id"])
+                for child in state["children_ids"]
             )[:100],
             is_current=state["id"] == current_state_id,
             is_root=state["id"] == root_state_id,
@@ -177,17 +188,17 @@ def summarize_history(
             details_uri=f"neko://session/{session_id}/history/{network_id}/{state['id']}",
             explanation_status=state.get("metadata", {}).get("transition", {}).get("explanation_status", "unavailable"),
             ancestry_gaps=state.get("metadata", {}).get("ancestry_gaps", [])[:100],
-            relationships_truncated=(len(list(graph.predecessors(state["id"]))) > 100
-                                     or len(list(graph.successors(state["id"]))) > 100
+            relationships_truncated=(len(state["parent_ids"]) > 100
+                                     or len(state["children_ids"]) > 100
                                      or len(state.get("metadata", {}).get("ancestry_gaps", [])) > 100),
         )
-        for state in listed_states[offset:offset + limit]
+        for state in page
     ]
     status_reader = getattr(network, "history_status", None)
     if callable(status_reader):
         status = status_reader()
     else:
-        # Compatibility with the pinned candidate until the lightweight API lands.
+        # Compatibility with earlier candidates without the lightweight API.
         full = network.history_dict() if callable(getattr(network, "history_dict", None)) else {}
         status = {"pruned_state_count": len(full["pruned_state_ids"]) if "pruned_state_ids" in full else None,
                   "working_state_matches_current": full.get("working_state_matches_current")}
@@ -198,12 +209,12 @@ def summarize_history(
         current_state_id=current_state_id,
         root_state_id=root_state_id,
         max_states=max_states,
-        state_count=len(listed_states),
+        state_count=count,
         states=states,
         network_id=network_id,
         database_name=getattr(network, "database_name", None),
         offset=offset,
-        next_offset=offset + limit if offset + limit < len(listed_states) else None,
+        next_offset=offset + limit if offset + limit < count else None,
         pruned_state_count=status.get("pruned_state_count"),
         working_state_matches_current=status.get("working_state_matches_current"),
     )
@@ -219,8 +230,10 @@ def compact_metadata(metadata: dict) -> dict:
         "method": str(metadata.get("method", ""))[:80],
         "details_omitted": True,
         "limitations": [str(item)[:200] for item in transition.get("limitations", [])[:3]],
-        "edge_changes": {key: len(transition.get("edges", {}).get(key, []))
-                         for key in ("added", "removed", "changed")},
+        "edge_changes": (transition["counts"].get("edges")
+                         if "counts" in transition else
+                         {key: len(transition.get("edges", {}).get(key, []))
+                          for key in ("added", "removed", "changed")}),
     }
 
 

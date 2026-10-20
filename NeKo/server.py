@@ -56,6 +56,7 @@ from mcp_biomodelling_servers.ode_handoff import (
 )
 from .services.ode_exporting import ode_network
 
+from .services.path_reporting import path_identities, printed_paths
 from .app import mcp, tool
 from .contracts import (
     AtopoStrategy,
@@ -1029,7 +1030,8 @@ def find_paths(
         target: Annotated[NonEmptyString, Field(description="Target gene symbol (path end).")],
         maxlen: int = Field(3, ge=1, le=5, description="Maximum number of edges in a path (1-5; longer paths are slower to compute)."),
         session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session."),
-        verbosity: NormalizedVerbosity = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary' (count only), 'preview'/'full' (path listing).")) -> Annotated[CallToolResult, NeKoPathSearchResult]:
+        verbosity: NormalizedVerbosity = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary' (count only), 'preview'/'full' (path listing)."),
+        max_paths: int = Field(20, ge=1, le=100, description="Maximum paths included in a detailed response; computation remains library-bounded by maxlen.")) -> Annotated[CallToolResult, NeKoPathSearchResult]:
     """Find and display all directed paths between two genes up to maxlen edges.
 
     Useful for verifying biological signal flow before BNET export.
@@ -1057,6 +1059,7 @@ def find_paths(
             lines = [line for line in lines if line not in diagnostics]
             if any(line.startswith("Error:") for line in diagnostics):
                 raise ValueError("Invalid path endpoints: " + " ".join(diagnostics))
+            parsed_paths = printed_paths(lines)
             payload = NeKoPathSearchResult(
                 server="NeKo",
                 session_id=sess.session_id,
@@ -1065,10 +1068,12 @@ def find_paths(
                 max_length=maxlen,
                 has_output=bool(lines),
                 output_line_count=len(lines),
-                path_output_lines=lines[:100] if verbosity != "summary" else [],
+                path_output_lines=lines[:max_paths] if verbosity != "summary" else [],
+                paths=path_identities(network, parsed_paths[:max_paths]) if verbosity != "summary" else [],
+                network_id=sess.network_id, state_id=_network_history_state_id(network),
                 diagnostics=diagnostics,
                 status="paths_found" if lines else "no_path_within_bound",
-                truncated=len(lines) > (0 if verbosity == "summary" else 100),
+                truncated=len(lines) > (0 if verbosity == "summary" else max_paths),
             )
 
             if not lines:
@@ -1076,8 +1081,8 @@ def find_paths(
             if verbosity == "summary":
                 text = f"Found {len(lines)} path lines. {SUMMARY_HINT}"
                 return structured_report(text, payload)
-            label = "Paths" if verbosity == "preview" else "Paths (full output)"
-            text = label + ":\n" + "\n".join(lines[:100])
+            label = "Paths" if verbosity == "preview" else "Paths (bounded output)"
+            text = label + ":\n" + "\n".join(lines[:max_paths])
             return structured_report(text, payload)
 
         except Exception as e:

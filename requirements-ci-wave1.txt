@@ -1,5 +1,5 @@
 # Exact companion PR inputs until the coordinated library releases are available.
 # Historical filename: NeKo now uses Wave 2; PhysiCell remains the Wave 1 candidate.
 # Normal package dependencies remain version ranges in pyproject.toml.
-nekomata @ git+https://github.com/marcorusc/Neko.git@ba87f7631dd6420b5269852daceb303f773e8963
+nekomata @ git+https://github.com/marcorusc/Neko.git@7b845ae0d7cfc3578c7191b2147cb3f5ab5f33e3
 physicell-settings @ git+https://github.com/marcorusc/PhysiCell_Settings.git@82f66c4504da2408d9e8037b78896ac29551d150

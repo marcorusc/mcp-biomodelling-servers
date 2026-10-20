@@ -649,6 +649,10 @@ def test_find_paths_returns_captured_structured_lines() -> None:
         "target": "MDM2",
         "max_length": 3,
         "has_output": True,
+        "network_id": session_manager.get_session(session_id).network_id,
+        "paths": [[{"label": "TP53", "uniprot": None, "identity": "unresolved"}, {"label": "MDM2", "uniprot": None, "identity": "unresolved"}],
+                  [{"label": "TP53", "uniprot": None, "identity": "unresolved"}, {"label": "AKT1", "uniprot": None, "identity": "unresolved"}, {"label": "MDM2", "uniprot": None, "identity": "unresolved"}]],
+        "status": "paths_found", "diagnostics": [], "truncated": False,
         "output_line_count": 2,
         "path_output_lines": [
             "TP53 -> MDM2",
@@ -1703,7 +1707,7 @@ def test_empty_path_query_remains_successful() -> None:
     )
 
     assert result.is_error is False
-    assert result.content[0].text == "No paths found."
+    assert result.content[0].text == "No directed path found within 3 edges."
     assert result.structured_content == {
         "server": "NeKo",
         "session_id": session_id,
@@ -1711,6 +1715,8 @@ def test_empty_path_query_remains_successful() -> None:
         "target": "MDM2",
         "max_length": 3,
         "has_output": False,
+        "network_id": session_manager.get_session(session_id).network_id,
+        "status": "no_path_within_bound", "diagnostics": [], "truncated": False,
         "output_line_count": 0,
         "path_output_lines": [],
     }

@@ -61,14 +61,16 @@ jobs:
           python - <<'PY'
           from importlib.metadata import version
           from neko.core.network import Network
-          methods = ("edit_interactions", "get_state", "history_dict", "export_history", "from_history")
+          methods = ("edit_interactions", "get_state", "history_dict", "export_history", "from_history", "history_status")
           missing = [name for name in methods if not callable(getattr(Network, name, None))]
           assert not missing, f"Candidate lacks Wave 2 methods: {missing}"
           assert hasattr(Network, "database_name"), "Candidate lacks construction database identity"
+          assert hasattr(Network, "state_count"), "Candidate lacks lightweight history counts"
           print("Installed nekomata:", version("nekomata"))
           PY
       - name: Test the installed candidate with the MCP wrapper
         run: |
           python -m pytest tests/test_neko_curation.py tests/test_neko_provenance.py \
             tests/test_neko_wave2_runtime.py tests/test_neko_mcp_errors.py \
-            tests/test_cross_server_output_schemas.py tests/test_package_metadata.py -q
+            tests/test_cross_server_output_schemas.py tests/test_package_metadata.py \
+            tests/test_wave2_diagnostics.py -q

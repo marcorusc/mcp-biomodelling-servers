@@ -25,6 +25,19 @@ def export_sanitized_bnet(
             f"Refusing to overwrite existing BNET artifact: {destination}"
         )
 
+    nodes = getattr(network, "nodes", None)
+    if nodes is not None and "Genesymbol" in nodes.columns:
+        invalid = []
+        for index, row in nodes.iterrows():
+            label = row.get("Genesymbol")
+            if not isinstance(label, str) or not label.strip():
+                invalid.append({"row": str(index), "uniprot": str(row.get("Uniprot")), "label": repr(label)})
+        if invalid:
+            raise ValueError(
+                f"BNET export has {len(invalid)} node(s) with missing or invalid labels: {invalid[:20]}. "
+                "Inspect these node records and explicitly correct their labels in the source model, then retry. "
+                "No automatic renaming was performed."
+            )
     try:
         with tempfile.TemporaryDirectory(
             dir=destination.parent,

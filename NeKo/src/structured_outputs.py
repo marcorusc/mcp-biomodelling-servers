@@ -83,6 +83,9 @@ class NeKoPathSearchResult(NeKoScientificResult):
     has_output: bool
     output_line_count: int = Field(ge=0)
     path_output_lines: list[str]
+    paths: list[list[dict]] = Field(default_factory=list, exclude_if=lambda value: not value)
+    network_id: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    state_id: int | None = Field(default=None, exclude_if=lambda value: value is None)
     status: str = "unknown"
     diagnostics: list[str] = Field(default_factory=list)
     truncated: bool = False
