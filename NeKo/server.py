@@ -446,11 +446,18 @@ def add_nodes(
     connect_targeted_nodes() or apply_global_connection() after adding nodes.
     """
     added = 0
+    unchanged = 0
     failed_genes = []
     for gene in genes:
         try:
-            network.add_node(gene)
-            added += 1
+            before_count = len(network.nodes)
+            accepted = network.add_node(gene)
+            if accepted is False:
+                failed_genes.append(f"{gene}: rejected by the resource database")
+            elif len(network.nodes) > before_count:
+                added += len(network.nodes) - before_count
+            else:
+                unchanged += 1
         except Exception as e:
             failed_genes.append(f"{gene}: {e}")
     if failed_genes:
@@ -476,7 +483,10 @@ def add_nodes(
     autoconnect_note = (
         "Autoconnected direct neighbours." if autoconnect else "No autoconnect."
     )
-    return f"Added {added}/{len(genes)} genes. {autoconnect_note} {SUMMARY_HINT}"
+    return (
+        f"Added {added}/{len(genes)} genes. Unchanged: {unchanged}. "
+        f"{autoconnect_note} {SUMMARY_HINT}"
+    )
 
 @tool(
     title="Remove gene",

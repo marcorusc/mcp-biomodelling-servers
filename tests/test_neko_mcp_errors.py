@@ -1643,6 +1643,49 @@ def test_partial_add_nodes_failure_is_reported_as_tool_error() -> None:
     assert added_genes == ["TP53"]
 
 
+@pytest.mark.parametrize("partial", [False, True])
+def test_add_nodes_reports_database_refusal_without_autoconnect(partial: bool) -> None:
+    connected = []
+    network = _network_stub()
+
+    def add_node(gene: str) -> bool:
+        if gene == "REJECTED":
+            return False
+        network.nodes.loc[len(network.nodes)] = [gene, gene]
+        return True
+
+    network.add_node = add_node
+    network.connect_nodes = lambda **kwargs: connected.append(kwargs)
+    session_id = _create_session(network)
+    session = session_manager.get_session(session_id)
+    assert session is not None
+    session._edges_cache_dirty = False
+    genes = ["TP53", "REJECTED"] if partial else ["REJECTED"]
+    result = _run(_call_tool("add_nodes", {
+        "session_id": session_id, "genes": genes, "autoconnect": True,
+    }))
+
+    assert result.is_error is True
+    assert f"Added {int(partial)}/{len(genes)} genes" in result.content[0].text
+    assert "REJECTED: rejected by the resource database" in result.content[0].text
+    assert len(network.nodes) == int(partial)
+    assert connected == []
+    assert session._edges_cache_dirty is True
+
+
+def test_add_nodes_does_not_count_existing_nodes_as_additions() -> None:
+    network = _network_stub(
+        nodes=pd.DataFrame([{"Uniprot": "P04637", "Genesymbol": "TP53"}]),
+        add_node=lambda gene: True,
+    )
+    result = _run(_call_tool("add_nodes", {
+        "session_id": _create_session(network),
+        "genes": ["TP53"], "autoconnect": False,
+    }))
+    assert result.is_error is False
+    assert "Added 0/1 genes. Unchanged: 1." in result.content[0].text
+
+
 def test_empty_path_query_remains_successful() -> None:
     network = _network_stub(print_my_paths=lambda *args, **kwargs: None)
     session_id = _create_session(network)
