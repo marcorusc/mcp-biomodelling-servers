@@ -1,5 +1,8 @@
 # PhysiCell MCP Server
 
+The [Wave 2 integration guide](../docs/wave2-server-features.md) covers stored
+configuration readback, typed inputs, required-substrate visibility and portable bundles.
+
 The PhysiCell server creates, loads, inspects, modifies, validates, and exports
 PhysiCell configuration files through the Model Context Protocol (MCP). It uses
 the [`physicell-settings`](https://pypi.org/project/physicell-settings/)

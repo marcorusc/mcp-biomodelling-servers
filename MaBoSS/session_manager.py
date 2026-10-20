@@ -35,6 +35,9 @@ class MaBoSSSession:
     """Per-session state for one MaBoSS workflow."""
 
     session_id: str
+    readouts: dict = field(default_factory=dict)
+    latest_run_id: str | None = None
+    result_revision: str | None = None
     sim: object | None = None  # maboss simulation object
     result: object | None = None  # result of the last sim.run()
     bnd_path: str | None = None  # absolute path to .bnd file used to load sim
@@ -71,6 +74,9 @@ class MaBoSSSession:
         upstream_neko_manifest_path: str | None = None,
     ) -> None:
         with self._operation_lock:
+            self.readouts = {}
+            self.latest_run_id = None
+            self.result_revision = None
             self.source_import = None
             self.pending_source_import = None
             self.sim = sim_obj
@@ -88,6 +94,9 @@ class MaBoSSSession:
     def clear(self) -> None:
         """Reset session state (keeps session alive, clears sim data)."""
         with self._operation_lock:
+            self.readouts = {}
+            self.latest_run_id = None
+            self.result_revision = None
             self.source_import = None
             self.pending_source_import = None
             self.sim = None

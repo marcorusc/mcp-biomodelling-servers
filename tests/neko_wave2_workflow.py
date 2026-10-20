@@ -139,6 +139,39 @@ async def workflow(directory):
         import maboss
         maboss.bnet_to_bnd_and_cfg(manifest.bnet_file.path, str(directory / "converted.bnd"), str(directory / "converted.cfg"))
         assert (directory / "converted.bnd").is_file()
+        # Follow the real typed handoff through readout curation and portable export.
+        from MaBoSS import server as boolean
+        from PhysiCell import server as multicellular
+        async def checked(client, name, **args):
+            response = await client.call_tool(name, args)
+            assert not response.is_error, response.content
+            return response.structured_content
+        async with Client(boolean.mcp) as boolean_client:
+            bsid = boolean.session_manager.create_session()
+            await checked(boolean_client, "import_neko_handoff", session_id=bsid, manifest_path=str(manifest_path))
+            inspected = await checked(boolean_client, "get_maboss_nodes", session_id=bsid)
+            core = {n: node.logExp for n, node in boolean.session_manager.get_session(bsid).sim.network.items()}
+            await checked(boolean_client, "edit_maboss_readouts", session_id=bsid,
+                expected_revision=inspected["model_revision"], edits=[{
+                    "operation": "add", "node": "Readout", "rule": "C", "explanation": "Explicit synthetic readout fixture",
+                    "rate_up": 1, "rate_down": 1, "initial_probability_on": 0}])
+            assert all(boolean.session_manager.get_session(bsid).sim.network[n].logExp == rule for n, rule in core.items())
+            await checked(boolean_client, "set_maboss_output_nodes", session_id=bsid, output_nodes=["C", "Readout"])
+            exported = await checked(boolean_client, "export_maboss_handoff", session_id=bsid,
+                                     target_cell_type="tumour", include_result=False)
+            mb_manifest_path = exported["manifest_file"]["path"]
+            mb_manifest = load_handoff_manifest(mb_manifest_path)
+            assert mb_manifest.schema_version == "2.1" and mb_manifest.readouts["Readout"]["origin"] == "readout"
+            assert mb_manifest.parent_manifest.sha256
+        async with Client(multicellular.mcp) as pc_client:
+            psid = multicellular.session_manager.create_session()
+            await checked(pc_client, "create_simulation_domain", session_id=psid, domain_x=100, domain_y=100)
+            await checked(pc_client, "add_single_cell_type", session_id=psid, cell_type_name="tumour")
+            await checked(pc_client, "import_maboss_handoff", session_id=psid, manifest_path=mb_manifest_path)
+            await checked(pc_client, "add_physiboss_output_link", session_id=psid, cell_type="tumour",
+                          boolean_node="Readout", physicell_behavior="cycle entry", value=0, base_value=0, steepness=0)
+            bundle = await checked(pc_client, "export_configuration_bundle", session_id=psid)
+            assert Path(bundle["bundle"]).is_file()
         raw = evidence_path.read_bytes()
         evidence_path.write_bytes(raw + b" ")
         try:

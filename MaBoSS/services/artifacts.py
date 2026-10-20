@@ -90,7 +90,9 @@ def rollback_artifacts(paths: list[Path]) -> None:
             )
 
 
-def preserve_simulation_result(result, artifact_dir: Path, session_id: str) -> Path:
+def preserve_simulation_result(result, artifact_dir: Path, session_id: str, *,
+                               model_revision: str | None = None, kind: str = "ordinary",
+                               mutations: dict | None = None, configuration: dict | None = None) -> Path:
     """Preserve one file-backed PyMaBoSS run before its temporary files expire.
 
     All published names are flat and unique. The inventory is published last;
@@ -149,6 +151,8 @@ def preserve_simulation_result(result, artifact_dir: Path, session_id: str) -> P
         manifest_name = run_id + ".json"
         manifest = {
             "server": "MaBoSS", "session_id": session_id, "run_id": run_id,
+            "status": "complete", "model_revision": model_revision, "kind": kind,
+            "mutations": mutations or {}, "configuration": configuration or {},
             "preserved_at": utc_now().isoformat(),
             "engine_result_prefix": prefix,
             "state_timepoints": states.index.tolist(),

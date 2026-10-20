@@ -55,9 +55,10 @@ jobs:
           from packaging.version import Version
           from neko.core.network import Network
 
-          for method in ("edit_interactions", "get_state", "history_dict", "export_history", "from_history"):
+          for method in ("edit_interactions", "get_state", "history_dict", "export_history", "from_history", "history_status"):
               assert callable(getattr(Network, method, None)), f"Missing NeKo Wave 2 API: {method}"
           assert hasattr(Network, "database_name"), "Missing NeKo database identity"
+          assert hasattr(Network, "state_count"), "Missing NeKo lightweight history count"
 
           neko_version = Version(version("nekomata"))
           if not Version("1.10.2") <= neko_version < Version("2"):
@@ -96,6 +97,14 @@ jobs:
             mcp_biomodelling_servers/handoff.py \
             mcp_biomodelling_servers/neko_provenance.py \
             mcp_biomodelling_servers/structured_outputs.py \
+            MaBoSS/services/ \
+            MaBoSS/tools/curation.py \
+            mcp_biomodelling_servers/boolean_readouts.py \
+            PhysiCell/services/configuration.py \
+            PhysiCell/services/bundle.py \
+            PhysiCell/tools/inputs.py \
+            PhysiCell/tools/bundle.py \
+            NeKo/services/path_reporting.py \
             MaBoSS/scientific_outputs.py \
             MaBoSS/session_manager.py \
             NeKo/src/history.py \
@@ -282,6 +291,9 @@ jobs:
           )
           PY
 
+      - name: Verify packaged Wave 2 imports outside the source checkout
+        run: python tests/verify_wave2_wheel.py dist/*.whl
+
   compatibility:
     name: Compatibility · ${{ matrix.label }}
     runs-on: ubuntu-latest
@@ -333,9 +345,10 @@ jobs:
           from packaging.version import Version
           from neko.core.network import Network
 
-          for method in ("edit_interactions", "get_state", "history_dict", "export_history", "from_history"):
+          for method in ("edit_interactions", "get_state", "history_dict", "export_history", "from_history", "history_status"):
               assert callable(getattr(Network, method, None)), f"Missing NeKo Wave 2 API: {method}"
           assert hasattr(Network, "database_name"), "Missing NeKo database identity"
+          assert hasattr(Network, "state_count"), "Missing NeKo lightweight history count"
 
           neko_version = Version(version("nekomata"))
           if not Version("1.10.2") <= neko_version < Version("2"):

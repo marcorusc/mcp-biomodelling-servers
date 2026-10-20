@@ -1,5 +1,8 @@
 # MaBoSS MCP Server
 
+The [Wave 2 integration guide](../docs/wave2-server-features.md) covers summary
+readouts, named rate editing, persistent run IDs, bounded results and handoff 2.1.
+
 The MaBoSS server exposes stochastic Boolean-model construction, configuration,
 simulation, analysis, and export through the Model Context Protocol (MCP). It
 uses [pyMaBoSS](https://github.com/colomoto/pyMaBoSS) as its simulation engine

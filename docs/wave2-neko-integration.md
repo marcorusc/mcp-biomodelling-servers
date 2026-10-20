@@ -92,7 +92,7 @@ size without dropping evidence or changing the 16 MiB limit.
 | NeKo → MaBoSS | 2.1, required `curation_file` | 1.0, 2.0 |
 | NeKo source-lineage sidecar | 2.1, required `curation_file` | 1.0, 2.0 |
 | NeKo → BioMASS | 2.0, required `curation_file` | 1.0 |
-| MaBoSS → PhysiCell | Existing 2.0; verifies NeKo parent recursively | 1.0 |
+| MaBoSS → PhysiCell | 2.1, model revision and explicit readout definitions; verifies NeKo parent recursively | 1.0, 2.0 |
 
 Use the coordinated server package for new manifests. Older strict consumers
 reject the new version rather than discard provenance. Retain referenced files
@@ -175,3 +175,11 @@ The subsequent dependency/performance audit installed the committed candidate
 through pip (without a source-path override). All 780 tests passed with Wave 2
 required; `pip check`, CI lint/syntax checks and mypy passed. See the
 [audit report](wave2-neko-performance.md) for environment and measurement limits.
+
+The subsequent [cross-server implementation](wave2-server-features.md) advances
+the CI pin to the pushed lightweight-history candidate
+`7b845ae0d7cfc3578c7191b2147cb3f5ab5f33e3`. Routine history inspection now uses
+`state_count`, `list_states(offset=..., limit=..., detail="summary")` and
+`history_status()`, avoiding full-history metadata copies and graph construction.
+Unknown legacy delta counts remain null. Older candidates retain the original
+public-API fallback; the earlier measurements above remain historical baselines.

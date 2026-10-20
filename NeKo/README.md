@@ -1,5 +1,8 @@
 # NeKo MCP Server
 
+The [Wave 2 integration guide](../docs/wave2-server-features.md) covers bounded
+diagnostics and the coordinated lightweight-history API.
+
 The NeKo server builds, curates, analyzes, and exports signalling networks
 through the Model Context Protocol (MCP). It uses
 [NeKo](https://github.com/sysbio-curie/Neko) to construct networks from curated

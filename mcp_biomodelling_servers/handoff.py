@@ -514,17 +514,28 @@ class MaBoSSHandoffImportResult(StructuredOutputModel):
 class MaBoSSToPhysiCellHandoffManifest(HandoffManifestBase):
     """Manifest produced from a MaBoSS model for PhysiCell integration."""
 
-    schema_version: Literal["1.0", "2.0"] = HANDOFF_SCHEMA_VERSION
+    schema_version: Literal["1.0", "2.0", "2.1"] = HANDOFF_SCHEMA_VERSION
     handoff_type: Literal["maboss-to-physicell"] = "maboss-to-physicell"
     bnd_file: HandoffArtifact
     cfg_file: HandoffArtifact
     parent_manifest: HandoffArtifact | None = None
     simulation: MaBoSSSimulationHandoff
     target: PhysiCellTarget
+    model_revision: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$", exclude_if=lambda value: value is None)
+    readouts: dict[str, dict] | None = Field(default=None, exclude_if=lambda value: value is None)
 
     @model_validator(mode="after")
     def validate_maboss_source(self) -> MaBoSSToPhysiCellHandoffManifest:
         """Require a consistent MaBoSS pair and optional NeKo parent lineage."""
+        if self.schema_version == "2.1":
+            if self.model_revision is None or self.readouts is None:
+                raise ValueError("MaBoSS v2.1 requires model_revision and explicit readouts")
+            from .boolean_readouts import validate_definitions
+            validate_definitions(self.readouts, self.network.nodes)
+            if not set(self.readouts) <= set(self.network.nodes):
+                raise ValueError("Readout definitions must name nodes in the exported model")
+        elif self.model_revision is not None or self.readouts is not None:
+            raise ValueError("MaBoSS model revision and readout metadata require v2.1")
         if self.source.server != "MaBoSS":
             raise ValueError(
                 "A MaBoSS handoff must declare MaBoSS as its source."
@@ -968,6 +979,9 @@ def verify_handoff_manifest(
         verify_source_ancestry(manifest.source_ancestry or [])
     for artifact in manifest_artifacts(manifest):
         verify_handoff_artifact(artifact)
+    if isinstance(manifest, MaBoSSToPhysiCellHandoffManifest) and manifest.readouts:
+        from .boolean_readouts import verify_bnd_readouts
+        verify_bnd_readouts(manifest.bnd_file.path, manifest.readouts, manifest.network.nodes)
     if isinstance(manifest, NeKoToMaBoSSHandoffManifest) and manifest.curation_file:
         from .neko_provenance import verify_neko_provenance
         evidence = verify_neko_provenance(manifest.curation_file, manifest.bnet_file)

@@ -126,3 +126,21 @@ other five require a configured simulation.
 All generated files are confined to `<configured-or-user-cache-root>/PhysiCell/<session_id>/`.
 Use `list_artifact_sessions()` to rediscover files after a server restart.
 """
+
+PHYSICELL_AGENT_MANUAL += """
+
+Wave 2: configure_cell_parameters with no changes inspects stored settings;
+cycle_transitions patches existing transitions without selecting a new model.
+configure_physiboss_settings accepts fractional time_stochasticity. Output mappings
+accept optional integer steepness, preserving omission and explicit zero.
+list_loaded_components also inspects newly created configurations, including the
+library-required default substrate and its origin. A default is not evidence of
+researcher-selected biology or biological neutrality.
+configure_simulation_inputs stores explicit typed parameters and preserves an
+existing x,y,z,type CSV. Enabling CSV does not change number_of_cells: placement,
+counts and seed interpretation depend on the target executable/template.
+export_configuration_bundle saves a unique ZIP with supported inputs and hashes.
+Use the extracted root as the working directory. Relative source inputs require
+an explicit original working_directory; the XML location is not assumed.
+The bundle contains no executable and does not grant scientific approval.
+"""

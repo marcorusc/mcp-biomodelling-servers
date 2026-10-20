@@ -44,6 +44,7 @@ EXPECTED_NAMED_OUTPUTS = {
         "clean_generated_files": "BioMASSArtifactCleanupResult",
     },
     "MaBoSS": {
+        "edit_maboss_readouts": "ReadoutEditResult",
         "list_sessions": "MaBoSSSessionListResult",
         "list_artifact_sessions": "MaBoSSArtifactSessionListResult",
         "import_neko_handoff": "MaBoSSHandoffImportResult",
@@ -85,6 +86,11 @@ EXPECTED_NAMED_OUTPUTS = {
         "preview_connection_impact": "NeKoConnectionPreviewResult",
     },
     "PhysiCell": {
+        "configure_cell_parameters": "CellConfigurationResult",
+        "configure_physiboss_settings": "CellConfigurationResult",
+        "add_physiboss_output_link": "CellConfigurationResult",
+        "configure_simulation_inputs": "SimulationInputsResult",
+        "export_configuration_bundle": "ConfigurationBundleResult",
         "list_sessions": "PhysiCellSessionListResult",
         "list_artifact_sessions": "PhysiCellArtifactSessionListResult",
         "import_maboss_handoff": "PhysiCellHandoffImportResult",
@@ -105,10 +111,10 @@ EXPECTED_NAMED_OUTPUTS = {
 }
 
 EXPECTED_TOOL_COUNTS = {
-    "MaBoSS": 24,
+    "MaBoSS": 25,
     "NeKo": 34,
     "BioMASS": 22,
-    "PhysiCell": 34,
+    "PhysiCell": 36,
 }
 TOOL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,128}$")
 INTERNAL_PARAMETER_NAMES = {
@@ -263,9 +269,10 @@ def test_schema_titles_are_unique_except_for_intentional_aliases() -> None:
         title: sorted(uses) for title, uses in uses_by_title.items() if len(uses) > 1
     }
     assert Counter(map(len, duplicated_titles.values())) == Counter(
-        {3: 3, 2: 1, 9: 1, 5: 1}
+        {3: 4, 2: 1, 9: 1, 5: 1}
     )
     assert duplicated_titles == {
+        "CellConfigurationResult": sorted(["PhysiCell.configure_cell_parameters", "PhysiCell.configure_physiboss_settings", "PhysiCell.add_physiboss_output_link"]),
         "BioMASSStateResult": sorted(
             "BioMASS." + name
             for name in (

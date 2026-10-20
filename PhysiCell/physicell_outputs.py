@@ -48,6 +48,8 @@ class PhysiCellWorkflowStatusResult(PhysiCellScientificResult):
 class PhysiCellMaBoSSContextRecord(StructuredOutputModel):
     """Cross-server MaBoSS context stored for PhysiBoSS integration."""
 
+    model_revision: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    readouts: dict = Field(default_factory=dict, exclude_if=lambda value: not value)
     model_name: str
     bnd_file_path: str
     cfg_file_path: str
@@ -131,6 +133,8 @@ class PhysiCellSubstrateRecord(StructuredOutputModel):
     diffusion_coefficient: float | None = None
     decay_rate: float | None = None
     initial_condition: float | None = None
+    origin: str = Field(default="unknown", exclude_if=lambda value: value == "unknown")
+    stored: dict = Field(default_factory=dict, exclude_if=lambda value: not value)
 
 
 class PhysiCellCellTypeRecord(StructuredOutputModel):
@@ -193,6 +197,7 @@ class PhysiCellBehaviorRecord(StructuredOutputModel):
     """One behavior controlled by PhysiCell cell rules."""
 
     name: str = Field(min_length=1)
+    aliases: list[str] = Field(default_factory=list, exclude_if=lambda value: not value)
     behavior_type: str
     description: str
     requires: list[str]

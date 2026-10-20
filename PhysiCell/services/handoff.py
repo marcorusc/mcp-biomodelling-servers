@@ -82,7 +82,10 @@ def import_maboss_handoff_transaction(
             raise ValueError(
                 "The NeKo parent provenance does not match MaBoSS lineage."
             )
-        if set(loaded_parent.network.nodes) != set(
+        readouts = set(loaded_manifest.readouts or {})
+        if readouts & set(loaded_parent.network.nodes):
+            raise ValueError("Readout provenance cannot reclassify NeKo core nodes")
+        if set(loaded_parent.network.nodes) | readouts != set(
             loaded_manifest.network.nodes
         ):
             raise ValueError(
@@ -90,11 +93,11 @@ def import_maboss_handoff_transaction(
             )
         if set(loaded_parent.network.output_nodes) != set(
             loaded_manifest.network.output_nodes
-        ):
+        ) - readouts:
             raise ValueError(
                 "The NeKo and MaBoSS output-node selections do not match."
             )
-        if loaded_manifest.schema_version == "2.0":
+        if loaded_manifest.schema_version in {"2.0", "2.1"}:
             inherited = [entry for entry in loaded_manifest.source_ancestry or []
                          if entry.source.server == "NeKo"]
             if inherited != (loaded_parent.source_ancestry or []):
@@ -310,6 +313,8 @@ def import_maboss_handoff_transaction(
         raise
 
     context = MaBoSSContext(
+        model_revision=loaded_manifest.model_revision or "",
+        readouts=loaded_manifest.readouts or {},
         model_name=Path(loaded_manifest.bnd_file.path).stem,
         bnd_file_path=str(destinations["bnd"]),
         cfg_file_path=str(destinations["cfg"]),

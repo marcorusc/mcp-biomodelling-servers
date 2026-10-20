@@ -322,7 +322,8 @@ def test_offline_sif_derivative_neko_maboss_physicell_pipeline(tmp_path, monkeyp
 
     class Network:
         def __init__(self, **kwargs):
-            pass
+            self.nodes = pd.DataFrame({"Genesymbol": ["A", "C"]})
+            self.edges = self.convert_edgelist_into_genesymbol()
 
         def convert_edgelist_into_genesymbol(self):
             return pd.DataFrame(
@@ -516,7 +517,8 @@ def test_ordinary_bnet_derivative_export_has_source_parent_only(tmp_path, monkey
         session_id="child",
     )
     manifest = load_handoff_manifest(result.structured_content["manifest_file"]["path"])
-    assert manifest.schema_version == "2.0"
+    assert manifest.schema_version == "2.1"
+    assert manifest.model_revision and manifest.readouts == {}
     assert manifest.parent_manifest is None
     assert manifest.lineage == []
     assert manifest.source_ancestry[0].relationship == "edited-derivative"
