@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from copy import deepcopy
 
 import pandas as pd
 
@@ -94,6 +95,7 @@ def interaction_records(df: pd.DataFrame) -> list[NeKoInteractionRecord]:
                 source=required_text(row.get("source"), field_name="edge source"),
                 target=required_text(row.get("target"), field_name="edge target"),
                 effect=optional_text(row.get("Effect")),
+                provenance=deepcopy(row.get("Provenance")) if isinstance(row.get("Provenance"), dict) else None,
             )
         )
     return records
@@ -293,6 +295,7 @@ def referenced_interaction_records(
                 effect=optional_text(row.get("Effect")),
                 reference_count=len(references),
                 references=references,
+                provenance=deepcopy(row.get("Provenance")) if isinstance(row.get("Provenance"), dict) else None,
             )
         )
     return records

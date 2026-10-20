@@ -1,5 +1,6 @@
 """NeKo network-history MCP resource and tool registrations."""
 
+import json
 from typing import Annotated, Literal
 
 from mcp.server.mcpserver.exceptions import ResourceNotFoundError
@@ -67,6 +68,8 @@ def list_network_history(
         NonEmptyString | None,
         Field(description="Session ID; omit to inspect the active/default session."),
     ] = None,
+    offset: Annotated[int, Field(ge=0, description="Zero-based state offset.")] = 0,
+    limit: Annotated[int, Field(ge=1, le=100, description="Maximum states per page.")] = 25,
     *,
     sess=None,
     network=None,
@@ -76,7 +79,27 @@ def list_network_history(
         network,
         session_id=sess.session_id,
         max_states=sess.get_history_max_states(),
+        network_id=sess.network_id, offset=offset, limit=limit,
     )
+
+
+@mcp.resource(
+    uri="neko://session/{session_id}/history/{network_id}/{state_id}",
+    name="Network state details", mime_type="application/json",
+)
+def network_state_resource(session_id: str, network_id: str, state_id: str) -> str:
+    """Read an exact snapshot and its full explanation without checkout."""
+    try:
+        with session_manager.existing_session_scope(session_id) as sess:
+            if sess.network is None or sess.network_id != network_id:
+                raise ResourceNotFoundError("Network identity no longer exists in this session.")
+            if not callable(getattr(sess.network, "get_state", None)):
+                raise ResourceNotFoundError("State details require the NeKo Wave 2 API.")
+            state = sess.network.get_state(int(state_id))
+            return json.dumps({"session_id": sess.session_id, "network_id": network_id,
+                               "state": state}, ensure_ascii=False, allow_nan=False)
+    except (KeyError, ValueError) as exc:
+        raise ResourceNotFoundError(f"Unknown network state: {state_id}") from exc
 
 
 @tool(
@@ -177,6 +200,7 @@ def compare_network_states(
         NonEmptyString | None,
         Field(description="Session ID; omit to use the active/default session."),
     ] = None,
+    limit: Annotated[int, Field(ge=1, le=100, description="Maximum entries per change category; read state resources for full records.")] = 25,
     *,
     sess=None,
     network=None,
@@ -187,6 +211,7 @@ def compare_network_states(
         session_id=sess.session_id,
         state_a=state_a,
         state_b=state_b,
+        network_id=sess.network_id, limit=limit,
     )
 
 

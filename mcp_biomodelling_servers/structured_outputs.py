@@ -247,10 +247,11 @@ class NeKoNetworkExportResult(StructuredOutputModel):
 
     server: Literal["NeKo"]
     session_id: str = Field(min_length=1)
-    format: Literal["sif", "bnet"]
+    format: Literal["sif", "bnet", "history"]
     file: ArtifactFileSummary
     renamed_nodes: list[str]
     duplicate_rules_removed: list[str]
+    curation_file: ArtifactFileSummary | None = Field(default=None, exclude_if=lambda v: v is None)
 
 
 class PhysiCellXmlExportResult(StructuredOutputModel):

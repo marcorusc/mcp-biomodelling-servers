@@ -34,7 +34,7 @@ NormalizedVerbosity = Annotated[
     BeforeValidator(_lower_string),
 ]
 NormalizedExportFormat = Annotated[
-    Literal["sif", "bnet"],
+    Literal["sif", "bnet", "history"],
     BeforeValidator(_lower_string),
 ]
 HandoffArtifactPrefix = Annotated[

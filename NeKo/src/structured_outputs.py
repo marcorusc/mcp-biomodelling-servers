@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field
 
@@ -37,6 +37,7 @@ class NeKoInteractionRecord(StructuredOutputModel):
     source: str = Field(min_length=1)
     target: str = Field(min_length=1)
     effect: str | None = None
+    provenance: dict[str, Any] | None = Field(default=None, exclude_if=lambda v: v is None)
 
 
 class NeKoReferencedInteractionRecord(NeKoInteractionRecord):
@@ -52,6 +53,9 @@ class NeKoNetworkStatusResult(NeKoScientificResult):
     has_network: bool
     node_count: int = Field(ge=0)
     interaction_count: int = Field(ge=0)
+    network_id: str | None = None
+    state_id: int | None = None
+    database_name: str | None = None
 
 
 class NeKoNetworkInventoryResult(NeKoScientificResult):
@@ -65,6 +69,9 @@ class NeKoNetworkInventoryResult(NeKoScientificResult):
     truncated: bool
     nodes: list[NeKoNodeRecord]
     interactions: list[NeKoInteractionRecord]
+    network_id: str | None = None
+    state_id: int | None = None
+    database_name: str | None = None
 
 
 class NeKoPathSearchResult(NeKoScientificResult):
@@ -85,6 +92,9 @@ class NeKoReferenceQueryResult(NeKoScientificResult):
     node2: str | None = None
     interaction_count: int = Field(ge=0)
     interactions: list[NeKoReferencedInteractionRecord]
+    network_id: str | None = None
+    state_id: int | None = None
+    database_name: str | None = None
 
 
 class NeKoInteractionFilterResult(NeKoScientificResult):
@@ -100,6 +110,9 @@ class NeKoInteractionFilterResult(NeKoScientificResult):
     returned_count: int = Field(ge=0)
     truncated: bool
     interactions: list[NeKoInteractionRecord]
+    network_id: str | None = None
+    state_id: int | None = None
+    database_name: str | None = None
 
 
 class NeKoGeneSetComponent(StructuredOutputModel):

@@ -475,7 +475,7 @@ def test_neko_prompt_and_resources_publish_exact_contracts() -> None:
     assert resources[0].title == "NeKo agent operations manual"
     assert resources[0].mime_type == "text/markdown"
 
-    assert len(templates) == 1
+    assert len(templates) == 2
     assert str(templates[0].uri_template) == (
         "neko://session/{session_id}/history"
     )
@@ -524,6 +524,7 @@ def test_status_returns_structured_network_presence_and_counts() -> None:
         "has_network": False,
         "node_count": 0,
         "interaction_count": 0,
+        "network_id": None, "state_id": None, "database_name": None,
     }
 
     edges = pd.DataFrame(
@@ -2073,11 +2074,11 @@ def test_all_neko_tools_publish_safety_annotations() -> None:
     }
     read_only_open = {"preview_connection_impact"}
     idempotent_closed = {
-        "export_network",
         "set_default_params",
         "set_default_session",
     }
     non_idempotent_closed = {
+        "export_network",
         "create_session",
         "export_biomass_handoff",
         "export_neko_handoff",
@@ -2097,6 +2098,7 @@ def test_all_neko_tools_publish_safety_annotations() -> None:
         "remove_undefined_interactions",
     }
     destructive_non_idempotent = {
+        "edit_interactions",
         "remove_gene",
         "remove_interaction",
         "delete_session",
@@ -2162,7 +2164,7 @@ def test_neko_tool_schemas_publish_stable_enums_and_bounds() -> None:
     assert create_schema["list_of_initial_genes"]["items"]["minLength"] == 1
 
     export_schema = tools["export_network"].input_schema["properties"]
-    assert export_schema["format"]["enum"] == ["sif", "bnet"]
+    assert export_schema["format"]["enum"] == ["sif", "bnet", "history"]
 
     handoff_schema = tools["export_neko_handoff"].input_schema
     assert handoff_schema["required"] == ["biological_context"]

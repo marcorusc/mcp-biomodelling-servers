@@ -63,6 +63,7 @@ EXPECTED_NAMED_OUTPUTS = {
         "clean_generated_files": "MaBoSSArtifactCleanupResult",
     },
     "NeKo": {
+        "edit_interactions": "InteractionEditResult",
         "export_network": "NeKoNetworkExportResult",
         "export_neko_handoff": "NeKoHandoffExportResult",
         "export_biomass_handoff": "NeKoBioMASSHandoffExportResult",
@@ -105,7 +106,7 @@ EXPECTED_NAMED_OUTPUTS = {
 
 EXPECTED_TOOL_COUNTS = {
     "MaBoSS": 24,
-    "NeKo": 33,
+    "NeKo": 34,
     "BioMASS": 22,
     "PhysiCell": 34,
 }

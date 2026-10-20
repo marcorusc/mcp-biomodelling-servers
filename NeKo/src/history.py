@@ -42,6 +42,10 @@ class HistoryStateSummary(StructuredOutputModel):
     metadata: dict[str, Any] = Field(
         description="NeKo operation metadata recorded for this state.",
     )
+    details_uri: str = ""
+    explanation_status: str = "unavailable"
+    ancestry_gaps: list[int] = Field(default_factory=list)
+    relationships_truncated: bool = False
 
 
 class NetworkHistorySummary(NeKoHistoryResult):
@@ -56,6 +60,12 @@ class NetworkHistorySummary(NeKoHistoryResult):
     )
     state_count: int = Field(ge=0)
     states: list[HistoryStateSummary]
+    network_id: str | None = None
+    database_name: str | None = None
+    offset: int = 0
+    next_offset: int | None = None
+    pruned_state_count: int | None = None
+    working_state_matches_current: bool | None = None
 
 
 class HistoryNavigationResult(NeKoHistoryResult):
@@ -83,6 +93,11 @@ class NetworkStateComparison(NeKoHistoryResult):
     removed_nodes: list[str]
     added_edges: list[dict[str, Any]]
     removed_edges: list[dict[str, Any]]
+    changed_edges: list[dict[str, Any]] = Field(default_factory=list)
+    truncated: bool = False
+    network_id: str | None = None
+    details_uris: list[str] = Field(default_factory=list)
+    node_changes: dict[str, list[dict[str, Any]]] | None = Field(default=None, exclude_if=lambda v: v is None)
 
 
 class HistoryRetentionResult(NeKoHistoryResult):
@@ -136,6 +151,9 @@ def summarize_history(
     *,
     session_id: str,
     max_states: int | None,
+    network_id: str | None = None,
+    offset: int = 0,
+    limit: int = 25,
 ) -> NetworkHistorySummary:
     """Build a structured history summary through NeKo's public graph API."""
     listed_states = network.list_states()
@@ -148,26 +166,77 @@ def summarize_history(
             parent_state_ids=sorted(
                 int(parent)
                 for parent in graph.predecessors(state["id"])
-            ),
+            )[:100],
             child_state_ids=sorted(
                 int(child)
                 for child in graph.successors(state["id"])
-            ),
+            )[:100],
             is_current=state["id"] == current_state_id,
             is_root=state["id"] == root_state_id,
-            metadata=_json_safe(state.get("metadata", {})),
+            metadata=compact_metadata(state.get("metadata", {})),
+            details_uri=f"neko://session/{session_id}/history/{network_id}/{state['id']}",
+            explanation_status=state.get("metadata", {}).get("transition", {}).get("explanation_status", "unavailable"),
+            ancestry_gaps=state.get("metadata", {}).get("ancestry_gaps", [])[:100],
+            relationships_truncated=(len(list(graph.predecessors(state["id"]))) > 100
+                                     or len(list(graph.successors(state["id"]))) > 100
+                                     or len(state.get("metadata", {}).get("ancestry_gaps", [])) > 100),
         )
-        for state in listed_states
+        for state in listed_states[offset:offset + limit]
     ]
+    full = network.history_dict() if callable(getattr(network, "history_dict", None)) else {}
     return NetworkHistorySummary(
         server="NeKo",
         session_id=session_id,
         current_state_id=current_state_id,
         root_state_id=root_state_id,
         max_states=max_states,
-        state_count=len(states),
+        state_count=len(listed_states),
         states=states,
+        network_id=network_id,
+        database_name=getattr(network, "database_name", None),
+        offset=offset,
+        next_offset=offset + limit if offset + limit < len(listed_states) else None,
+        pruned_state_count=len(full["pruned_state_ids"]) if "pruned_state_ids" in full else None,
+        working_state_matches_current=full.get("working_state_matches_current"),
     )
+
+
+def compact_metadata(metadata: dict) -> dict:
+    """Keep display metadata small; authoritative records stay in the state resource."""
+    if "transition" not in metadata and len(json.dumps(_json_safe(metadata))) <= 1024:
+        return _json_safe(metadata)
+    transition = metadata.get("transition", {})
+    return {
+        "label": str(metadata.get("label", metadata.get("method", "")))[:160],
+        "method": str(metadata.get("method", ""))[:80],
+        "details_omitted": True,
+        "limitations": [str(item)[:200] for item in transition.get("limitations", [])[:3]],
+        "edge_changes": {key: len(transition.get("edges", {}).get(key, []))
+                         for key in ("added", "removed", "changed")},
+    }
+
+
+def bounded_change(change: dict) -> dict:
+    """Keep accumulated edit evidence out of concise comparison responses."""
+    if len(json.dumps(_json_safe(change))) <= 4096:
+        return _json_safe(change)
+    result: dict[str, Any] = {}
+    for side in ("before", "after"):
+        row = change[side]
+        result[side] = {key: row.get(key) for key in ("source", "target", "Effect")}
+        provenance = row.get("Provenance")
+        result[side]["origin"] = provenance.get("origin", "unknown") if isinstance(provenance, dict) else "unknown"
+    result["details_omitted"] = True
+    return result
+
+
+def bounded_edge(row: dict) -> dict:
+    if len(json.dumps(_json_safe(row))) <= 4096:
+        return _json_safe(row)
+    provenance = row.get("Provenance")
+    return {"source": row.get("source"), "target": row.get("target"),
+            "Effect": row.get("Effect"), "origin": provenance.get("origin", "unknown") if isinstance(provenance, dict) else "unknown",
+            "details_omitted": True}
 
 
 def _edge_record(
@@ -217,6 +286,8 @@ def compare_history_states(
     session_id: str,
     state_a: int,
     state_b: int,
+    network_id: str | None = None,
+    limit: int = 25,
 ) -> NetworkStateComparison:
     """Compare exact state IDs and normalize NeKo's set-derived result."""
     available_ids = set(state_ids(network))
@@ -226,7 +297,9 @@ def compare_history_states(
         if state_id not in available_ids
     ]
     if missing_ids:
-        available = ", ".join(str(state_id) for state_id in sorted(available_ids))
+        available = ", ".join(str(state_id) for state_id in sorted(available_ids)[:25])
+        if len(available_ids) > 25:
+            available += f" … ({len(available_ids)} states total)"
         missing = ", ".join(str(state_id) for state_id in missing_ids)
         raise ValueError(
             f"Unknown history state ID(s): {missing}. "
@@ -235,6 +308,15 @@ def compare_history_states(
 
     comparison = network.compare_states(state_a, state_b)
     edge_columns = [str(column) for column in network.edges.columns]
+    added = _sorted_edge_records(comparison.get("added_edges", []), edge_columns)
+    removed = _sorted_edge_records(comparison.get("removed_edges", []), edge_columns)
+    node_changes = None
+    if "edge_changes" in comparison:
+        # Prefer exact canonical records; legacy tuples use display labels and omit provenance.
+        edge_columns = network.get_state(state_b)["edges"]["columns"]
+        added = [bounded_edge(row) for row in comparison["edge_changes"]["added"]]
+        removed = [bounded_edge(row) for row in comparison["edge_changes"]["removed"]]
+        node_changes = {key: _json_safe(rows[:limit]) for key, rows in comparison.get("node_changes", {}).items()}
     return NetworkStateComparison(
         server="NeKo",
         session_id=session_id,
@@ -243,16 +325,19 @@ def compare_history_states(
         edge_columns=edge_columns,
         added_nodes=sorted(
             str(node) for node in comparison.get("added_nodes", [])
-        ),
+        )[:limit],
         removed_nodes=sorted(
             str(node) for node in comparison.get("removed_nodes", [])
-        ),
-        added_edges=_sorted_edge_records(
-            comparison.get("added_edges", []),
-            edge_columns,
-        ),
-        removed_edges=_sorted_edge_records(
-            comparison.get("removed_edges", []),
-            edge_columns,
-        ),
+        )[:limit],
+        added_edges=added[:limit],
+        removed_edges=removed[:limit],
+        changed_edges=[bounded_change(change) for change in comparison.get("edge_changes", {}).get("changed", [])[:limit]],
+        truncated=any(len(comparison.get(key, [])) > limit for key in
+                      ("added_nodes", "removed_nodes", "added_edges", "removed_edges"))
+                  or len(comparison.get("edge_changes", {}).get("changed", [])) > limit
+                  or len(added) > limit or len(removed) > limit
+                  or any(len(rows) > limit for rows in comparison.get("node_changes", {}).values()),
+        network_id=network_id,
+        details_uris=[f"neko://session/{session_id}/history/{network_id}/{sid}" for sid in (state_a, state_b)],
+        node_changes=node_changes,
     )

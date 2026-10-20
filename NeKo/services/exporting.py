@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import tempfile
 from collections.abc import Callable
@@ -48,10 +50,24 @@ def export_sanitized_bnet(
                     f"({generated_names}); this export requires exactly one model."
                 )
             temporary_bnet = generated_bnets[0]
+            companion = temporary_bnet.with_name(temporary_bnet.name + ".neko.json")
+            projection = None
+            if companion.exists():
+                payload = json.loads(companion.read_bytes())
+                projection = payload["export"]
+                if projection["sha256"] != hashlib.sha256(temporary_bnet.read_bytes()).hexdigest():
+                    raise ValueError("NeKo companion does not match the generated BNET.")
             try:
                 sanitizer_result = sanitizer(str(temporary_bnet))
             except Exception as exc:
                 raise RuntimeError(f"Error sanitizing BNET: {exc}") from exc
+            if projection is not None:
+                projection["file"] = destination.name
+                projection["sha256"] = hashlib.sha256(temporary_bnet.read_bytes()).hexdigest()
+                for identifier in projection.get("identifiers", []):
+                    old = identifier["exported_identifier"]
+                    identifier["exported_identifier"] = sanitizer_result.get("name_mapping", {}).get(old, old)
+                sanitizer_result["library_projection"] = projection
 
             if overwrite:
                 temporary_bnet.replace(destination)

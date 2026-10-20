@@ -37,10 +37,11 @@ from .timestamps import utc_now
 
 class SourceExport(StructuredOutputModel):
     schema_name: Literal["mcp-biomodelling-source-lineage"] = "mcp-biomodelling-source-lineage"
-    schema_version: Literal["1.0", "2.0"] = "1.0"
+    schema_version: Literal["1.0", "2.0", "2.1"] = "1.0"
     created_at: AwareDatetime = Field(default_factory=utc_now)
     artifact: HandoffArtifact
     imports: list[SourceImport] = Field(default_factory=list, max_length=128)
+    curation_file: HandoffArtifact | None = Field(default=None, exclude_if=lambda v: v is None)
 
     @model_validator(mode="after")
     def validate_import_ownership(self, info: ValidationInfo) -> SourceExport:
@@ -49,13 +50,24 @@ class SourceExport(StructuredOutputModel):
                 self.artifact.server, self.artifact.session_id
             ):
                 raise ValueError("Export and active import ownership differ.")
-        if self.schema_version == "2.0":
+        if (self.schema_version == "2.1") != (self.curation_file is not None):
+            raise ValueError("Source export v2.1 requires curation_file; older versions cannot carry it.")
+        if self.curation_file is not None and (
+            self.curation_file.role != "neko_history" or self.curation_file.server != "NeKo"
+            or self.curation_file.session_id != self.artifact.session_id
+            or self.artifact.server != "NeKo"
+        ):
+            raise ValueError("Source export curation ownership mismatch.")
+        if self.schema_version != "1.0":
             if "imports" not in self.model_fields_set:
                 raise ValueError("v2 source exports require explicit imports.")
             if any(imported.evidence is None for imported in self.imports):
                 raise ValueError("v2 source exports require ancestry evidence.")
             if not (info.context or {}).get("ancestry_snapshot"):
                 verify_source_ancestry(self.imports)
+                if self.curation_file is not None:
+                    from .neko_provenance import verify_neko_provenance
+                    verify_neko_provenance(self.curation_file, self.artifact)
         return self
 
 
@@ -171,7 +183,8 @@ def capture_import(
 def write_source_export(path: str | Path, *, server: Literal["NeKo", "MaBoSS"],
                         session_id: str, imports: list[SourceImport],
                         overwrite: bool = True,
-                        published_path: str | Path | None = None) -> Path:
+                        published_path: str | Path | None = None,
+                        curation_file: HandoffArtifact | None = None) -> Path:
     """Write a v2 sibling sidecar with durable, verified source snapshots.
 
     For staged publication, hash ``path`` but record ``published_path`` as the
@@ -190,7 +203,8 @@ def write_source_export(path: str | Path, *, server: Literal["NeKo", "MaBoSS"],
         if final.name != path.name:
             raise ValueError("Staged and published artifact names must match.")
         artifact = artifact.model_copy(update={"path": str(final)})
-    record = SourceExport(schema_version="2.0", artifact=artifact, imports=imports)
+    record = SourceExport(schema_version="2.1" if curation_file else "2.0",
+                          artifact=artifact, imports=imports, curation_file=curation_file)
     destination = path.with_name(path.name + ".lineage.json")
     return _write_record(destination, record, overwrite=overwrite)
 
@@ -303,7 +317,7 @@ class _Evidence:
         parsed: SourceExport | NeKoToMaBoSSHandoffManifest | MaBoSSToPhysiCellHandoffManifest
         if data.get("schema_name") == "mcp-biomodelling-source-lineage":
             parsed = SourceExport.model_validate(data, context={"ancestry_snapshot": True})
-            candidates = [parsed.artifact]
+            candidates = [parsed.artifact] + ([parsed.curation_file] if parsed.curation_file else [])
             owner = (parsed.artifact.server, parsed.artifact.session_id)
             imports = parsed.imports
         else:
@@ -315,7 +329,7 @@ class _Evidence:
             raise ValueError("Parent manifest owner differs from snapshot identity.")
         # v2 parents must never repair missing evidence using live references.
         for imported in imports:
-            self.imported(imported, depth + 1, require_bundle=parsed.schema_version == "2.0")
+            self.imported(imported, depth + 1, require_bundle=parsed.schema_version != "1.0")
         for artifact in candidates:
             self.read(artifact, allow_live=allow_live)
             if artifact.role == "parent_manifest":
@@ -328,11 +342,19 @@ class _Evidence:
                     if (set(parsed.network.nodes) != set(stage_parent.network.nodes)
                             or set(parsed.network.output_nodes) != set(stage_parent.network.output_nodes)):
                         raise ValueError("Ancestry stage-parent node/output mismatch.")
-                    if parsed.schema_version == "2.0":
+                    if parsed.schema_version != "1.0":
                         inherited = [entry for entry in parsed.source_ancestry or []
                                      if entry.source.server == "NeKo"]
                         if inherited != (stage_parent.source_ancestry or []):
                             raise ValueError("Ancestry stage-parent source ancestry mismatch.")
+        if isinstance(parsed, (SourceExport, NeKoToMaBoSSHandoffManifest)) and parsed.curation_file:
+            from .neko_provenance import parse_neko_provenance
+            model_artifact = parsed.artifact if isinstance(parsed, SourceExport) else parsed.bnet_file
+            evidence = parse_neko_provenance(
+                self.read(parsed.curation_file, allow_live=allow_live), parsed.curation_file, model_artifact,
+            )
+            if isinstance(parsed, NeKoToMaBoSSHandoffManifest) and evidence.mcp.state_id != parsed.history_state_id:
+                raise ValueError("Ancestry curation state mismatch.")
         self.visiting.remove(reference.sha256)
         return candidates, owner, parsed
 

@@ -85,6 +85,7 @@ from .contracts import (
 )
 from .guidance import NEKO_AGENT_MANUAL, NEKO_SERVER_INSTRUCTIONS
 from .services.exporting import export_sanitized_bnet
+from .services.provenance import export_provenance, export_history
 from .services.network_analysis import (
     edge_degrees as _edge_degrees,
     interaction_records as _interaction_records,
@@ -126,6 +127,7 @@ from .src.structured_outputs import (
     NeKoReferenceQueryResult,
 )
 from .tools.analysis import analyze_connectivity, analyze_gene_set
+from .tools.curation import edit_interactions
 from .tools.guidance import (
     neko_agent_manual_resource,
     neko_workflow_prompt,
@@ -161,6 +163,7 @@ __all__ = [
     "analyze_connectivity",
     "analyze_gene_set",
     "compare_network_states",
+    "edit_interactions",
     "list_network_history",
     "mcp",
     "navigate_network_history",
@@ -288,6 +291,8 @@ async def create_network(
                     new_network = Network(
                         sif_file=sif_file,
                         resources=resources,
+                        **({"database_name": database.upper() if database == "signor" else "OmniPath"}
+                           if hasattr(Network, "history_dict") else {}),
                     )
                 except Exception as e:
                     raise RuntimeError(
@@ -297,7 +302,8 @@ async def create_network(
                 failed_genes = []
                 for gene in list_of_initial_genes:
                     try:
-                        new_network.add_node(gene)
+                        if new_network.add_node(gene) is False:
+                            failed_genes.append(f"{gene}: rejected by the resource database")
                     except Exception as e:
                         failed_genes.append(f"{gene}: {e}")
                 if failed_genes:
@@ -309,6 +315,8 @@ async def create_network(
                 new_network = Network(
                     list_of_initial_genes,
                     resources=resources,
+                    **({"database_name": database.upper() if database == "signor" else "OmniPath"}
+                       if hasattr(Network, "history_dict") else {}),
                 )
                 logger.info(
                     "Running complete_connection (max_len=%s, "
@@ -594,12 +602,12 @@ def remove_interaction(
 
 @tool(
     title="Export network",
-    annotations=_IDEMPOTENT_CLOSED,
+    annotations=_NON_IDEMPOTENT_CLOSED,
     structured_output=True,
 )
 @session_locked
 def export_network(
-        format: NormalizedExportFormat = Field("sif", description="Export format: 'sif' (Simple Interaction Format, tab-separated) or 'bnet' (Boolean network for MaBoSS). BNET requires a fully connected network."),
+        format: NormalizedExportFormat = Field("sif", description="sif, bnet (connected network), or history (all retained snapshots and explanations)."),
         session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session."),
         verbosity: NormalizedVerbosity = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary', 'preview', or 'full'.")) -> Annotated[CallToolResult, NeKoNetworkExportResult]:
     """Export the current network to SIF or BNET format.
@@ -609,13 +617,21 @@ def export_network(
     """
     verbosity = normalize_verbosity(verbosity)
     export_format = format.lower()
-    if export_format not in {"sif", "bnet"}:
+    if export_format not in {"sif", "bnet", "history"}:
         raise ValueError(format_unsupported_format_guidance(format))
 
     sess, network = _session_network(session_id)
     if network is None:
         raise RuntimeError(format_no_network_guidance())
     out_dir = _export_dir(sess.session_id)
+
+    if export_format == "history":
+        path = export_history(network, sess, out_dir)
+        return structured_report(f"History exported: {path}", NeKoNetworkExportResult(
+            server="NeKo", session_id=sess.session_id, format="history",
+            file=artifact_file_summary(path, session_id=sess.session_id),
+            renamed_nodes=[], duplicate_rules_removed=[],
+        ))
 
     # ── SIF export ────────────────────────────────────────────────────────────
     if export_format == "sif":
@@ -638,12 +654,15 @@ def export_network(
                 f"SIF exported: `{out_path}`\n\n"
                 f"Preview (first 100 rows):\n{preview_md}"
             )
+        curation = export_provenance(network, sess, handoff_artifact(
+            out_path, server="NeKo", session_id=sess.session_id, role="neko_sif"))
         write_source_export(out_path, server="NeKo", session_id=sess.session_id,
-                            imports=[sess.source_import] if sess.source_import else [])
+                            imports=[sess.source_import] if sess.source_import else [], curation_file=curation)
         payload = NeKoNetworkExportResult(
             server="NeKo",
             session_id=sess.session_id,
             format="sif",
+            curation_file=curation,
             file=artifact_file_summary(
                 out_path,
                 session_id=sess.session_id,
@@ -690,12 +709,16 @@ def export_network(
                 md_lines.append(f"\n**Note:** Removed duplicate rules for (isoforms collapsed to first): "
                                 f"{', '.join(sorted(set(result['duplicates_removed'])))}")
             text = "\n".join(md_lines)
+        curation = export_provenance(network, sess, handoff_artifact(
+            out_path, server="NeKo", session_id=sess.session_id, role="neko_bnet"),
+            node_renames=result.get("name_mapping"), projection=result.get("library_projection"))
         write_source_export(out_path, server="NeKo", session_id=sess.session_id,
-                            imports=[sess.source_import] if sess.source_import else [])
+                            imports=[sess.source_import] if sess.source_import else [], curation_file=curation)
         payload = NeKoNetworkExportResult(
             server="NeKo",
             session_id=sess.session_id,
             format="bnet",
+            curation_file=curation,
             file=artifact_file_summary(
                 out_path,
                 session_id=sess.session_id,
@@ -805,8 +828,14 @@ def export_neko_handoff(
             session_id=sess.session_id,
             role="neko_bnet",
         )
+        curation = export_provenance(network, sess, bnet_reference,
+                                    node_renames=node_renames,
+                                    projection=sanitizer_result.get("library_projection"))
+        if curation is not None:
+            created_paths.append(Path(curation.path))
         manifest = NeKoToMaBoSSHandoffManifest(
-            schema_version="2.0",
+            schema_version="2.1" if curation else "2.0",
+            curation_file=curation,
             source_ancestry=[sess.source_import] if sess.source_import else [],
             source=HandoffProvenance(
                 server="NeKo",
@@ -836,7 +865,8 @@ def export_neko_handoff(
         created_paths.append(manifest_path)
         created_paths.append(write_source_export(
             bnet_path, server="NeKo", session_id=sess.session_id,
-            imports=[sess.source_import] if sess.source_import else [], overwrite=False))
+            imports=[sess.source_import] if sess.source_import else [], overwrite=False,
+            curation_file=curation))
         manifest_reference = handoff_artifact(
             manifest_path,
             server="NeKo",
@@ -889,7 +919,7 @@ def export_neko_handoff(
 def list_genes_and_interactions(
         session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session."),
         verbosity: NormalizedVerbosity = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary' (counts only), 'preview' (truncated table), 'full' (up to 100 rows)."),
-        max_rows: int = Field(50, ge=1, description="Maximum rows to return in preview mode.")) -> Annotated[CallToolResult, NeKoNetworkInventoryResult]:
+        max_rows: int = Field(50, ge=1, le=100, description="Maximum rows to return in preview mode.")) -> Annotated[CallToolResult, NeKoNetworkInventoryResult]:
     """Return a Markdown table of all nodes and directed edges in the network.
 
     Equivalent to 'show the network'. Use filter_interactions() for targeted queries.
@@ -905,7 +935,7 @@ def list_genes_and_interactions(
             df = pd.DataFrame(columns=["source", "target", "Effect"])
         if "resources" in df.columns:
             df = df.drop(columns=["resources"])
-        df = df[[c for c in ['source', 'target', 'Effect'] if c in df.columns]]
+        df = df[[c for c in ['source', 'target', 'Effect', 'Provenance'] if c in df.columns]]
 
         nodes = _node_records(network)
         row_limit = max_rows if verbosity == "preview" else 100
@@ -923,6 +953,8 @@ def list_genes_and_interactions(
         payload = NeKoNetworkInventoryResult(
             server="NeKo",
             session_id=sess.session_id,
+            network_id=sess.network_id, state_id=_network_history_state_id(network),
+            database_name=getattr(network, "database_name", None),
             verbosity=verbosity,
             total_node_count=len(nodes),
             total_interaction_count=len(df),
@@ -963,7 +995,7 @@ def list_genes_and_interactions(
         interaction_table = (
             "_Network loaded but contains no interactions._"
             if returned_df.empty
-            else clean_for_markdown(returned_df).to_markdown(
+            else clean_for_markdown(returned_df.drop(columns=["Provenance"], errors="ignore")).to_markdown(
                 index=False,
                 tablefmt="plain",
             )
@@ -1190,6 +1222,8 @@ def get_references(
         payload = NeKoReferenceQueryResult(
             server="NeKo",
             session_id=sess.session_id,
+            network_id=sess.network_id, state_id=_network_history_state_id(network),
+            database_name=getattr(network, "database_name", None),
             node1=node1,
             node2=node2,
             interaction_count=0,
@@ -1210,6 +1244,8 @@ def get_references(
         payload = NeKoReferenceQueryResult(
             server="NeKo",
             session_id=sess.session_id,
+            network_id=sess.network_id, state_id=_network_history_state_id(network),
+            database_name=getattr(network, "database_name", None),
             node1=node1,
             node2=node2,
             interaction_count=0,
@@ -1217,12 +1253,14 @@ def get_references(
         )
         return structured_report("No matching interactions.", payload)
     # Only keep relevant columns
-    cols = ['source', 'target', 'Effect', 'References']
+    cols = ['source', 'target', 'Effect', 'References', 'Provenance']
     filtered = filtered[[c for c in cols if c in filtered.columns]]
     interactions = _referenced_interaction_records(filtered)
     payload = NeKoReferenceQueryResult(
         server="NeKo",
         session_id=sess.session_id,
+            network_id=sess.network_id, state_id=_network_history_state_id(network),
+            database_name=getattr(network, "database_name", None),
         node1=node1,
         node2=node2,
         interaction_count=len(interactions),
@@ -1234,7 +1272,7 @@ def get_references(
         if len(ref_list) > 5:
             return '; '.join(ref_list[:5]) + f" (+{len(ref_list)-5} more)"
         return '; '.join(ref_list)
-    display = filtered.copy()
+    display = filtered.drop(columns=["Provenance"], errors="ignore").copy()
     if "References" in display.columns:
         display['References'] = display['References'].apply(short_refs)
     # Clean for markdown
@@ -1286,7 +1324,7 @@ def filter_interactions(
         session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session."),
         verbosity: NormalizedVerbosity = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary' (count), 'preview'/'full' (Markdown table)."),
         format: OutputFormat = Field("markdown", description="Output format: 'markdown' (default) or 'json'."),
-        max_rows: int = Field(50, ge=1, description="Maximum rows returned in preview mode.")) -> Annotated[CallToolResult, NeKoInteractionFilterResult]:
+        max_rows: int = Field(50, ge=1, le=500, description="Maximum rows returned in preview mode.")) -> Annotated[CallToolResult, NeKoInteractionFilterResult]:
     """Filter interactions by effect, scalar endpoints, or a node set.
 
     Non-destructive - does not modify the network; use remove_interaction() to permanently delete edges.
@@ -1333,7 +1371,7 @@ def filter_interactions(
     returned_df = returned_df[
         [
             column
-            for column in ["source", "target", "Effect"]
+            for column in ["source", "target", "Effect", "Provenance"]
             if column in returned_df.columns
         ]
     ]
@@ -1342,6 +1380,8 @@ def filter_interactions(
     payload = NeKoInteractionFilterResult(
         server="NeKo",
         session_id=sess.session_id,
+        network_id=sess.network_id, state_id=_network_history_state_id(network),
+        database_name=getattr(network, "database_name", None),
         verbosity=verbosity,
         effect_filter=effect,
         source_filter=source,
@@ -1370,7 +1410,7 @@ def filter_interactions(
     if verbosity == "summary":
         text = f"Filtered interactions: {total_match_count}. {SUMMARY_HINT}"
         return structured_report(text, payload)
-    table = clean_for_markdown(returned_df).to_markdown(
+    table = clean_for_markdown(returned_df.drop(columns=["Provenance"], errors="ignore")).to_markdown(
         index=False,
         tablefmt="plain",
     )
@@ -1543,6 +1583,8 @@ def status(
         server="NeKo",
         session_id=sess.session_id,
         has_network=True,
+        network_id=sess.network_id, state_id=_network_history_state_id(network),
+        database_name=getattr(network, "database_name", None),
         node_count=len(network.nodes),
         interaction_count=edges,
     )
@@ -1936,7 +1978,8 @@ def export_biomass_handoff(
         operation="export_biomass_handoff",
     )
     result = write_ode_handoff(_export_dir(sess.session_id), artifact_prefix, graph,
-                              source, biological_context, _network_history_state_id(network))
+                              source, biological_context, _network_history_state_id(network),
+                              curation_exporter=lambda artifact: export_provenance(network, sess, artifact))
     return structured_report(f"Exported {len(graph.edges)} referenced interactions for BioMASS.", result)
 
 

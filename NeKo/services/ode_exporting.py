@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import deepcopy
 
 from mcp_biomodelling_servers.ode_handoff import ODEEdge, ODENetwork, ODENode
 
@@ -34,14 +35,18 @@ def ode_network(network) -> ODENetwork:
         refs = reference_list(row.get("References", row.get("references")))
         metadata = {}
         for key, value in row.items():
-            if str(key).lower() in ("source", "target", "effect", "references"):
+            if str(key).lower() in ("source", "target", "effect", "references", "provenance"):
                 continue
             metadata[str(key)] = (
                 sorted(map(str, value))
                 if isinstance(value, (list, tuple, set))
                 else optional_text(value)
             )
-        identity = json.dumps([source, target, effect, metadata], sort_keys=True)
+        provenance = deepcopy(row.get("Provenance")) if isinstance(row.get("Provenance"), dict) else None
+        identity_fields = [source, target, effect, metadata]
+        if provenance is not None:
+            identity_fields.append(provenance)
+        identity = json.dumps(identity_fields, sort_keys=True)
         edge_id = "edge_" + hashlib.sha256(identity.encode()).hexdigest()[:24]
         if edge_id in edges:
             edges[edge_id].references = sorted(
@@ -55,6 +60,7 @@ def ode_network(network) -> ODENetwork:
                 effect=effect,
                 references=sorted(refs),
                 metadata=metadata,
+                provenance=provenance,
             )
     return ODENetwork(
         nodes=sorted(nodes.values(), key=lambda n: n.node_id),

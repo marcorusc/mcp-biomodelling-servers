@@ -49,6 +49,7 @@ ArtifactRole: TypeAlias = Literal[
     "neko_bnet",
     "neko_sif",
     "neko_ode_network",
+    "neko_history",
     "maboss_bnd",
     "maboss_cfg",
     "maboss_result",
@@ -64,6 +65,7 @@ _ROLE_SUFFIXES: dict[ArtifactRole, str] = {
     "neko_bnet": ".bnet",
     "neko_sif": ".sif",
     "neko_ode_network": ".json",
+    "neko_history": ".json",
     "maboss_bnd": ".bnd",
     "maboss_cfg": ".cfg",
     "maboss_result": ".csv",
@@ -73,6 +75,7 @@ _ROLE_MEDIA_TYPES: dict[ArtifactRole, str] = {
     "neko_bnet": "text/plain",
     "neko_sif": "text/tab-separated-values",
     "neko_ode_network": "application/json",
+    "neko_history": "application/json",
     "maboss_bnd": "text/plain",
     "maboss_cfg": "text/plain",
     "maboss_result": "text/csv",
@@ -334,7 +337,7 @@ class HandoffManifestBase(StructuredOutputModel):
     """Shared Boolean handoff fields; v2 adds portable source ancestry."""
 
     schema_name: Literal["mcp-biomodelling-handoff"] = HANDOFF_SCHEMA_NAME
-    schema_version: Literal["1.0", "2.0"] = HANDOFF_SCHEMA_VERSION
+    schema_version: Literal["1.0", "2.0", "2.1"] = HANDOFF_SCHEMA_VERSION
     source_ancestry: list[SourceImport] | None = Field(
         default=None, max_length=128, exclude_if=lambda value: value is None,
     )
@@ -384,6 +387,7 @@ class NeKoToMaBoSSHandoffManifest(HandoffManifestBase):
         description="Current NeKo history state when the BNET was exported.",
     )
     bnet_file: HandoffArtifact
+    curation_file: HandoffArtifact | None = Field(default=None, exclude_if=lambda v: v is None)
 
     @model_validator(mode="after")
     def validate_neko_source(self) -> NeKoToMaBoSSHandoffManifest:
@@ -402,6 +406,14 @@ class NeKoToMaBoSSHandoffManifest(HandoffManifestBase):
             raise ValueError(
                 "A NeKo-to-MaBoSS manifest cannot declare upstream lineage."
             )
+        if (self.schema_version == "2.1") != (self.curation_file is not None):
+            raise ValueError("NeKo v2.1 requires curation_file; older versions cannot carry it.")
+        if self.curation_file is not None and (
+            self.curation_file.role != "neko_history"
+            or self.curation_file.server != "NeKo"
+            or self.curation_file.session_id != self.source.session_id
+        ):
+            raise ValueError("Curation artifact role/owner does not match the NeKo source.")
         return self
 
 
@@ -502,6 +514,7 @@ class MaBoSSHandoffImportResult(StructuredOutputModel):
 class MaBoSSToPhysiCellHandoffManifest(HandoffManifestBase):
     """Manifest produced from a MaBoSS model for PhysiCell integration."""
 
+    schema_version: Literal["1.0", "2.0"] = HANDOFF_SCHEMA_VERSION
     handoff_type: Literal["maboss-to-physicell"] = "maboss-to-physicell"
     bnd_file: HandoffArtifact
     cfg_file: HandoffArtifact
@@ -935,7 +948,7 @@ def manifest_artifacts(
 ) -> tuple[HandoffArtifact, ...]:
     """Return every artifact reference carried by a handoff manifest."""
     if isinstance(manifest, NeKoToMaBoSSHandoffManifest):
-        return (manifest.bnet_file,)
+        return (manifest.bnet_file, manifest.curation_file) if manifest.curation_file else (manifest.bnet_file,)
 
     artifacts = [manifest.bnd_file, manifest.cfg_file]
     if manifest.parent_manifest is not None:
@@ -950,12 +963,17 @@ def verify_handoff_manifest(
 ) -> ModelHandoffManifest:
     """Verify every artifact referenced by an already parsed manifest."""
     manifest = _HANDOFF_ADAPTER.validate_python(manifest.model_dump())
-    if manifest.schema_version == "2.0":
+    if manifest.schema_version != "1.0":
         from .import_lineage import verify_source_ancestry
         verify_source_ancestry(manifest.source_ancestry or [])
     for artifact in manifest_artifacts(manifest):
         verify_handoff_artifact(artifact)
-    if (manifest.schema_version == "2.0"
+    if isinstance(manifest, NeKoToMaBoSSHandoffManifest) and manifest.curation_file:
+        from .neko_provenance import verify_neko_provenance
+        evidence = verify_neko_provenance(manifest.curation_file, manifest.bnet_file)
+        if evidence.mcp.state_id != manifest.history_state_id:
+            raise ValueError("Curation state differs from the handoff state.")
+    if (manifest.schema_version != "1.0"
             and isinstance(manifest, MaBoSSToPhysiCellHandoffManifest)
             and manifest.parent_manifest is not None):
         parent = load_handoff_manifest(
@@ -1003,7 +1021,7 @@ def load_handoff_manifest(
                 envelope = json.loads(raw)
             except ValueError as exc:
                 raise ValueError("Manifest exceeds v1 size limit and is not valid v2 JSON.") from exc
-            if not isinstance(envelope, dict) or envelope.get("schema_version") != "2.0":
+            if not isinstance(envelope, dict) or envelope.get("schema_version") not in {"2.0", "2.1"}:
                 raise ValueError("Manifest exceeds v1 size limit.")
         manifest = _HANDOFF_ADAPTER.validate_json(raw)
     except (OSError, UnicodeError, ValueError) as exc:

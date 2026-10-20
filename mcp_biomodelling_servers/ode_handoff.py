@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Callable
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field, model_validator
 
@@ -33,6 +34,7 @@ class ODEEdge(StructuredOutputModel):
     effect: str | None = None
     references: list[str] = Field(default_factory=list)
     metadata: dict[str, str | list[str] | None] = Field(default_factory=dict)
+    provenance: dict[str, Any] | None = Field(default=None, exclude_if=lambda v: v is None)
 
 
 class ODENetwork(StructuredOutputModel):
@@ -53,15 +55,23 @@ class ODENetwork(StructuredOutputModel):
 
 class NeKoToBioMASSHandoffManifest(StructuredOutputModel):
     schema_name: Literal["mcp-biomodelling-handoff"] = "mcp-biomodelling-handoff"
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["1.0", "2.0"] = "1.0"
     handoff_type: Literal["neko-to-biomass"] = "neko-to-biomass"
     source: HandoffProvenance
     biological_context: str = Field(min_length=1)
     history_state_id: int | None = Field(default=None, ge=0)
     network_file: HandoffArtifact
+    curation_file: HandoffArtifact | None = Field(default=None, exclude_if=lambda v: v is None)
 
     @model_validator(mode="after")
     def ownership(self) -> NeKoToBioMASSHandoffManifest:
+        if (self.schema_version == "2.0") != (self.curation_file is not None):
+            raise ValueError("ODE handoff v2 requires curation_file; v1 cannot carry it.")
+        if self.curation_file is not None and (
+            self.curation_file.role != "neko_history" or self.curation_file.server != "NeKo"
+            or self.curation_file.session_id != self.source.session_id
+        ):
+            raise ValueError("ODE curation owner/role mismatch.")
         if self.source.server != "NeKo" or self.network_file.server != "NeKo":
             raise ValueError("The ODE network handoff must originate in NeKo.")
         if (
@@ -94,6 +104,11 @@ def read_ode_handoff(path: str) -> tuple[NeKoToBioMASSHandoffManifest, ODENetwor
     content = network_path.read_bytes()
     if hashlib.sha256(content).hexdigest() != manifest.network_file.sha256:
         raise ValueError("Network artifact changed while importing.")
+    if manifest.curation_file is not None:
+        from .neko_provenance import verify_neko_provenance
+        evidence = verify_neko_provenance(manifest.curation_file, manifest.network_file)
+        if evidence.mcp.state_id != manifest.history_state_id:
+            raise ValueError("ODE curation state mismatch.")
     return manifest, ODENetwork.model_validate_json(content)
 
 
@@ -104,6 +119,7 @@ def write_ode_handoff(
     source: HandoffProvenance,
     biological_context: str,
     history_state_id: int | None,
+    curation_exporter: Callable[[HandoffArtifact], HandoffArtifact | None] | None = None,
 ) -> NeKoBioMASSHandoffExportResult:
     from .artifact_manager import safe_artifact_path
 
@@ -118,16 +134,18 @@ def write_ode_handoff(
         with network_path.open("x", encoding="utf-8") as handle:
             created.append(network_path)
             handle.write(network.model_dump_json(indent=2))
+        network_reference = handoff_artifact(
+            network_path, server="NeKo", session_id=source.session_id, role="neko_ode_network",
+        )
+        curation = curation_exporter(network_reference) if curation_exporter else None
+        if curation:
+            created.append(Path(curation.path))
         manifest = NeKoToBioMASSHandoffManifest(
+            schema_version="2.0" if curation else "1.0", curation_file=curation,
             source=source,
             biological_context=biological_context,
             history_state_id=history_state_id,
-            network_file=handoff_artifact(
-                network_path,
-                server="NeKo",
-                session_id=source.session_id,
-                role="neko_ode_network",
-            ),
+            network_file=network_reference,
         )
         with manifest_path.open("x", encoding="utf-8") as handle:
             created.append(manifest_path)

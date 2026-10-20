@@ -479,3 +479,24 @@ listed with their location. See the root README's artifact storage section.
 imports. A parent is a verified `.lineage.json` from a SIF export; an edited copy
 requires `derived_from` to identify the intact parent SIF. SIF/BNET exports retain
 source hashes in sibling `.lineage.json` files, independently of handoff approval.
+
+## Evidence-backed interaction editing (Wave 2)
+
+With the updated NeKo curation API, `edit_interactions` accepts up to 20 explicit
+`add` or `set_effect` operations between existing nodes. Each operation requires
+an effect, rationale, and publication evidence. PMIDs are optional when another
+citation is supplied; missing references are never invented. Obtain the exact
+network/state IDs from `status` and pass them with the session ID. A stale request,
+ambiguous endpoint or conflicting addition fails without partial batch mutation.
+The capability does not grant scientific authorization.
+
+Inspection preserves manual origin and separates original evidence from edit
+justification. Existing history tools expose bounded summaries and exact-state
+detail resources. Use `export_network(format='history')` to save retained branches,
+snapshots and explanations, then `Network.from_history(path)` to restore them.
+Database identity reports the name used for construction only.
+
+SIF/BNET exports and handoffs include verified history/provenance companions.
+Keep the referenced files together and use the coordinated MCP package to read
+new manifests. See [Wave 2 integration](../docs/wave2-neko-integration.md) for the
+agreed API, compatibility table, source requirements and measured interface costs.
