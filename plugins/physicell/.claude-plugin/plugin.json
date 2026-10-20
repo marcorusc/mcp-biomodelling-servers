@@ -8,7 +8,7 @@
   },
   "homepage": "https://github.com/marcorusc/mcp-biomodelling-servers",
   "repository": "https://github.com/marcorusc/mcp-biomodelling-servers",
-  "license": "MIT",
+  "license": "GPL-3.0-only",
   "keywords": [
     "mcp",
     "systems-biology",
