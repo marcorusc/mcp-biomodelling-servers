@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "maboss",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "description": "Configure, simulate, and analyze stochastic Boolean models with MaBoSS.",
   "author": {
     "name": "Marco Ruscone"

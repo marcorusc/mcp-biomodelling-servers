@@ -6,7 +6,7 @@
       "command": "uvx",
       "args": [
         "--from",
-        "mcp-biomodelling-servers==2.4.0",
+        "mcp-biomodelling-servers==2.5.0",
         "mcp-neko-server"
       ]
     }

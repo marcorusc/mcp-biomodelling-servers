@@ -1,7 +1,7 @@
 {
   "name": "maboss",
   "displayName": "MaBoSS Boolean Simulator",
-  "version": "2.4.0",
+  "version": "2.5.0",
   "description": "Configure, simulate, and analyze stochastic Boolean models with MaBoSS.",
   "author": {
     "name": "Marco Ruscone"
