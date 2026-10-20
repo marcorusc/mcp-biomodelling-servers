@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+env:
+  MPLBACKEND: Agg
+  NEKO_WAVE2_REQUIRED: "1"
+
 jobs:
   test:
     name: Lint · Type-check · Test
@@ -49,6 +53,11 @@ jobs:
           from importlib.metadata import version
 
           from packaging.version import Version
+          from neko.core.network import Network
+
+          for method in ("edit_interactions", "get_state", "history_dict", "export_history", "from_history"):
+              assert callable(getattr(Network, method, None)), f"Missing NeKo Wave 2 API: {method}"
+          assert hasattr(Network, "database_name"), "Missing NeKo database identity"
 
           neko_version = Version(version("nekomata"))
           if not Version("1.10.2") <= neko_version < Version("2"):
@@ -306,7 +315,7 @@ jobs:
           sudo apt-get install --yes --no-install-recommends graphviz libgraphviz-dev
           dot -V
 
-      - name: Install project with pinned Wave 1 library candidates
+      - name: Install project with pinned companion library candidates
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements-ci-wave1.txt \
@@ -322,6 +331,11 @@ jobs:
           from importlib.metadata import version
 
           from packaging.version import Version
+          from neko.core.network import Network
+
+          for method in ("edit_interactions", "get_state", "history_dict", "export_history", "from_history"):
+              assert callable(getattr(Network, method, None)), f"Missing NeKo Wave 2 API: {method}"
+          assert hasattr(Network, "database_name"), "Missing NeKo database identity"
 
           neko_version = Version(version("nekomata"))
           if not Version("1.10.2") <= neko_version < Version("2"):
