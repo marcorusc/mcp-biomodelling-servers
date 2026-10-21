@@ -237,6 +237,9 @@ class MaBoSSModelExportResult(StructuredOutputModel):
     server: Literal["MaBoSS"]
     session_id: str = Field(min_length=1)
     prefix: str = Field(min_length=1)
+    model_revision: str | None = None
+    output_nodes: list[str] = Field(default_factory=list)
+    internal_nodes: list[str] = Field(default_factory=list)
     overwrite: bool
     bnd_file: ArtifactFileSummary
     cfg_file: ArtifactFileSummary
@@ -247,10 +250,11 @@ class NeKoNetworkExportResult(StructuredOutputModel):
 
     server: Literal["NeKo"]
     session_id: str = Field(min_length=1)
-    format: Literal["sif", "bnet"]
+    format: Literal["sif", "bnet", "history"]
     file: ArtifactFileSummary
     renamed_nodes: list[str]
     duplicate_rules_removed: list[str]
+    curation_file: ArtifactFileSummary | None = Field(default=None, exclude_if=lambda v: v is None)
 
 
 class PhysiCellXmlExportResult(StructuredOutputModel):

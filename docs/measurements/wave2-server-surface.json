@@ -1,0 +1,118 @@
+{
+  "measured_on": "2026-10-20",
+  "baseline_commit": "30bf4dd",
+  "candidate": "Wave 2 implementation working tree; module hashes below",
+  "methodology": {
+    "registration": "Real MCP tool registrations with offline library import fixtures",
+    "serialization": "Compact UTF-8 JSON, aliases enabled, absent optional fields excluded, no JSON-RPC envelope",
+    "input_definitions": "Tool name, description and input schema",
+    "complete_listing": "Entire MCP Tool model including output schema",
+    "tokens": "o200k_base; optional external tokenizer, no production dependency",
+    "limitations": "Static schema/response sizes, not actual client prompt composition, latency, memory or model selection quality",
+    "rate_fixture": "100 synthetic pyMaBoSS nodes, one selected; actual get_maboss_nodes structured response and entire ToolResult, including legacy inventories and text. Session IDs may slightly vary tokens. Raw file and selected-node information are not equivalent."
+  },
+  "environment": {
+    "mcp": "2.2.0",
+    "pydantic": "2.13.5",
+    "maboss": "0.8.16",
+    "physicell-settings": "0.6.3"
+  },
+  "neko_ci_candidate": "7b845ae0d7cfc3578c7191b2147cb3f5ab5f33e3",
+  "source_sha256": {
+    "tests/measure_wave2_surface.py": "6a15877ff06628ed1e860963d9cd8f1d57aecb422d737c5e658fa9e72153c461",
+    "NeKo/server.py": "577e127d39cb73da734367b215ac6521b14c4f419dfbff199184d418528aba4d",
+    "NeKo/src/history.py": "d95cb1083c5651a13ea2fa5bd8a8c5d6eb18874d75794ad0e54b02de16f185ad",
+    "MaBoSS/server.py": "598edf89d5084e3ccfdd4ed7d769c1efe2b492ec65f7ee2472e16af7cd851e22",
+    "MaBoSS/services/model.py": "054eac00b6ebf4bdbe44f4d50944685ec73c60862b6f3c4bf16f434b6de933ec",
+    "PhysiCell/server.py": "f37a252841fbe7924ef9fc235ad85c876867aed6b3a47e03517c526564a4ef07",
+    "PhysiCell/services/configuration.py": "d0ba4a3a406e3ae694250a6889c977486b4343b5d344d419fc51cf2c6adb9912",
+    "PhysiCell/tools/inputs.py": "2499fab9177883737f8a67253888da921d463bda0d61d7c0bd5e5ebb8035d47c",
+    "PhysiCell/tools/bundle.py": "40e53834d8b841b39a0a9682784132ae400393d6adff94b8a0055bd3cbf76d92"
+  },
+  "before": {
+    "NeKo": {
+      "tool_count": 34,
+      "input_definitions": {
+        "bytes": 41602,
+        "o200k_tokens": 9568
+      },
+      "complete_listing": {
+        "bytes": 88957,
+        "o200k_tokens": 21015
+      }
+    },
+    "MaBoSS": {
+      "tool_count": 24,
+      "input_definitions": {
+        "bytes": 23288,
+        "o200k_tokens": 5544
+      },
+      "complete_listing": {
+        "bytes": 61146,
+        "o200k_tokens": 14771
+      }
+    },
+    "PhysiCell": {
+      "tool_count": 34,
+      "input_definitions": {
+        "bytes": 37327,
+        "o200k_tokens": 8653
+      },
+      "complete_listing": {
+        "bytes": 78629,
+        "o200k_tokens": 18640
+      }
+    }
+  },
+  "after": {
+    "NeKo": {
+      "tool_count": 34,
+      "input_definitions": {
+        "bytes": 41992,
+        "o200k_tokens": 9642
+      },
+      "complete_listing": {
+        "bytes": 89864,
+        "o200k_tokens": 21222
+      }
+    },
+    "MaBoSS": {
+      "tool_count": 25,
+      "input_definitions": {
+        "bytes": 27693,
+        "o200k_tokens": 6602
+      },
+      "complete_listing": {
+        "bytes": 69100,
+        "o200k_tokens": 16726
+      }
+    },
+    "PhysiCell": {
+      "tool_count": 36,
+      "input_definitions": {
+        "bytes": 41644,
+        "o200k_tokens": 9627
+      },
+      "complete_listing": {
+        "bytes": 86959,
+        "o200k_tokens": 20555
+      }
+    },
+    "rate_fixture": {
+      "nodes": 100,
+      "selected_nodes": 1,
+      "raw_bnd_cfg": {
+        "bytes": 10370,
+        "o200k_tokens": 4515
+      },
+      "targeted_structured_response": {
+        "bytes": 1618,
+        "o200k_tokens": 765
+      },
+      "complete_tool_result": {
+        "bytes": 2422,
+        "o200k_tokens": 1192
+      }
+    }
+  }
+}

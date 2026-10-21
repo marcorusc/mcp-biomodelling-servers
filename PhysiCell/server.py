@@ -16,7 +16,7 @@ from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
 from threading import RLock
-from typing import Annotated, Optional
+from typing import Any, Annotated, Optional
 
 from mcp.types import CallToolResult
 from pydantic import Field
@@ -106,6 +106,9 @@ from .services.resource_views import (
 
 _SERVER_ROOT = Path(__file__).parent
 
+from .tools.bundle import export_configuration_bundle  # noqa: F401
+from .tools.inputs import configure_simulation_inputs  # noqa: F401
+from .services.configuration import CellConfigurationResult, CycleTransition, cell_values, revision as configuration_revision
 from physicell_config import PhysiCellConfig
 from physicell_config.config.embedded_signals_behaviors import (
     get_signals_behaviors,
@@ -268,6 +271,7 @@ def _maboss_context_record(
         source_session_id=context.source_session_id or None,
         result_file_path=context.result_file_path or None,
         simulation_parameters=dict(context.simulation_parameters),
+        model_revision=context.model_revision or None, readouts=context.readouts,
         neko_session_id=context.neko_session_id or None,
         neko_manifest_path=context.neko_manifest_path or None,
         local_neko_manifest_path=context.local_neko_manifest_path or None,
@@ -955,6 +959,12 @@ def load_xml_configuration(
             f"Could not load PhysiCell XML file '{filepath}': {exc}"
         ) from exc
 
+    inserted_defaults = set()
+    if callable(getattr(config, "generate_xml", None)):
+        existing_substrates = set(config.substrates.get_substrates())
+        config.generate_xml()
+        inserted_defaults = set(config.substrates.get_substrates()) - existing_substrates
+
     with session_manager.ensure_session_scope(
         session_id,
         session_name=session_name,
@@ -965,6 +975,8 @@ def load_xml_configuration(
             original_xml_path=str(xml_path.absolute()),
         )
         analyze_and_update_session_from_config(session, config)
+        session.substrate_origins = {name: "library_default" if name in inserted_defaults else "imported"
+                                     for name in session.loaded_substrates}
 
         # Concise summary
         parts = [f"{len(session.loaded_substrates)} substrates"]
@@ -1086,7 +1098,7 @@ def analyze_loaded_configuration(
     return structured_report("\n".join(lines), payload)
 
 @tool(
-    title="List loaded PhysiCell components",
+    title="Inspect PhysiCell components",
     annotations=_READ_ONLY_TOOL,
     structured_output=True,
 )
@@ -1095,91 +1107,44 @@ def list_loaded_components(
     component_type: ComponentType = Field(default="all", description="Filter results: 'substrates', 'cell_types', 'physiboss', or 'all'."),
     session_id: Optional[NonEmptyString] = Field(default=None, description="Session to query. Omit to use the active session."),
 ) -> Annotated[CallToolResult, PhysiCellLoadedComponentsResult]:
-    """List components from a loaded XML configuration with details and modification hints.
+    """Inspect stored components in created or imported configurations, including substrate origins.
 
     Returns:
         str: Detailed component information with parameter values and tool hints.
     """
-    session = _require_loaded_configuration(session_id)
-    
+    session = _require_configuration(session_id)
     config = session.config
-    lines = []
-    substrate_records = (
-        _loaded_substrate_records(config, session.loaded_substrates)
-        if component_type in ["all", "substrates"]
-        else []
-    )
-    cell_type_records = (
-        _loaded_cell_type_records(config, session.loaded_cell_types)
-        if component_type in ["all", "cell_types"]
-        else []
-    )
-    physiboss_models = (
-        list(session.loaded_physiboss_models)
-        if component_type in ["all", "physiboss"]
-        else []
-    )
-    
-    if component_type in ["all", "substrates"] and session.loaded_substrates:
-        lines.append("SUBSTRATES:")
-        for name in session.loaded_substrates:
-            try:
-                substrate = config.substrates.get_substrate(name)
-                if substrate:
-                    lines.append(f"  {name}: D={substrate.diffusion_coefficient}, decay={substrate.decay_rate}, init={substrate.initial_condition}")
-            except:
-                lines.append(f"  {name}: properties not accessible")
-        lines.append("  → Add interactions: set_substrate_interaction(cell_type, substrate, secretion_rate=X, uptake_rate=Y)")
-        lines.append("")
-    
-    if component_type in ["all", "cell_types"] and session.loaded_cell_types:
-        lines.append("CELL TYPES:")
-        for name in session.loaded_cell_types:
-            try:
-                cell_type = config.cell_types.get_cell_type(name)
-                if cell_type:
-                    vol = cell_type.phenotype.volume.total
-                    speed = cell_type.phenotype.motility.speed
-                    cycle = cell_type.cycle_model
-                    
-                    physiboss = ""
-                    if (hasattr(cell_type, 'phenotype') and hasattr(cell_type.phenotype, 'intracellular') and 
-                        cell_type.phenotype.intracellular):
-                        physiboss = ", PhysiBoSS enabled"
-                    
-                    lines.append(f"  {name}: vol={vol}, speed={speed}, cycle={cycle}{physiboss}")
-            except:
-                lines.append(f"  {name}: properties not accessible")
-        
-        lines.append("  → Modify parameters: configure_cell_parameters(cell_type, volume_total=X, motility_speed=Y, ...)")
-        lines.append("  → Add rules: add_single_cell_rule(cell_type, signal, direction, behavior, ...)")
-        lines.append("")
-    
-    if component_type in ["all", "physiboss"] and session.loaded_physiboss_models:
-        lines.append("PHYSIBOSS MODELS:")
-        for name in session.loaded_physiboss_models:
-            lines.append(f"  {name}: Intracellular boolean network enabled")
-        lines.append("  → Configure: configure_physiboss_settings(cell_type, intracellular_dt=X, ...)")
-        lines.append("  → Add links: add_physiboss_input_link() / add_physiboss_output_link()")
-        lines.append("")
-    
-    text = (
-        "\n".join(lines).strip()
-        if lines
-        else f"No {component_type} components found in loaded configuration"
-    )
+    substrates = config.substrates.get_substrates() if hasattr(config.substrates, "get_substrates") else {}
+    cells = config.cell_types.get_cell_types() if hasattr(config.cell_types, "get_cell_types") else {}
+    substrate_records = [PhysiCellSubstrateRecord(
+        name=name, properties_accessible=True,
+        diffusion_coefficient=value.get("diffusion_coefficient"), decay_rate=value.get("decay_rate"),
+        initial_condition=value.get("initial_condition"), stored=value,
+        origin=session.substrate_origins.get(name, "imported" if session.loaded_from_xml else "unknown"))
+        for name, value in substrates.items()] if component_type in ("all", "substrates") else []
+    cell_records = [PhysiCellCellTypeRecord(
+        name=name, properties_accessible=True,
+        total_volume=value.get("phenotype", {}).get("volume", {}).get("total"),
+        motility_speed=value.get("phenotype", {}).get("motility", {}).get("speed"),
+        cycle_model=str(value.get("phenotype", {}).get("cycle", {}).get("model", "")),
+        physiboss_enabled=bool(value.get("phenotype", {}).get("intracellular")))
+        for name, value in cells.items()] if component_type in ("all", "cell_types") else []
+    physiboss_models = [name for name, value in cells.items() if value.get("phenotype", {}).get("intracellular")]
+    if component_type not in ("all", "physiboss"):
+        physiboss_models = []
+    if not hasattr(config.substrates, "get_substrates") and component_type in ("all", "substrates"):
+        substrate_records = _loaded_substrate_records(config, session.loaded_substrates)
+    if not hasattr(config.cell_types, "get_cell_types"):
+        if component_type in ("all", "cell_types"):
+            cell_records = _loaded_cell_type_records(config, session.loaded_cell_types)
+        if component_type in ("all", "physiboss"):
+            physiboss_models = session.loaded_physiboss_models
     payload = PhysiCellLoadedComponentsResult(
-        server="PhysiCell",
-        session_id=session.session_id,
-        component_type=component_type,
-        substrate_count=len(substrate_records),
-        cell_type_count=len(cell_type_records),
-        physiboss_model_count=len(physiboss_models),
-        substrates=substrate_records,
-        cell_types=cell_type_records,
-        physiboss_models=physiboss_models,
-    )
-    return structured_report(text, payload)
+        server="PhysiCell", session_id=session.session_id, component_type=component_type,
+        substrate_count=len(substrate_records), cell_type_count=len(cell_records),
+        physiboss_model_count=len(physiboss_models), substrates=substrate_records,
+        cell_types=cell_records, physiboss_models=physiboss_models)
+    return structured_report("Stored configuration components. Library defaults are not evidence of researcher-selected biology.", payload)
 
 # ============================================================================
 # BIOLOGICAL SCENARIO ANALYSIS
@@ -1283,8 +1248,14 @@ def create_simulation_domain(
         dt_phenotype=6.0,
     )
 
+    config.generate_xml()  # Materialize the library-owned required default before publication.
     with session_manager.ensure_session_scope(session_id) as session:
         session.replace_config(config)
+        session.loaded_substrates = list(config.substrates.get_substrates())
+        session.substrates_count = len(session.loaded_substrates)
+        session.substrate_origins = {name: "library_default" for name in session.loaded_substrates}
+        if session.substrates_count:
+            session.mark_step_complete(WorkflowStep.SUBSTRATES_ADDED)
         session.mark_step_complete(WorkflowStep.DOMAIN_SETUP)
         progress = session.get_progress_percentage()
     
@@ -1295,7 +1266,7 @@ def create_simulation_domain(
     result += f"- Mesh: {dx} μm\n"
     result += f"- Duration: {max_time/60:.1f} hours\n"
     result += f"- Progress: {progress:.0f}%\n"
-    result += f"**Next step:** Use `add_single_substrate()` to add oxygen, nutrients, or drugs."
+    result += "The required library default substrate is present; inspect its values before choosing biological substrates. Next: add cell types or explicitly add substrates."
     
     return result
 
@@ -1337,6 +1308,12 @@ def add_single_substrate(
         dirichlet_value = initial_condition
     
     name = substrate_name.strip()
+    if name in session.config.substrates.get_substrates():
+        raise ValueError(
+            f"Substrate '{name}' already exists. Inspect its stored values with "
+            "list_loaded_components(component_type='substrates'). This addition tool "
+            "cannot safely replace an existing substrate and its dependent references."
+        )
     
     # Add substrate to configuration
     session.config.substrates.add_substrate(
@@ -1367,7 +1344,8 @@ def add_single_substrate(
         dirichlet_boundaries = boundaries
     
     # Update session counters
-    session.substrates_count += 1
+    session.substrates_count = len(session.config.substrates.get_substrates())
+    session.substrate_origins[name] = "explicit_configuration"
     session.mark_step_complete(WorkflowStep.SUBSTRATES_ADDED)
     
     # Format result
@@ -1447,15 +1425,13 @@ def configure_cell_parameters(
     necrosis_rate: Annotated[Optional[float], Field(ge=0, allow_inf_nan=False, description="New spontaneous necrosis rate in 1/min. Omit to preserve the current value.")] = None,
     session_id: Optional[NonEmptyString] = Field(default=None, description="Session to use. Omit to use the active session."),
     motility_enabled: Annotated[Optional[bool], Field(description="Enable or disable cell motility. Omit to preserve the current state.")] = None,
-) -> str:
-    """Patch volume, motility, and death parameters for an existing cell type.
+    cycle_transitions: Annotated[list[CycleTransition] | None, Field(min_length=1, max_length=20, description="Explicit existing cycle transitions, rates and optional fixed_duration flags.")] = None,
+) -> CellConfigurationResult:
+    """Inspect or patch stored volume, motility, death and existing cycle transitions.
 
-    The cell type must already exist (created by `add_single_cell_type()`).
-    Omitted values preserve their current settings. At least one value must be
-    supplied. Call repeatedly to configure or revise multiple cell types.
-
-    Returns:
-        str: Confirmation listing only the requested parameter updates.
+    Omit all changes to inspect. Explicit zero/false values are preserved.
+    Patches are atomic; omitted settings and the selected cycle model are retained.
+    Returns stored values and model identity, rather than echoing the request.
     """
     session = _require_configuration(session_id)
     requested_updates = {
@@ -1468,11 +1444,10 @@ def configure_cell_parameters(
         "apoptosis rate": apoptosis_rate,
         "necrosis rate": necrosis_rate,
     }
-    if all(value is None for value in requested_updates.values()):
-        raise ValueError(
-            "At least one cell parameter must be provided. Omitted values "
-            "preserve their current settings."
-        )
+    sections = ["volume", "motility", "death", "cycle"]
+    if all(value is None for value in requested_updates.values()) and cycle_transitions is None:
+        return CellConfigurationResult(**{"session_id": session.session_id, "model_revision": configuration_revision(session.config),
+                "cell_type": cell_type, "stored": cell_values(session.config, cell_type, sections)})
 
     try:
         current_cell = _configuration_cell_type(session.config, cell_type)
@@ -1481,6 +1456,7 @@ def configure_cell_parameters(
             "volume": current_phenotype.get("volume"),
             "motility": current_phenotype.get("motility"),
             "death": current_phenotype.get("death"),
+            "cycle": current_phenotype.get("cycle"),
         })
         candidate_config = deepcopy(session.config)
 
@@ -1521,6 +1497,20 @@ def configure_cell_parameters(
                 necrosis_rate,
             )
 
+        if cycle_transitions:
+            current_cycle = current_phenotype.get("cycle", {})
+            if current_cycle.get("phase_durations"):
+                raise ValueError("This model uses phase durations; changing to rates needs an explicit separate model decision")
+            configured = current_cycle.get("transition_rates", [])
+            model = current_cycle.get("model", current_cycle.get("name"))
+            defaults = get_default_parameters().get("cell_cycle_models", {})
+            model_data = defaults.get(model, {})
+            allowed = {(item["from"], item["to"]) for item in configured}
+            allowed.update((item["from"], item["to"]) for item in model_data.get("transition_rates", []))
+            for transition in cycle_transitions:
+                if (transition.from_phase, transition.to_phase) not in allowed:
+                    raise ValueError("Transition is not present in the selected cycle model; choose an existing transition")
+                candidate_config.cell_types.set_cycle_transition_rate(cell_type, **transition.model_dump())
         updated_cell = _configuration_cell_type(
             candidate_config,
             cell_type,
@@ -1530,22 +1520,19 @@ def configure_cell_parameters(
             "volume": updated_phenotype.get("volume"),
             "motility": updated_phenotype.get("motility"),
             "death": updated_phenotype.get("death"),
+            "cycle": updated_phenotype.get("cycle"),
         })
         configuration_changed = before != after
+        after_revision = configuration_revision(candidate_config)
         session.publish_config_update(
             config=candidate_config,
             completed_step=WorkflowStep.CELL_PARAMETERS_CONFIGURED,
             configuration_changed=configuration_changed,
         )
 
-        lines = [f"**Cell parameters patched for {cell_type}:**"]
-        for name, value in requested_updates.items():
-            if value is not None:
-                lines.append(f"- {name}: {_display_value(value)}")
-        if not configuration_changed:
-            lines.append("- The requested values already matched the configuration.")
-        lines.append("- All omitted cell parameters were preserved.")
-        return "\n".join(lines)
+        return CellConfigurationResult(**{"session_id": session.session_id, "model_revision": after_revision,
+                "cell_type": cell_type, "changed": configuration_changed,
+                "stored": cell_values(session.config, cell_type, sections)})
     except Exception as exc:
         raise RuntimeError(
             f"Could not configure cell type '{cell_type}': {exc}"
@@ -1563,7 +1550,7 @@ def set_substrate_interaction(
     secretion_rate: Annotated[Optional[float], Field(ge=0, allow_inf_nan=False, description="New secretion rate in 1/min. Omit to preserve the current value.")] = None,
     uptake_rate: Annotated[Optional[float], Field(ge=0, allow_inf_nan=False, description="New substrate uptake rate in 1/min. Omit to preserve the current value. Typical oxygen uptake: 10.")] = None,
     session_id: Optional[NonEmptyString] = Field(default=None, description="Session to use. Omit to use the active session."),
-) -> str:
+) -> CellConfigurationResult:
     """Patch a cell type's secretion and uptake rates for one substrate.
 
     Both cell type and substrate must already exist in the current session.
@@ -1571,8 +1558,8 @@ def set_substrate_interaction(
     supplied. Call repeatedly to configure multiple cell-substrate pairs or
     revise one pair after inspecting a simulation result.
 
-    Returns:
-        str: Confirmation listing only the requested rate updates.
+    Returns the interaction values actually stored for the pair, and whether
+    the configuration changed.
     """
     session = _require_configuration(session_id)
     if secretion_rate is None and uptake_rate is None:
@@ -1651,17 +1638,19 @@ def set_substrate_interaction(
             configuration_changed=configuration_changed,
         )
 
-        lines = [
-            f"**Substrate interaction patched:** {cell_type} ↔ {substrate}"
-        ]
-        if secretion_rate is not None:
-            lines.append(f"- secretion rate: {secretion_rate:g} min⁻¹")
-        if uptake_rate is not None:
-            lines.append(f"- uptake rate: {uptake_rate:g} min⁻¹")
-        if not configuration_changed:
-            lines.append("- The requested values already matched the configuration.")
-        lines.append("- All omitted interaction values were preserved.")
-        return "\n".join(lines)
+        stored = _mapping_at(
+            _configuration_cell_type(session.config, cell_type),
+            "phenotype",
+            "secretion",
+            substrate,
+        )
+        return CellConfigurationResult(
+            session_id=session.session_id,
+            cell_type=cell_type,
+            stored={"substrate": substrate, **deepcopy(stored)},
+            changed=configuration_changed,
+            model_revision=configuration_revision(session.config),
+        )
     except Exception as exc:
         raise RuntimeError(
             f"Could not set the substrate interaction: {exc}"
@@ -1807,6 +1796,7 @@ def list_all_available_signals(
 @_optional_session_locked
 def list_all_available_behaviors(
     session_id: Optional[NonEmptyString] = Field(default=None, description="Session to query. Omit to use the active session."),
+    cell_type: Annotated[NonEmptyString | None, Field(description="Optional cell type to restrict cycle-phase behaviors to its configured model.")] = None,
 ) -> Annotated[CallToolResult, PhysiCellBehaviorListResult]:
     """List all PhysiCell behaviours that can be controlled by cell rules.
 
@@ -1835,6 +1825,15 @@ def list_all_available_behaviors(
     else:
         behaviors_data = get_signals_behaviors()["behaviors"]
     
+    if cell_type is not None:
+        if session is None or session.config is None:
+            raise ValueError("A configured session is required for cell-specific discovery")
+        cycle = _configuration_cell_type(session.config, cell_type).get("phenotype", {}).get("cycle", {})
+        phases = {int(phase["index"]) for phase in cycle.get("phases", [])}
+        import re
+        behaviors_data = {name: data for name, data in behaviors_data.items()
+                          if not (match := re.fullmatch(r"exit from cycle phase (\d+)", str(data.get("name", name))))
+                          or int(match[1]) in phases}
     # Get current scenario context if available
     scenario_context = session.scenario_context if session else ""
     
@@ -1869,6 +1868,7 @@ def list_all_available_behaviors(
         PhysiCellBehaviorRecord(
             name=str(behavior_info.get("name", behavior_name)),
             behavior_type=str(behavior_info.get("type", "other")),
+            aliases=behavior_info.get("aliases", []),
             description=str(
                 behavior_info.get("description", "No description")
             ),
@@ -2048,21 +2048,15 @@ def add_physiboss_model(
 def configure_physiboss_settings(
     cell_type: Annotated[NonEmptyString, Field(description="Name of an existing cell type with a PhysiBoSS model attached.")],
     intracellular_dt: Annotated[Optional[float], Field(gt=0, allow_inf_nan=False, description="New PhysiBoSS update interval in minutes. It should be a multiple of the phenotype time step. Omit to preserve the current value.")] = None,
-    time_stochasticity: Annotated[Optional[int], Field(ge=0, description="New time stochasticity level (0 = deterministic). Omit to preserve the current value.")] = None,
+    time_stochasticity: Annotated[Optional[float], Field(ge=0, allow_inf_nan=False, description="Finite nonnegative time stochasticity, including fractions and zero. Omit to preserve the current value.")] = None,
     scaling: Annotated[Optional[float], Field(gt=0, allow_inf_nan=False, description="New scaling factor for intracellular dynamics. Omit to preserve the current value.")] = None,
     start_time: Annotated[Optional[float], Field(ge=0, allow_inf_nan=False, description="New simulation start time for the Boolean network in minutes. Omit to preserve the current value.")] = None,
     inheritance_global: Annotated[Optional[bool], Field(description="Whether daughter cells inherit the parent's Boolean states globally. Omit to preserve the current value.")] = None,
     session_id: Optional[NonEmptyString] = Field(default=None, description="Session to use. Omit to use the active session."),
-) -> str:
-    """Patch timing, stochasticity, and inheritance for a PhysiBoSS model.
+) -> CellConfigurationResult:
+    """Patch timing, fractional stochasticity and inheritance on an attached model.
 
-    Must be called after `add_physiboss_model()`. Omitted values preserve their
-    current settings, and at least one value must be supplied. Repeat for each
-    cell type. Check `list_all_available_signals()` and
-    `list_all_available_behaviors()` before configuring input/output links.
-
-    Returns:
-        str: Confirmation listing only the requested setting updates.
+    Omitted settings are preserved. Returns actual stored values and model identity.
     """
     session = _require_configuration(session_id)
     _require_physiboss()
@@ -2118,6 +2112,7 @@ def configure_physiboss_settings(
             "settings",
         ))
         configuration_changed = before != after
+        after_revision = configuration_revision(candidate_config)
         tracking = _physiboss_tracking(candidate_config)
         session.publish_config_update(
             config=candidate_config,
@@ -2126,21 +2121,8 @@ def configure_physiboss_settings(
             physiboss_tracking=tracking,
         )
 
-        lines = [f"**PhysiBoSS settings patched for {cell_type}:**"]
-        for name, value in requested_updates.items():
-            if value is not None:
-                lines.append(f"- {name}: {_display_value(value)}")
-        if not configuration_changed:
-            lines.append("- The requested values already matched the configuration.")
-        lines.extend([
-            "- All omitted PhysiBoSS settings were preserved.",
-            f"- Progress: {session.get_progress_percentage():.0f}%",
-            (
-                "**Next step:** Use `add_physiboss_input_link()` to connect "
-                "PhysiCell signals to Boolean nodes."
-            ),
-        ])
-        return "\n".join(lines)
+        return CellConfigurationResult(**{"session_id": session.session_id, "model_revision": after_revision,
+                "cell_type": cell_type, "changed": configuration_changed, "stored": after})
     except Exception as exc:
         raise RuntimeError(
             f"Could not configure PhysiBoSS settings: {exc}"
@@ -2160,19 +2142,19 @@ def add_physiboss_input_link(
     threshold: float = Field(default=1.0, allow_inf_nan=False, description="Signal level at which the node is toggled."),
     smoothing: int = Field(default=0, ge=0, description="Smoothing level (0 = no smoothing)."),
     session_id: Optional[NonEmptyString] = Field(default=None, description="Session to use. Omit to use the active session."),
-) -> str:
+) -> CellConfigurationResult:
     """Create an input link from a PhysiCell signal to a MaBoSS boolean node.
-    Requires a PhysiBoSS model already attached to the cell type.
-    Call `add_physiboss_output_link()` after all input links are defined.
-    Returns:
-        str: Confirmation with link details and next step.
+
+    Requires a PhysiBoSS model already attached to the cell type. Returns the
+    stored input mapping. Call `add_physiboss_output_link()` after all input
+    links are defined.
     """
     session = _require_configuration(session_id)
     _require_physiboss()
-    
+
     try:
-        # Use direct config.physiboss API (simpler and more reliable)
-        session.config.physiboss.add_intracellular_input(
+        candidate = deepcopy(session.config)
+        candidate.physiboss.add_intracellular_input(
             cell_type_name=cell_type,
             physicell_name=physicell_signal,
             intracellular_name=boolean_node,
@@ -2180,19 +2162,13 @@ def add_physiboss_input_link(
             threshold=threshold,
             smoothing=smoothing
         )
-        
-        # Update session tracking
-        session.physiboss_input_links_count += 1
-        session.mark_step_complete(WorkflowStep.PHYSIBOSS_INPUTS_LINKED)
-        
-        result = f"**PhysiBoSS input:** {physicell_signal} → {boolean_node}\n"
-        result += f"- Action: {action}\n"
-        result += f"- Threshold: {threshold}\n"
-        result += f"- Smoothing: {smoothing}\n"
-        result += f"- Progress: {session.get_progress_percentage():.0f}%\n"
-        result += f"**Next step:** Use `add_physiboss_output_link()` to connect boolean nodes to cell behaviors."
-        
-        return result
+
+        after_revision = configuration_revision(candidate)
+        session.publish_config_update(config=candidate, completed_step=WorkflowStep.PHYSIBOSS_INPUTS_LINKED,
+                                      configuration_changed=True, physiboss_tracking=_physiboss_tracking(candidate))
+        stored = _configuration_cell_type(session.config, cell_type)["phenotype"]["intracellular"]["mapping"]["inputs"][-1]
+        return CellConfigurationResult(session_id=session.session_id, cell_type=cell_type, stored=stored,
+                                       model_revision=after_revision)
     except Exception as exc:
         raise RuntimeError(
             f"Could not add the PhysiBoSS input link: {exc}"
@@ -2208,46 +2184,41 @@ def add_physiboss_output_link(
     cell_type: Annotated[NonEmptyString, Field(description="Name of an existing cell type with a PhysiBoSS model.")],
     boolean_node: Annotated[NonEmptyString, Field(description="MaBoSS boolean node name whose state drives the behavior.")],
     physicell_behavior: Annotated[NonEmptyString, Field(description="PhysiCell behavior name to control. Use list_all_available_behaviors() to see options.")],
-    action: PhysiBoSSAction = Field(default="activation", description="'activation' (node ON increases behavior) or 'inhibition' (node ON decreases behavior)."),
-    value: float = Field(default=1000000.0, allow_inf_nan=False, description="Behavior value applied when the node is active."),
-    base_value: float = Field(default=0.0, allow_inf_nan=False, description="Baseline behavior value when the node is inactive."),
+    action: PhysiBoSSAction = Field(default="activation", description="activation: base_value + (value-base_value)*H; inhibition: base_value + (value-base_value)*(1-H), where H is the smoothed Hill response."),
+    value: float = Field(default=1000000.0, allow_inf_nan=False, description="Mapping target value; interpreted with action, base_value, smoothing and steepness. Not a guaranteed exact Boolean switch."),
+    base_value: float = Field(default=0.0, allow_inf_nan=False, description="Mapping base value; its effect depends on the selected action."),
     smoothing: int = Field(default=0, ge=0, description="Smoothing level (0 = no smoothing)."),
     session_id: Optional[NonEmptyString] = Field(default=None, description="Session to use. Omit to use the active session."),
-) -> str:
-    """Create an output link from a MaBoSS boolean node to a PhysiCell cell behaviour.
-    Requires a PhysiBoSS model already attached to the cell type.
-    Use `apply_physiboss_mutation()` afterward for genetic perturbations.
-    Returns:
-        str: Confirmation with link details and next step.
+    steepness: Annotated[int | None, Field(ge=0, description="Optional nonnegative integer Hill exponent (the supported engine reads an integer); omission preserves its default.")] = None,
+) -> CellConfigurationResult:
+    """Map a Boolean node to a cell behavior and return the stored mapping.
+
+    The action determines Hill-response orientation. Finite steepness does not
+    guarantee an exact Boolean switch. The supported engine reads integer steepness.
     """
     session = _require_configuration(session_id)
     _require_physiboss()
     
     try:
         # Use direct config.physiboss API (simpler and more reliable)
-        session.config.physiboss.add_intracellular_output(
+        candidate = deepcopy(session.config)
+        candidate.physiboss.add_intracellular_output(
             cell_type_name=cell_type,
             physicell_name=physicell_behavior,
             intracellular_name=boolean_node,
             action=action,
             value=value,
             base_value=base_value,
-            smoothing=smoothing
+            smoothing=smoothing,
+            **({"steepness": steepness} if steepness is not None else {}),
         )
         
-        # Update session tracking
-        session.physiboss_output_links_count += 1
-        session.mark_step_complete(WorkflowStep.PHYSIBOSS_OUTPUTS_LINKED)
-        
-        result = f"**PhysiBoSS output:** {boolean_node} → {physicell_behavior}\n"
-        result += f"- Action: {action}\n"
-        result += f"- Active value: {value}\n"
-        result += f"- Base value: {base_value}\n"
-        result += f"- Smoothing: {smoothing}\n"
-        result += f"- Progress: {session.get_progress_percentage():.0f}%\n"
-        result += f"**Next step:** Use `apply_physiboss_mutation()` for genetic perturbations"
-        
-        return result
+        after_revision = configuration_revision(candidate)
+        session.publish_config_update(config=candidate, completed_step=WorkflowStep.PHYSIBOSS_OUTPUTS_LINKED,
+                                      configuration_changed=True, physiboss_tracking=_physiboss_tracking(candidate))
+        stored = _configuration_cell_type(session.config, cell_type)["phenotype"]["intracellular"]["mapping"]["outputs"][-1]
+        return CellConfigurationResult(**{"session_id": session.session_id, "cell_type": cell_type, "stored": stored,
+                "model_revision": after_revision})
     except Exception as exc:
         raise RuntimeError(
             f"Could not add the PhysiBoSS output link: {exc}"
@@ -2536,14 +2507,15 @@ def export_cell_rules_csv(
         # PhysiCell standard layout: XML in project root, CSV in ./config/
         session.config.cell_rules.add_ruleset(
             name="default",
-            folder=out_path,
+            folder=str(art_dir),
             filename=filename,
             enabled=True
         )
 
+        session.generated_ruleset_name = "default"
         result = f"## Cell Rules CSV Exported\n\n"
         result += f"**File:** {out_path}\n"
-        result += f"**XML path:** ./config/{filename} (enabled)\n"
+        result += f"**XML path:** {Path(art_dir) / filename} (enabled)\n"
         result += f"**Rules:** {rule_count}\n"
         progress = session.get_progress_percentage()
         result += f"**Progress:** {progress:.0f}%\n\n"
@@ -2556,7 +2528,7 @@ def export_cell_rules_csv(
                 out_path,
                 session_id=session.session_id,
             ),
-            xml_reference=f"./config/{filename}",
+            xml_reference=str(Path(art_dir) / filename),
             enabled=True,
             rule_count=rule_count,
             progress=progress,

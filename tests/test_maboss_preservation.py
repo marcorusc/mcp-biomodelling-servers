@@ -103,6 +103,10 @@ class PreservationTests(unittest.TestCase):
         session.set_result = lambda value: setattr(session, "result", value)
         session.clear = lambda: setattr(session, "result", None)
         namespace = {
+            "json": json,
+            "pd": pd,
+            "record_failure": __import__("MaBoSS.services.runs", fromlist=["record_failure"]).record_failure,
+            "maboss_executable": __import__("MaBoSS.external", fromlist=["maboss_executable"]).maboss_executable,
             "logger": logging.getLogger("mock-run"),
             "Field": lambda **kwargs: kwargs.get("default"),
             "session_manager": SimpleNamespace(session_scope=lambda sid: nullcontext()),
@@ -187,14 +191,14 @@ class PreservationTests(unittest.TestCase):
         (self.artifact_dir / "result.csv").write_text("previous final result\n")
         ctx = FakeContext()
         with patch.object(artifacts.shutil, "copyfile", side_effect=OSError("fixture disk failure")):
-            with self.assertLogs("mock-run", level="WARNING"):
-                with self.assertRaisesRegex(RuntimeError, "fixture disk failure"):
-                    asyncio.run(tool(ctx, self.sid))
+            with self.assertRaisesRegex(RuntimeError, "fixture disk failure"):
+                asyncio.run(tool(ctx, self.sid))
         self.assertEqual(calls, ["run"])
         self.assertIsNone(session.result)
         self.assertEqual(ctx.progress, [(0, 2)])
         self.assertEqual((self.artifact_dir / "result.csv").read_text(), "previous final result\n")
-        self.assertEqual([p.name for p in list_artifacts(self.server, self.sid)], ["result.csv"])
+        self.assertEqual(len(list(self.artifact_dir.glob("failed_*.json"))), 1)
+        self.assertFalse(list(self.artifact_dir.glob("run_*.json")))
 
     def test_namespace_collision_never_overwrites(self):
         result = self.result()

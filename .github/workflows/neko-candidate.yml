@@ -1,0 +1,89 @@
+name: NeKo candidate compatibility
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: NeKo repository containing the pushed candidate
+        required: true
+        default: marcorusc/Neko
+        type: string
+      revision:
+        description: Full 40-character candidate commit SHA
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  candidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      MPLBACKEND: Agg
+      NEKO_WAVE2_REQUIRED: "1"
+    steps:
+      - uses: actions/checkout@v6
+      - name: Require an immutable revision
+        env:
+          CANDIDATE_REVISION: ${{ inputs.revision }}
+        run: |
+          python - <<'PY'
+          import os, re
+          assert re.fullmatch(r"[0-9a-f]{40}", os.environ["CANDIDATE_REVISION"]), "Use a full lowercase commit SHA."
+          PY
+      - uses: actions/checkout@v6
+        with:
+          repository: ${{ inputs.repository }}
+          ref: ${{ inputs.revision }}
+          path: candidate-neko
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install the MaBoSS executable
+        env:
+          MABOSS_RELEASE: v2.6.7.0
+          MABOSS_SHA256: 813781b872bdaadd4690051fcb939780313d8537f0b83c569b17450e237238ae
+        run: |
+          # pyMaBoSS runs this executable to load and simulate models; pip does not install it.
+          curl -fsSL -o "$RUNNER_TEMP/MaBoSS-linux64.zip" \
+            "https://github.com/sysbio-curie/MaBoSS/releases/download/${MABOSS_RELEASE}/MaBoSS-linux64.zip"
+          echo "${MABOSS_SHA256}  $RUNNER_TEMP/MaBoSS-linux64.zip" | sha256sum --check
+          unzip -q "$RUNNER_TEMP/MaBoSS-linux64.zip" 'MaBoSS*' -d "$RUNNER_TEMP/maboss-bin"
+          echo "$RUNNER_TEMP/maboss-bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/maboss-bin/MaBoSS" --version
+
+      - name: Install Graphviz and the candidate through the dependency resolver
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends graphviz libgraphviz-dev
+          python - <<'PY'
+          from pathlib import Path
+          lines = Path("requirements-ci-wave1.txt").read_text().splitlines()
+          Path("/tmp/companion-requirements.txt").write_text(
+              "\n".join(line for line in lines if not line.startswith("nekomata ")) + "\n"
+          )
+          PY
+          python -m pip install --upgrade pip
+          python -m pip install -r /tmp/companion-requirements.txt ./candidate-neko ".[dev,biomass-graph]"
+          python -m pip check
+      - name: Require the installed Wave 2 API
+        run: |
+          python - <<'PY'
+          from importlib.metadata import version
+          from neko.core.network import Network
+          methods = ("edit_interactions", "get_state", "history_dict", "export_history", "from_history", "history_status")
+          missing = [name for name in methods if not callable(getattr(Network, name, None))]
+          assert not missing, f"Candidate lacks Wave 2 methods: {missing}"
+          assert hasattr(Network, "database_name"), "Candidate lacks construction database identity"
+          assert hasattr(Network, "state_count"), "Candidate lacks lightweight history counts"
+          print("Installed nekomata:", version("nekomata"))
+          PY
+      - name: Test the installed candidate with the MCP wrapper
+        run: |
+          python -m pytest tests/test_neko_curation.py tests/test_neko_provenance.py \
+            tests/test_neko_wave2_runtime.py tests/test_neko_mcp_errors.py \
+            tests/test_cross_server_output_schemas.py tests/test_package_metadata.py \
+            tests/test_wave2_diagnostics.py -q

@@ -1,5 +1,9 @@
 # Wave 1 review candidate
 
+Historical scope: the NeKo CI candidate has since advanced to Wave 2. See
+[the Wave 2 integration report](wave2-neko-integration.md) for the current pin
+and acceptance results; the review scope below describes the original Wave 1 PR.
+
 This PR prepares MCP 2.5.0 with persistent artifact storage, timezone-aware
 metadata, verified Boolean ancestry v2 with v1 compatibility, and explicit
 unexpected-error masking in the shared NeKo/MaBoSS/PhysiCell wrapper.

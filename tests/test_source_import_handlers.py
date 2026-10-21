@@ -176,6 +176,8 @@ def test_sif_handler_rejects_before_backend_and_retains_export(tmp_path, monkeyp
     class Network:
         def __init__(self, **kwargs):
             calls.append(kwargs)
+            self.nodes = pd.DataFrame({"Genesymbol": ["A", "B"]})
+            self.edges = edges
         def convert_edgelist_into_genesymbol(self):
             return edges
 

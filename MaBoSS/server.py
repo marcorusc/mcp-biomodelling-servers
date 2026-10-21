@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Annotated
 
 import io
+import json
 
 import anyio
 import matplotlib.pyplot as plt
@@ -73,6 +74,7 @@ from .contracts import (
     NonEmptyString,
 )
 from .guidance import MABOSS_AGENT_MANUAL, MABOSS_SERVER_INSTRUCTIONS
+from .external import maboss_executable
 from .external import pymaboss as maboss
 from .locking import (
     resource_session_locked as _resource_session_locked,
@@ -137,6 +139,10 @@ __all__ = [
     "resource_parameters",
     "resource_simulation_result",
 ]
+
+from .services.runs import effective_configuration, load_run, run_table, record_failure
+from .services.model import RateEdit, edit_rates, inspect_nodes, model_revision, print_bnd_with_readouts, read_readouts
+from .tools.curation import edit_maboss_readouts  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -444,10 +450,11 @@ def import_neko_handoff(
                     )
 
             try:
-                candidate_simulation = maboss.load(
-                    str(temporary_bnd),
-                    str(temporary_cfg),
-                )
+                with maboss_executable():
+                    candidate_simulation = maboss.load(
+                        str(temporary_bnd),
+                        str(temporary_cfg),
+                    )
             except Exception as exc:
                 raise RuntimeError(
                     f"Error loading the converted MaBoSS simulation: {exc}"
@@ -687,13 +694,16 @@ def build_simulation(
     logger.info("Loading MaBoSS simulation: BND=%s CFG=%s", bnd_path, cfg_path)
 
     try:
-        loaded_sim = maboss.load(bnd_path, cfg_path)
+        with maboss_executable():
+            loaded_sim = maboss.load(bnd_path, cfg_path)
     except Exception as e:
         logger.exception("Failed to load simulation")
         raise RuntimeError(f"Error loading MaBoSS simulation: {e}") from e
 
     if loaded_sim:
+        readouts = read_readouts(bnd_path, loaded_sim)
         sess.set_simulation(loaded_sim, bnd_path, cfg_path)
+        sess.readouts = readouts
         sess.source_import = imported_source
         logger.info("MaBoSS simulation loaded successfully")
         parameters_str = "\n".join(f"{k}: {v}" for k, v in loaded_sim.param.items())
@@ -748,66 +758,43 @@ async def run_simulation(
                     "set_maboss_output_nodes() with a small biologically "
                     "meaningful set before run_simulation()."
                 )
+            revision = model_revision(sess.sim, sess.readouts) if hasattr(sess.sim, "print_cfg") else None
+            config = effective_configuration(sess, sess.sim) if revision else {}
+            art_dir = get_artifact_dir(_SERVER_ROOT, sess.session_id)
+            run_result = None
             try:
-                logger.info("Running MaBoSS simulation")
-                run_result = sess.sim.run()
-            except Exception as e:
-                logger.exception("Error during MaBoSS simulation run")
-                raise RuntimeError(
-                    f"Error during MaBoSS simulation run: {e}"
-                ) from e
-
-            run_error = getattr(run_result, "_err", 0)
-            if run_error:
-                sess.clear()
-                raise RuntimeError(
-                    "MaBoSS simulation process failed with exit code "
-                    f"{run_error}. No result files were produced."
-                )
-
+                with maboss_executable():
+                    run_result = sess.sim.run()
+                if getattr(run_result, "_err", 0):
+                    raise RuntimeError(f"Engine exit code {run_result._err}")
+            except Exception as exc:
+                diagnostic = record_failure(art_dir, sess.session_id, "engine", exc, revision, run_result)
+                raise RuntimeError(f"MaBoSS engine failed; incomplete record: {diagnostic}: {exc}") from exc
+            try:
+                manifest_path = _preserve_simulation_result(
+                    run_result, art_dir, sess.session_id, model_revision=revision,
+                    configuration=config)
+                manifest = json.loads(manifest_path.read_text())
+            except Exception as exc:
+                diagnostic = record_failure(art_dir, sess.session_id, "persistence", exc, revision, run_result)
+                raise RuntimeError(f"Engine finished, but persistence failed; do not rerun automatically. Incomplete record: {diagnostic}: {exc}") from exc
             sess.set_result(run_result)
-
-            # Persist the result table so list_generated_files shows it.
-            row_count = None
-            column_count = None
+            sess.latest_run_id = manifest["run_id"]
+            sess.result_revision = revision
             saved_csv_path = None
+            df_result = pd.DataFrame()
             try:
-                art_dir = get_artifact_dir(_SERVER_ROOT, sess.session_id)
-                _preserve_simulation_result(run_result, art_dir, sess.session_id)
-                csv_path = safe_artifact_path(art_dir, "result.csv")
                 df_result = run_result.get_last_states_probtraj()
-                row_count = len(df_result)
-                column_count = len(df_result.columns)
                 if not df_result.empty:
-                    df_result.to_csv(csv_path, index=False)
-                    saved_csv_path = csv_path
-                    logger.info("Result saved to %s", csv_path)
-            except FileNotFoundError as csv_err:
-                sess.result = None
-                logger.exception("MaBoSS result CSV was not produced")
-                raise RuntimeError(
-                    "MaBoSS simulation finished but did not produce the "
-                    f"expected probability trajectory file: {csv_err}"
-                ) from csv_err
-            except Exception as csv_err:
-                sess.result = None
-                logger.warning(
-                    "Could not save result CSV: %s",
-                    csv_err,
-                    exc_info=True,
-                )
-                raise RuntimeError(
-                    "MaBoSS simulation finished but the result table could "
-                    f"not be read: {csv_err}"
-                ) from csv_err
-            return (
-                sess.session_id,
-                row_count,
-                column_count,
-                saved_csv_path,
-            )
+                    saved_csv_path = safe_artifact_path(art_dir, "result.csv")
+                    df_result.to_csv(saved_csv_path, index=False)
+            except Exception:
+                saved_csv_path = None
+                logger.warning("Historical run preserved; latest result.csv alias could not be written")
+            return (sess.session_id, len(df_result), len(df_result.columns), saved_csv_path,
+                    manifest["run_id"], str(manifest_path), revision)
 
-    resolved_session_id, row_count, column_count, csv_path = (
+    resolved_session_id, row_count, column_count, csv_path, run_id, manifest_path, revision = (
         await anyio.to_thread.run_sync(run_locked)
     )
     await ctx.report_progress(2, 2)
@@ -824,6 +811,7 @@ async def run_simulation(
     payload = MaBoSSSimulationRunResult(
         server="MaBoSS",
         session_id=resolved_session_id,
+        run_id=run_id, run_manifest=manifest_path, model_revision=revision,
         result_available=True,
         trajectory_row_count=row_count,
         trajectory_column_count=column_count,
@@ -898,7 +886,7 @@ def export_maboss_bnd_cfg(
 
         # Write .bnd
         with open(bnd_out, "w") as fbnd:
-            sess.sim.print_bnd(out=fbnd)
+            print_bnd_with_readouts(sess, fbnd)
 
         # Write .cfg
         with open(cfg_out, "w") as fcfg:
@@ -923,6 +911,9 @@ def export_maboss_bnd_cfg(
         payload = MaBoSSModelExportResult(
             server="MaBoSS",
             session_id=sess.session_id,
+            model_revision=model_revision(sess.sim, sess.readouts) if hasattr(sess.sim, "str_cfg") else None,
+            output_nodes=list(sess.sim.network.get_output()) if hasattr(sess.sim, "network") else [],
+            internal_nodes=[n for n in sess.sim.network if n not in sess.sim.network.get_output()] if hasattr(sess.sim, "network") else [],
             prefix=prefix,
             overwrite=overwrite,
             bnd_file=artifact_file_summary(
@@ -1068,6 +1059,10 @@ def export_maboss_handoff(
         )
 
     parameters = _handoff_parameters(sess.sim.param)
+    if include_result and sess.result is not None and sess.result_revision is not None:
+        if sess.result_revision != model_revision(sess.sim, sess.readouts):
+            raise ValueError("Stored result belongs to an older model revision; export without it or explicitly run the reviewed current model")
+
     result_table = None
     result_row_count = 0
     result_column_count = 0
@@ -1129,7 +1124,7 @@ def export_maboss_handoff(
             temporary_result = temporary_root / "result.csv"
             try:
                 with temporary_bnd.open("w", encoding="utf-8") as bnd_file:
-                    sess.sim.print_bnd(out=bnd_file)
+                    print_bnd_with_readouts(sess, bnd_file)
                 with temporary_cfg.open("w", encoding="utf-8") as cfg_file:
                     sess.sim.print_cfg(out=cfg_file)
             except Exception as exc:
@@ -1184,7 +1179,9 @@ def export_maboss_handoff(
         elif parent_manifest is not None:
             source_ancestry = parent_manifest.source_ancestry or []
         manifest = MaBoSSToPhysiCellHandoffManifest(
-            schema_version="2.0",
+            schema_version="2.1",
+            model_revision=model_revision(sess.sim, sess.readouts),
+            readouts=sess.readouts,
             source_ancestry=source_ancestry,
             source=HandoffProvenance(
                 server="MaBoSS",
@@ -1283,6 +1280,7 @@ def get_maboss_nodes(
         default=None,
         description="Session to query. Omit to use the active default session.",
     ),
+    selected_nodes: Annotated[list[NonEmptyString] | None, Field(max_length=25, description="Inspect rules, rate expressions and referenced parameters for these nodes.")] = None,
 ) -> Annotated[CallToolResult, MaBoSSNodeListResult]:
     """Return the list of node names in the loaded MaBoSS network.
 
@@ -1305,6 +1303,9 @@ def get_maboss_nodes(
         session_id=sess.session_id,
         node_count=len(nodes_list),
         nodes=[str(node) for node in nodes_list],
+        model_revision=model_revision(sess.sim, sess.readouts) if hasattr(sess.sim, "print_cfg") else None,
+        output_nodes=list(sess.sim.network.get_output()) if hasattr(sess.sim.network, "get_output") else [],
+        details=inspect_nodes(sess.sim, selected_nodes, sess.readouts) if selected_nodes else [],
     )
     return structured_report(text, payload)
 
@@ -1354,21 +1355,45 @@ def get_maboss_logical_rules(
         default=None,
         description="Session to query. Omit to use the active default session.",
     ),
+    selected_nodes: Annotated[list[NonEmptyString] | None, Field(min_length=1, max_length=25, description="Inspect only these node rules; omitted returns up to 100 nodes.")] = None,
 ) -> Annotated[CallToolResult, MaBoSSLogicalRulesResult]:
-    """Return the Boolean logical rules of the loaded MaBoSS network."""
+    """Return the Boolean logical rules of the loaded MaBoSS network.
+
+    rule_limitation flags nodes whose custom rate expressions mean the rule
+    alone does not describe switching; inspect them with get_maboss_nodes.
+    """
     sess = ensure_session(session_id)
     if sess.sim is None:
         raise RuntimeError(
             "No simulation loaded. Call bnet_to_bnd_and_cfg then build_simulation first."
         )
     try:
-        logical_rules = sess.sim.get_logical_rules()
-        rules = _logical_rule_records(logical_rules)
+        total_node_count = truncated = None
+        if hasattr(sess.sim, "print_cfg"):
+            all_names = list(sess.sim.network)
+            names = selected_nodes or all_names[:100]
+            if selected_nodes is None:
+                total_node_count, truncated = len(all_names), len(all_names) > len(names)
+            records = inspect_nodes(sess.sim, names, sess.readouts)
+            rules = [{"node": item["node"], "rule": item["rule"] or None,
+                      "rule_limitation": item["rule_limitation"]} for item in records]
+            lines = [item["node"] + " = " + (item["rule"] or "(no explicit rule)")
+                     + (f"  [{item['rule_limitation']}]" if item["rule_limitation"] else "")
+                     for item in rules]
+            if truncated:
+                lines.append(f"Showing {len(names)} of {total_node_count} nodes; use selected_nodes for others.")
+            logical_rules = "\n".join(lines)
+        else:
+            logical_rules = sess.sim.get_logical_rules()
+            rules = _logical_rule_records(logical_rules)
         payload = MaBoSSLogicalRulesResult(
             server="MaBoSS",
             session_id=sess.session_id,
+            model_revision=model_revision(sess.sim, sess.readouts) if hasattr(sess.sim, "print_cfg") else None,
             rule_count=len(rules),
             rules=rules,
+            total_node_count=total_node_count,
+            truncated=truncated,
         )
         return structured_report(str(logical_rules), payload)
     except Exception as e:
@@ -1417,6 +1442,10 @@ def change_maboss_rule(
         node = node.strip()
         new_rule = new_rule.strip()
 
+        if node in sess.readouts:
+            raise ValueError("Use edit_maboss_readouts to preserve readout provenance")
+        if any(name in __import__("re").findall(r"[A-Za-z_][A-Za-z_0-9]*", new_rule) for name in sess.readouts):
+            raise ValueError("Readouts cannot feed back into core rules")
         # Check node existence
         try:
             target_node = sess.sim.network[node]
@@ -1536,6 +1565,8 @@ def update_maboss_parameters(
         default=None,
         description="Session to update. Omit to use the active default session.",
     ),
+    rates: Annotated[list[RateEdit] | None, Field(min_length=1, max_length=25, description="Explicit named-node rate coefficients; conditional logic is preserved.")] = None,
+    expected_revision: Annotated[NonEmptyString | None, Field(description="Required current model revision for rate edits.")] = None,
 ) -> Annotated[CallToolResult, MaBoSSParameterResult]:
     """Update one or more MaBoSS simulation parameters, or list current values.
 
@@ -1548,6 +1579,11 @@ def update_maboss_parameters(
             "No MaBoSS simulation has been built yet. "
             "Call bnet_to_bnd_and_cfg then build_simulation first."
         )
+    rate_changes = None
+    if rates:
+        if parameters is not None:
+            raise ValueError("Edit rates and global parameters in separate calls")
+        rate_changes = edit_rates(sess, rates, expected_revision)
     try:
         parameter_updates = (
             None
@@ -1568,7 +1604,10 @@ def update_maboss_parameters(
             payload = MaBoSSParameterResult(
                 server="MaBoSS",
                 session_id=sess.session_id,
-                mode="inspect",
+                model_revision=model_revision(sess.sim, sess.readouts) if hasattr(sess.sim, "print_cfg") else None,
+                rate_changes=rate_changes,
+                stationary_distribution_enabled=bool(sess.sim.param.get("statdist_traj_count", 0)),
+                mode="update" if rate_changes else "inspect",
                 parameter_count=len(parameters_list),
                 parameters=parameters_list,
                 updated_parameters=[],
@@ -1589,6 +1628,8 @@ def update_maboss_parameters(
         payload = MaBoSSParameterResult(
             server="MaBoSS",
             session_id=sess.session_id,
+            model_revision=model_revision(sess.sim, sess.readouts) if hasattr(sess.sim, "print_cfg") else None,
+            stationary_distribution_enabled=bool(sess.sim.param.get("statdist_traj_count", 0)),
             mode="update",
             parameter_count=len(parameters_list),
             parameters=parameters_list,
@@ -1736,7 +1777,7 @@ def set_maboss_initial_state(
 
 @tool(
     title="Simulate MaBoSS mutation",
-    annotations=_READ_ONLY_TOOL,
+    annotations=_NON_IDEMPOTENT_TOOL,
     structured_output=True,
 )
 async def simulate_mutation(
@@ -1767,15 +1808,11 @@ async def simulate_mutation(
         description="Session to use. Omit to use the active default session.",
     ),
 ) -> Annotated[CallToolResult, MaBoSSMutationSimulationResult]:
-    """Run a one-off mutant simulation without modifying the session's base simulation.
+    """Run an explicitly requested mutant copy and preserve its exact inputs/results.
 
-    Creates an internal copy of the current simulation, applies the
-    specified mutations, runs it, and returns the final state probability
-    distribution as a Markdown table. The session state is unchanged.
-
-    Examples:
-        simulate_mutation('FoxO3', 'OFF')
-        simulate_mutation(['FoxO3', 'AKT'], ['OFF', 'ON'])
+    Returns a compact run ID and artifact references. Retrieve a bounded table
+    with get_simulation_result(run_id=...). The base model and latest ordinary
+    run selection are preserved. Scientific execution requires authorization.
     """
     node_list = [nodes] if isinstance(nodes, str) else list(nodes)
     if isinstance(state, str):
@@ -1806,7 +1843,8 @@ async def simulate_mutation(
                 )
             try:
                 logger.info("Running mutant simulation")
-                mutated_simulation = sess.sim.copy()
+                with maboss_executable():
+                    mutated_simulation = sess.sim.copy()
                 for node, mutation_state in zip(
                     node_list,
                     state_list,
@@ -1818,159 +1856,109 @@ async def simulate_mutation(
                         node,
                         mutation_state,
                     )
-                mutation_result = mutated_simulation.run()
-                return (
-                    sess.session_id,
-                    mutation_result.get_last_states_probtraj(),
-                )
-            except ValueError:
+                revision = model_revision(sess.sim, sess.readouts)
+                config = effective_configuration(sess, mutated_simulation)
+                art_dir = get_artifact_dir(_SERVER_ROOT, sess.session_id)
+                mutation_result = None
+                try:
+                    with maboss_executable():
+                        mutation_result = mutated_simulation.run()
+                    if getattr(mutation_result, "_err", 0):
+                        raise RuntimeError(f"Engine exit code {mutation_result._err}")
+                except Exception as exc:
+                    diagnostic = record_failure(art_dir, sess.session_id, "engine", exc, revision, mutation_result)
+                    raise RuntimeError(f"Mutant engine failed; incomplete record: {diagnostic}: {exc}") from exc
+                try:
+                    manifest_path = _preserve_simulation_result(
+                        mutation_result, art_dir, sess.session_id, model_revision=revision,
+                        kind="mutant", mutations=dict(zip(node_list, state_list, strict=True)),
+                        configuration=config)
+                except Exception as exc:
+                    diagnostic = record_failure(art_dir, sess.session_id, "persistence", exc, revision, mutation_result)
+                    raise RuntimeError(f"Mutant finished but persistence failed; do not rerun automatically. Incomplete record: {diagnostic}: {exc}") from exc
+                manifest = json.loads(manifest_path.read_text())
+                return sess.session_id, manifest, manifest_path
+            except (ValueError, RuntimeError):
                 raise
-            except Exception as e:
-                logger.exception("Error running mutant simulation")
-                raise RuntimeError(
-                    f"Error running mutant simulation: {e}"
-                ) from e
+            except Exception as exc:
+                raise RuntimeError(f"Error preparing mutant simulation: {exc}") from exc
 
-    resolved_session_id, df_prob = await anyio.to_thread.run_sync(
-        run_mutation_locked
-    )
-    await ctx.report_progress(2, 3)
-
-    mutations = [
-        MaBoSSMutationRecord(node=node, state=mutation_state)
-        for node, mutation_state in zip(node_list, state_list, strict=True)
-    ]
-    trajectory = _scientific_table(df_prob)
-    if df_prob.empty:
-        await ctx.report_progress(3, 3)
-        payload = MaBoSSMutationSimulationResult(
-            server="MaBoSS",
-            session_id=resolved_session_id,
-            mutations=mutations,
-            has_trajectory_data=False,
-            trajectory=trajectory,
-        )
-        return structured_report(
-            "_Simulation completed but returned no trajectory data._",
-            payload,
-        )
-
-    display_df = clean_for_markdown(df_prob)
-    md_table = display_df.to_markdown(index=False, tablefmt="plain")
+    resolved_session_id, manifest, manifest_path = await anyio.to_thread.run_sync(run_mutation_locked)
     await ctx.report_progress(3, 3)
-    text = "\n".join([
-        "**MaBoSS Mutant Simulation: State Probability Trajectory**",
-        "",
-        f"_Mutations applied: {dict(zip(node_list, state_list, strict=True))}_",
-        "",
-        md_table,
-    ])
     payload = MaBoSSMutationSimulationResult(
-        server="MaBoSS",
-        session_id=resolved_session_id,
-        mutations=mutations,
-        has_trajectory_data=True,
-        trajectory=trajectory,
-    )
-    return structured_report(text, payload)
+        server="MaBoSS", session_id=resolved_session_id, run_id=manifest["run_id"],
+        run_manifest=str(manifest_path), model_revision=manifest["model_revision"],
+        mutations=[MaBoSSMutationRecord(node=n, state=v) for n, v in zip(node_list, state_list, strict=True)],
+        has_trajectory_data=bool(manifest["state_timepoints"]), trajectory=_scientific_table(pd.DataFrame()))
+    return structured_report(f"Mutant run preserved: {manifest['run_id']}. Retrieve bounded results with get_simulation_result(run_id=...).", payload)
 
 
 @tool(
     title="Visualize MaBoSS trajectories",
-    annotations=_IDEMPOTENT_TOOL,
+    annotations=_NON_IDEMPOTENT_TOOL,
     structured_output=True,
 )
-@_session_locked
 def visualize_network_trajectories(
-    session_id: NonEmptyString | None = Field(
-        default=None,
-        description=(
-            "Session whose stored simulation result should be plotted. "
-            "Omit to use the active default session."
-        ),
-    ),
-    until: float | None = Field(
-        default=None,
-        gt=0,
-        allow_inf_nan=False,
-        description=(
-            "Maximum MaBoSS simulation time to display. "
-            "Omit to plot the full available trajectory."
-        ),
-    ),
+    session_id: Annotated[NonEmptyString | None, Field(description="Owner session; explicit run IDs also work after restart.")] = None,
+    until: Annotated[float | None, Field(gt=0, allow_inf_nan=False, description="Maximum time displayed; omitted uses available data within plotting bounds.")] = None,
+    run_id: Annotated[NonEmptyString | None, Field(description="Exact saved run ID; omit for latest ordinary run in the active session.")] = None,
 ) -> Annotated[CallToolResult, MaBoSSTrajectoryPlotResult]:
-    """Plot network state trajectories and return an uncropped PNG image."""
-    logger.info("Visualizing network trajectories")
-    sess = ensure_session(session_id)
+    """Plot a saved run without engine execution; retain every plot variant.
 
-    if sess.result is None:
-        raise RuntimeError(
-            "No simulation has been run yet. Call run_simulation first."
-        )
-
-    fig = None
+    At most 1000 timepoints and 100 state columns are rendered; full data remain saved.
+    """
+    if run_id is None:
+        with session_manager.session_scope(session_id):
+            sess = ensure_session(session_id)
+            run_id, session_id = sess.latest_run_id, sess.session_id
+        if run_id is None:
+            raise RuntimeError("No simulation has been run yet with durable preservation; supply run_id or run a simulation first")
+    manifest, path = load_run(_SERVER_ROOT, run_id, session_id)
+    table = run_table(manifest, path, limit=1001).iloc[:, :100]
+    truncated_time = len(table) > 1000
+    table = table.head(1000)
+    if until is not None:
+        table = table.loc[table.index <= until]
+    if table.empty:
+        raise ValueError("No data in the requested time range")
+    fig, axes = plt.subplots(figsize=(10, 6))
     try:
-        # pyMaBoSS draws the legend outside the axes and returns None. Own the
-        # figure explicitly so rendering and cleanup do not depend on plt.gcf().
-        fig, axes = plt.subplots(figsize=(10, 6))
-        sess.result.plot_trajectory(until=until, axes=axes)
-        if not axes.has_data():
-            raise RuntimeError("MaBoSS returned no trajectory data to plot.")
+        table.plot(ax=axes)
+        axes.set_xlabel("Time")
+        axes.set_ylabel("State probability")
         fig.tight_layout()
-
-        # Render once with a tight bounding box so the external legend is not
-        # cropped. The exact same PNG bytes are saved and returned to the client.
         with io.BytesIO() as buffer:
-            fig.savefig(
-                buffer,
-                format="png",
-                dpi=150,
-                bbox_inches="tight",
-                pad_inches=0.2,
-            )
-            png_data = buffer.getvalue()
-
-        art_dir = get_artifact_dir(_SERVER_ROOT, sess.session_id)
-        output_path = safe_artifact_path(art_dir, "network_trajectory.png")
-        output_path.write_bytes(png_data)
-
-        logger.info("Trajectory plot saved to %s", output_path)
-
-        time_window = (
-            "the full available simulation time"
-            if until is None
-            else f"simulation time <= {until:g}"
-        )
+            fig.savefig(buffer, format="png", dpi=150, bbox_inches="tight")
+            png = buffer.getvalue()
+        art_dir = get_artifact_dir(_SERVER_ROOT, manifest["session_id"])
+        output_path = safe_artifact_path(art_dir, run_id + ".plot_" + __import__("uuid").uuid4().hex + ".png")
+        metadata = {"run_id": run_id, "session_id": manifest["session_id"],
+                    "model_revision": manifest.get("model_revision"), "until": until,
+                    "max_timepoints": 1000, "max_states": 100,
+                    "image_sha256": __import__("hashlib").sha256(png).hexdigest()}
+        created = []
+        try:
+            with tempfile.TemporaryDirectory(prefix=".maboss-plot-", dir=art_dir) as staging:
+                image_path = Path(staging) / output_path.name
+                image_path.write_bytes(png)
+                metadata_path = image_path.with_suffix(".json")
+                metadata_path.write_text(json.dumps(metadata))
+                for source, target in ((image_path, output_path), (metadata_path, output_path.with_suffix(".json"))):
+                    _link_artifact_without_overwrite(source, target)
+                    created.append(target)
+        except Exception:
+            _rollback_artifacts(created)
+            raise
         payload = MaBoSSTrajectoryPlotResult(
-            server="MaBoSS",
-            session_id=sess.session_id,
-            until=until,
-            time_window="full" if until is None else "bounded",
-            image_file=artifact_file_summary(
-                output_path,
-                session_id=sess.session_id,
-            ),
-        )
-        return CallToolResult(
-            content=[
-                TextContent(
-                    type="text",
-                    text=(
-                        f"Network trajectory plot ({time_window}) saved to: "
-                        f"{output_path}"
-                    ),
-                ),
-                Image(data=png_data, format="png").to_image_content(),
-            ],
-            structured_content=payload.model_dump(mode="json"),
-        )
-
-    except Exception as e:
-        logger.exception("Error saving trajectory plot")
-        raise RuntimeError(f"Error saving trajectory plot: {e}") from e
+            server="MaBoSS", session_id=manifest["session_id"], run_id=run_id,
+            run_manifest=str(path), model_revision=manifest.get("model_revision"),
+            until=until, time_window="full" if until is None and not truncated_time else "bounded",
+            image_file=artifact_file_summary(output_path, session_id=manifest["session_id"]))
+        return CallToolResult(content=[TextContent(type="text", text=f"Saved run {run_id}; plot capped at 1000 timepoints and 100 states: {output_path}"),
+                                      Image(data=png, format="png").to_image_content()],
+                              structured_content=payload.model_dump(mode="json"))
     finally:
-        if fig is not None:
-            plt.close(fig)
+        plt.close(fig)
 
 
 @tool(
@@ -1978,60 +1966,31 @@ def visualize_network_trajectories(
     annotations=_READ_ONLY_TOOL,
     structured_output=True,
 )
-@_session_locked
 def get_simulation_result(
-    session_id: NonEmptyString | None = Field(
-        default=None,
-        description="Session to query. Omit to use the active default session.",
-    ),
+    session_id: Annotated[NonEmptyString | None, Field(description="Owner session; explicit run IDs also work after restart.")] = None,
+    run_id: Annotated[NonEmptyString | None, Field(description="Exact saved run ID; omit for latest ordinary run in the active session.")] = None,
+    offset: Annotated[int, Field(ge=0, description="Timepoint offset when final_only is false.")] = 0,
+    limit: Annotated[int, Field(ge=1, le=100, description="Maximum returned timepoints.")] = 25,
+    final_only: Annotated[bool, Field(description="Return just the final snapshot; false enables paged trajectories.")] = True,
 ) -> Annotated[CallToolResult, MaBoSSSimulationResult]:
-    """Return the last simulation result as a Markdown table of state probabilities.
+    """Read a bounded saved run, including after restart. Omit run_id for latest ordinary run.
 
-    Columns = distinct Boolean states (sets of ON nodes joined by '--').
-    The single row is the final timepoint snapshot; values sum to ~1.
-    Call run_simulation() first.
+    Final snapshot is the default. Historical IDs never fall back to another run.
+    Tables are capped at 100 state columns; full tables remain in artifacts.
     """
-    sess = ensure_session(session_id)
-    if sess.result is None:
-        raise RuntimeError(
-            "No simulation has been run yet. Call run_simulation() first."
-        )
-    try:
-        df_prob = sess.result.get_last_states_probtraj()
-        trajectory = _scientific_table(df_prob)
-        if df_prob.empty:
-            payload = MaBoSSSimulationResult(
-                server="MaBoSS",
-                session_id=sess.session_id,
-                has_trajectory_data=False,
-                trajectory=trajectory,
-            )
-            return structured_report(
-                "_Simulation completed but returned no trajectory data._",
-                payload,
-            )
-        display_df = clean_for_markdown(df_prob)
-        md_table = display_df.to_markdown(index=False, tablefmt="plain")
-        text = "\n".join([
-            "**MaBoSS Simulation: State Probability Trajectory**",
-            "",
-            md_table,
-        ])
-        payload = MaBoSSSimulationResult(
-            server="MaBoSS",
-            session_id=sess.session_id,
-            has_trajectory_data=True,
-            trajectory=trajectory,
-        )
-        return structured_report(text, payload)
-    except FileNotFoundError as e:
-        raise RuntimeError(
-            "MaBoSS result files are missing from the simulation workdir. "
-            "The backend likely crashed before writing the probability "
-            f"trajectory CSV: {e}"
-        ) from e
-    except Exception as e:
-        raise RuntimeError(f"Error retrieving simulation result: {e}") from e
+    if run_id is None:
+        with session_manager.session_scope(session_id):
+            sess = ensure_session(session_id)
+            run_id, session_id = sess.latest_run_id, sess.session_id
+        if run_id is None:
+            raise RuntimeError("No preserved ordinary simulation; call run_simulation first or supply a run_id")
+    manifest, path = load_run(_SERVER_ROOT, run_id, session_id)
+    table = run_table(manifest, path, offset=offset, limit=limit, final=final_only).iloc[:, :100]
+    payload = MaBoSSSimulationResult(
+        server="MaBoSS", session_id=manifest["session_id"], run_id=run_id,
+        run_manifest=str(path), model_revision=manifest.get("model_revision"),
+        has_trajectory_data=not table.empty, trajectory=_scientific_table(table))
+    return structured_report(f"Saved run {run_id}; up to 100 state columns. Full tables: {path}", payload)
 
 
 # ---------------------------------------------------------------------------
@@ -2058,11 +2017,15 @@ def list_generated_files(
         resolved_session_id = None
         scope = "all"
     else:
-        with session_manager.session_scope(session_id):
-            sess = ensure_session(session_id)
-            files = list_artifacts(_SERVER_ROOT, session_id=sess.session_id)
-            resolved_session_id = sess.session_id
-            scope = "session"
+        if session_id is not None and session_manager.get_session(session_id) is None:
+            resolved_session_id = session_id
+            files = list_artifacts(_SERVER_ROOT, session_id=session_id)
+        else:
+            with session_manager.session_scope(session_id):
+                sess = ensure_session(session_id)
+                files = list_artifacts(_SERVER_ROOT, session_id=sess.session_id)
+                resolved_session_id = sess.session_id
+        scope = "session"
 
     if not files:
         text = "No artifact files found."

@@ -35,6 +35,7 @@ class NeKoSession:
 
     session_id: str
     network: object | None = None  # neko.core.network.Network
+    network_id: str | None = None
     created_at: float = field(default_factory=time.time)
     last_accessed: float = field(default_factory=time.time)
     # Cached gene-symbol edge list.
@@ -86,6 +87,7 @@ class NeKoSession:
         with self._operation_lock:
             self.source_import = None
             self.network = network_obj
+            self.network_id = str(uuid.uuid4()) if network_obj is not None else None
             self._edges_cache = edges_df
             self._edges_cache_dirty = network_obj is not None and edges_df is None
             self._touch_unlocked()

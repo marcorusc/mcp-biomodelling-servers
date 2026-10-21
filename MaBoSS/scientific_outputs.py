@@ -20,6 +20,7 @@ class MaBoSSScientificResult(StructuredOutputModel):
 
     server: Literal["MaBoSS"]
     session_id: str = Field(min_length=1)
+    model_revision: str | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class MaBoSSNodeListResult(MaBoSSScientificResult):
@@ -27,6 +28,8 @@ class MaBoSSNodeListResult(MaBoSSScientificResult):
 
     node_count: int = Field(ge=0)
     nodes: list[str]
+    details: list[dict] = Field(default_factory=list, exclude_if=lambda value: not value)
+    output_nodes: list[str] = Field(default_factory=list, exclude_if=lambda value: not value)
 
 
 class MaBoSSStateProbabilityRecord(StructuredOutputModel):
@@ -54,7 +57,12 @@ class MaBoSSLogicalRuleRecord(StructuredOutputModel):
     """Boolean update rule for one network node."""
 
     node: str = Field(min_length=1)
-    rule: str
+    rule: str | None = Field(description="Boolean rule; null when the node has no explicit logic.")
+    rule_limitation: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Why the rule alone does not describe switching, when it does not.",
+    )
 
 
 class MaBoSSLogicalRulesResult(MaBoSSScientificResult):
@@ -62,6 +70,8 @@ class MaBoSSLogicalRulesResult(MaBoSSScientificResult):
 
     rule_count: int = Field(ge=0)
     rules: list[MaBoSSLogicalRuleRecord]
+    total_node_count: int | None = Field(default=None, ge=0, exclude_if=lambda value: value is None)
+    truncated: bool | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class MaBoSSMutationRecord(StructuredOutputModel):
@@ -92,6 +102,8 @@ class MaBoSSParameterResult(MaBoSSScientificResult):
     parameter_count: int = Field(ge=0)
     parameters: list[MaBoSSParameterRecord]
     updated_parameters: list[str]
+    rate_changes: dict | None = None
+    stationary_distribution_enabled: bool | None = None
 
 
 class MaBoSSScientificTable(StructuredOutputModel):
@@ -108,6 +120,9 @@ class MaBoSSScientificTable(StructuredOutputModel):
 class MaBoSSSimulationRunResult(MaBoSSScientificResult):
     """Completion and persisted-artifact metadata for a simulation run."""
 
+    run_id: str | None = None
+    run_manifest: str | None = None
+
     result_available: bool
     trajectory_row_count: int | None = Field(default=None, ge=0)
     trajectory_column_count: int | None = Field(default=None, ge=0)
@@ -117,6 +132,9 @@ class MaBoSSSimulationRunResult(MaBoSSScientificResult):
 class MaBoSSMutationSimulationResult(MaBoSSScientificResult):
     """Final probability table for a one-off mutant simulation."""
 
+    run_id: str | None = None
+    run_manifest: str | None = None
+
     mutations: list[MaBoSSMutationRecord]
     has_trajectory_data: bool
     trajectory: MaBoSSScientificTable
@@ -125,12 +143,18 @@ class MaBoSSMutationSimulationResult(MaBoSSScientificResult):
 class MaBoSSSimulationResult(MaBoSSScientificResult):
     """Final state-probability table from the stored simulation result."""
 
+    run_id: str | None = None
+    run_manifest: str | None = None
+
     has_trajectory_data: bool
     trajectory: MaBoSSScientificTable
 
 
 class MaBoSSTrajectoryPlotResult(MaBoSSScientificResult):
     """Metadata for the PNG trajectory image returned to the client."""
+
+    run_id: str | None = None
+    run_manifest: str | None = None
 
     until: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     time_window: Literal["full", "bounded"]

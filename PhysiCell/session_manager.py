@@ -46,6 +46,8 @@ class WorkflowStep(Enum):
 @dataclass
 class MaBoSSContext:
     """Context information from MaBoSS model analysis."""
+    model_revision: str = ""
+    readouts: dict = field(default_factory=dict)
     model_name: str = ""
     bnd_file_path: str = ""
     cfg_file_path: str = ""
@@ -78,6 +80,9 @@ class SessionState:
     completed_steps: set[WorkflowStep] = field(default_factory=set)
     created_at: float = field(default_factory=time.time)
     last_accessed: float = field(default_factory=time.time)
+    generated_ruleset_name: str | None = None
+    initial_cells_artifact: dict | None = None
+    substrate_origins: dict[str, str] = field(default_factory=dict)
     substrates_count: int = 0
     cell_types_count: int = 0
     rules_count: int = 0
@@ -249,6 +254,9 @@ class SessionState:
                 if self.scenario_context
                 else set()
             )
+            self.generated_ruleset_name = None
+            self.initial_cells_artifact = None
+            self.substrate_origins = {}
             self.substrates_count = 0
             self.cell_types_count = 0
             self.rules_count = 0

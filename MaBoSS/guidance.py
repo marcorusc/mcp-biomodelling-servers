@@ -24,10 +24,10 @@ MABOSS_AGENT_MANUAL = """
 5. **Tune:** `update_maboss_parameters({"sample_count": 1000, "thread_count": 4})`
 6. **Reduce output nodes (IMPORTANT):** `set_maboss_output_nodes(["Apoptosis", "Proliferation"])` — restricts the result to only the nodes you care about. Without this, MaBoSS enumerates ALL 2^N Boolean states, which becomes exponentially expensive for large networks (>20 nodes). Always set output nodes to the smallest biologically meaningful subset before running.
 7. **Configure (optional):** `get_maboss_initial_state()` to inspect current state, then `set_maboss_initial_state(...)` if non-default probabilities are needed. For one node, use `[P(OFF), P(ON)]`. For multiple nodes, use JSON-native records such as `[{"state": [0, 0], "probability": 0.4}, {"state": [1, 0], "probability": 0.6}]`. State-vector order must match `nodes`, and probabilities must sum to 1. Only use node names returned by `get_maboss_nodes()`.
-8. **Run:** `run_simulation()` — executes the simulation and saves `result.csv` to the artifact directory
+8. **Run:** `run_simulation()` — preserves an immutable run manifest and exact inputs/outputs; `result.csv` is only a latest-result alias
 9. **Analyse:** `get_simulation_result()` — returns the state probability table as a Markdown table
 10. **Visualise:** `visualize_network_trajectories()` — saves a PNG artifact
-11. **Mutate:** `simulate_mutation(nodes, state)` — runs a one-off mutant copy
+11. **Mutate:** `simulate_mutation(nodes, state)` — preserves a one-off mutant run without changing the latest ordinary selection
 12. **PhysiCell handoff:** `export_maboss_handoff(target_cell_type=...)`
     snapshots the current model, parameters, outputs, optional result, and
     complete NeKo lineage.
@@ -65,4 +65,19 @@ MABOSS_AGENT_MANUAL = """
   handoff has been exported; integrity is rechecked before lineage is emitted.
 * `export_maboss_bnd_cfg` is a standalone file export. Use
   `export_maboss_handoff` when PhysiCell needs typed provenance and context.
+"""
+
+# Additional maintained manual guidance; no automatic scientific authorization.
+MABOSS_AGENT_MANUAL += """
+
+Wave 2: inspect selected nodes with get_maboss_nodes(selected_nodes=[...]) for
+rules, output visibility, rate expressions and model_revision. Use
+update_maboss_parameters(rates=[...], expected_revision=...) only for explicit
+coefficient decisions; custom expressions fail without guessing.
+edit_maboss_readouts requires approved named rules, rates and initial probabilities.
+Readouts are stochastic nodes, not instantaneous observables, and cannot feed back
+into the core. Every changed model requires the workflow's scientific review again.
+Run IDs returned by ordinary/mutant execution support get_simulation_result and
+visualize_network_trajectories after restart. List saved files to discover manifests.
+Never rerun a simulation implicitly after a persistence failure.
 """

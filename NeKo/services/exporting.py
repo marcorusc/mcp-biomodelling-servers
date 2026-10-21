@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import tempfile
 from collections.abc import Callable
@@ -23,6 +25,19 @@ def export_sanitized_bnet(
             f"Refusing to overwrite existing BNET artifact: {destination}"
         )
 
+    nodes = getattr(network, "nodes", None)
+    if nodes is not None and "Genesymbol" in nodes.columns:
+        invalid = []
+        for index, row in nodes.iterrows():
+            label = row.get("Genesymbol")
+            if not isinstance(label, str) or not label.strip():
+                invalid.append({"row": str(index), "uniprot": str(row.get("Uniprot")), "label": repr(label)})
+        if invalid:
+            raise ValueError(
+                f"BNET export has {len(invalid)} node(s) with missing or invalid labels: {invalid[:20]}. "
+                "Inspect these node records and explicitly correct their labels in the source model, then retry. "
+                "No automatic renaming was performed."
+            )
     try:
         with tempfile.TemporaryDirectory(
             dir=destination.parent,
@@ -48,10 +63,29 @@ def export_sanitized_bnet(
                     f"({generated_names}); this export requires exactly one model."
                 )
             temporary_bnet = generated_bnets[0]
+            companion = temporary_bnet.with_name(temporary_bnet.name + ".neko.json")
+            projection = None
+            history = None
+            if companion.exists():
+                payload = json.loads(companion.read_bytes())
+                projection = payload["export"]
+                history = payload.get("history")
+                if projection["sha256"] != hashlib.sha256(temporary_bnet.read_bytes()).hexdigest():
+                    raise ValueError("NeKo companion does not match the generated BNET.")
             try:
                 sanitizer_result = sanitizer(str(temporary_bnet))
             except Exception as exc:
                 raise RuntimeError(f"Error sanitizing BNET: {exc}") from exc
+            if projection is not None:
+                projection["file"] = destination.name
+                projection["sha256"] = hashlib.sha256(temporary_bnet.read_bytes()).hexdigest()
+                for identifier in projection.get("identifiers", []):
+                    old = identifier["exported_identifier"]
+                    identifier["exported_identifier"] = sanitizer_result.get("name_mapping", {}).get(old, old)
+                sanitizer_result["library_projection"] = projection
+                # The library already serialized this exact source snapshot.
+                # Keep it through finalization instead of traversing history again.
+                sanitizer_result["library_history"] = history
 
             if overwrite:
                 temporary_bnet.replace(destination)

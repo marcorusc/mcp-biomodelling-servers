@@ -9,6 +9,9 @@ NEKO_SERVER_INSTRUCTIONS = (
     "for a standalone Boolean file, or use `export_neko_handoff` to preserve "
     "typed MaBoSS provenance. Read `docs://neko/agent_manual` or use "
     "`neko_workflow_prompt` for the complete workflow."
+    " Use edit_interactions only for explicitly authorized, cited add/set_effect "
+    "changes between existing nodes. Get expected network/state IDs from status. "
+    "Editing and history navigation do not approve or export a handoff."
 )
 
 
@@ -51,7 +54,20 @@ NEKO_AGENT_MANUAL = """
   - See https://github.com/sysbio-curie/Neko/blob/development/docs_mkdocs/strategies/index.md
     for the concise strategy and path/reuse policy semantics.
 * **Inspection:** `list_genes_and_interactions`, `find_paths`, `get_references`, `filter_interactions`
+* **Manual curation:** `edit_interactions(edits, expected_network_id,
+  expected_state_id, session_id)` accepts at most 20 explicit `add`/`set_effect`
+  operations with existing source/target, effect, rationale, and evidence
+  (`summary`, optional `pmids`, optional `citations`; at least one citation or
+  PMID). Missing PMIDs stay empty. Evidence does not grant scientific approval.
+  Inspect `status` before editing. Conflicts, ambiguous identifiers, missing
+  endpoints, and stale state/network identity fail without partial batch edits.
+  A no-op does not append evidence. Changed responses return canonical endpoints
+  and a state resource URI containing the full before/after provenance.
 * **History:** `list_network_history`, `navigate_network_history`, `compare_network_states`, `set_network_history_limit`
+  History listings accept `offset`/`limit`; comparisons accept `limit`. Read the
+  returned state URIs for full records, or `export_network(format='history')`
+  for durable, reloadable retained history. Missing attribution and pruning gaps
+  remain explicit. Database names describe construction, not every edge's origin.
 * **Handoff:** `export_neko_handoff` records exact sanitized Boolean nodes,
   declared outputs, package versions, history state, and artifact digests.
 

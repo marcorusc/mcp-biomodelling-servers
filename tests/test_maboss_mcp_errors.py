@@ -702,74 +702,42 @@ def test_run_and_read_simulation_preserve_numeric_trajectory_data(
     assert any(entry["role"] == "engine_input" for entry in manifest["files"])
 
 
-def test_mutant_simulation_returns_mutations_and_numeric_trajectory() -> None:
-    trajectory = pd.DataFrame(
-        {"A": [0.0], "B": [1.0]},
-        index=pd.Index([20.0], name="Time"),
-    )
-
-    class MutantSimulation:
-        def __init__(self) -> None:
-            self.applied: list[tuple[str, str]] = []
-
-        def mutate(self, node: str, state: str) -> None:
-            self.applied.append((node, state))
-
-        def run(self) -> object:
-            return SimpleNamespace(
-                get_last_states_probtraj=lambda: trajectory,
-            )
-
-    mutant = MutantSimulation()
-    simulation = SimpleNamespace(copy=lambda: mutant)
-    session_id = _create_simulation_session(simulation)
-
-    result = _run(
-        _call_tool(
-            "simulate_mutation",
-            {
-                "session_id": session_id,
-                "nodes": ["A", "B"],
-                "state": ["OFF", "ON"],
-            },
-        )
-    )
-
-    assert result.is_error is False
-    assert mutant.applied == [("A", "OFF"), ("B", "ON")]
-    assert result.structured_content is not None
-    assert result.structured_content["mutations"] == [
-        {"node": "A", "state": "OFF"},
-        {"node": "B", "state": "ON"},
-    ]
-    assert result.structured_content["has_trajectory_data"] is True
-    assert result.structured_content["trajectory"]["rows"] == [[0.0, 1.0]]
+def test_mutant_simulation_returns_mutations_and_numeric_trajectory(tmp_path, monkeypatch) -> None:
+    from tests.test_maboss_wave2_model import session as model_session
+    trajectory = pd.DataFrame({"A": [0.0], "B": [1.0]}, index=pd.Index([20.0], name="Time"))
+    base = model_session().sim
+    original = base.copy
+    applied = []
+    def copied():
+        mutant = original()
+        original_mutate = mutant.mutate
+        def mutate(node, state):
+            applied.append((node, state))
+            original_mutate(node, state)
+        mutant.mutate = mutate
+        mutant.run = lambda: file_backed_result(tmp_path / "mutant", trajectory)
+        return mutant
+    base.copy = copied
+    session_id = _create_simulation_session(base)
+    monkeypatch.setattr(maboss_server, "_SERVER_ROOT", tmp_path)
+    result = _run(_call_tool("simulate_mutation", {"session_id": session_id, "nodes": ["A", "B"], "state": ["OFF", "ON"]}))
+    assert not result.is_error, result.content
+    assert applied == [("A", "OFF"), ("B", "ON")]
+    assert result.structured_content["trajectory"]["rows"] == []  # compact default
+    saved = _run(_call_tool("get_simulation_result", {"run_id": result.structured_content["run_id"]}))
+    assert saved.structured_content["trajectory"]["rows"] == [[0.0, 1.0]]
+    assert session_manager.get_session(session_id).latest_run_id is None
 
 
-def test_empty_simulation_result_remains_a_structured_success() -> None:
-    empty_result = SimpleNamespace(
-        get_last_states_probtraj=lambda: pd.DataFrame(columns=["A"]),
-    )
-    session_id = _create_result_session(empty_result)
-
-    result = _run(
-        _call_tool("get_simulation_result", {"session_id": session_id})
-    )
-
-    assert result.is_error is False
-    assert result.content[0].text == (
-        "_Simulation completed but returned no trajectory data._"
-    )
-    assert result.structured_content is not None
-    assert result.structured_content["has_trajectory_data"] is False
-    assert result.structured_content["trajectory"] == {
-        "columns": ["A"],
-        "index_name": None,
-        "index": [],
-        "row_count": 0,
-        "column_count": 1,
-        "rows": [],
-    }
+def test_empty_simulation_result_remains_a_structured_success(tmp_path, monkeypatch) -> None:
+    result = file_backed_result(tmp_path / "engine", pd.DataFrame(columns=["A"]))
+    sid = _create_simulation_session(SimpleNamespace(run=lambda: result))
+    monkeypatch.setattr(maboss_server, "_SERVER_ROOT", tmp_path)
+    assert not _run(_call_tool("run_simulation", {"session_id": sid})).is_error
+    response = _run(_call_tool("get_simulation_result", {"session_id": sid}))
+    assert not response.is_error
+    assert response.structured_content["has_trajectory_data"] is False
+    assert response.structured_content["trajectory"]["rows"] == []
 
 
 def test_bnet_conversion_returns_structured_artifact_metadata(
@@ -1475,10 +1443,11 @@ def test_visualize_returns_uncropped_png_and_persists_same_bytes(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    fake_result = FakeTrajectoryResult()
-    session_id = _create_result_session(fake_result)
+    fake_result = file_backed_result(tmp_path / "engine", pd.DataFrame({"long state name": [0.2, 0.7, 0.9]}, index=[0., 1., 2.]))
+    session_id = _create_simulation_session(SimpleNamespace(run=lambda: fake_result))
     monkeypatch.setattr(maboss_server, "_SERVER_ROOT", tmp_path)
 
+    assert not _run(_call_tool("run_simulation", {"session_id": session_id})).is_error
     save_calls: list[dict[str, Any]] = []
     original_savefig = Figure.savefig
 
@@ -1506,27 +1475,23 @@ def test_visualize_returns_uncropped_png_and_persists_same_bytes(
     assert result.structured_content["session_id"] == session_id
     assert result.structured_content["until"] == 1.5
     assert result.structured_content["time_window"] == "bounded"
-    assert result.structured_content["image_file"]["name"] == (
-        "network_trajectory.png"
-    )
+    assert ".plot_" in result.structured_content["image_file"]["name"]
     assert result.structured_content["image_file"]["media_type"] == "image/png"
     assert len(result.content) == 2
     assert isinstance(result.content[0], TextContent)
-    assert "simulation time <= 1.5" in result.content[0].text
+    assert "Saved run" in result.content[0].text
     assert isinstance(result.content[1], ImageContent)
     assert result.content[1].mime_type == "image/png"
 
     returned_png = base64.b64decode(result.content[1].data)
     assert returned_png.startswith(b"\x89PNG\r\n\x1a\n")
-    artifact_path = artifact_base(tmp_path) / session_id / "network_trajectory.png"
+    artifact_path = Path(result.structured_content["image_file"]["path"])
     assert artifact_path.read_bytes() == returned_png
-    assert fake_result.until == 1.5
     assert save_calls == [
         {
             "format": "png",
             "dpi": 150,
             "bbox_inches": "tight",
-            "pad_inches": 0.2,
         }
     ]
     assert set(plt.get_fignums()) == figures_before
@@ -1552,9 +1517,13 @@ def test_visualize_closes_figure_when_plotting_fails(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    fake_result = FakeTrajectoryResult(fail=True)
-    session_id = _create_result_session(fake_result)
+    fake_result = file_backed_result(tmp_path / "engine", pd.DataFrame({"A": [1.]}, index=[0.]))
+    session_id = _create_simulation_session(SimpleNamespace(run=lambda: fake_result))
     monkeypatch.setattr(maboss_server, "_SERVER_ROOT", tmp_path)
+    assert not _run(_call_tool("run_simulation", {"session_id": session_id})).is_error
+    def fail(*args, **kwargs):
+        raise ValueError("plot failed")
+    monkeypatch.setattr(pd.DataFrame, "plot", fail)
     figures_before = set(plt.get_fignums())
 
     result = _run(
@@ -1800,20 +1769,21 @@ def test_all_maboss_tools_publish_safety_annotations() -> None:
         "get_maboss_initial_state",
         "get_maboss_logical_rules",
         "get_maboss_mutations",
-        "simulate_mutation",
         "get_simulation_result",
         "list_generated_files",
     }
     idempotent = {
+        "edit_maboss_readouts",
         "set_default_session",
         "build_simulation",
         "change_maboss_rule",
         "update_maboss_parameters",
         "set_maboss_output_nodes",
         "set_maboss_initial_state",
-        "visualize_network_trajectories",
     }
     non_idempotent = {
+        "simulate_mutation",
+        "visualize_network_trajectories",
         "create_session",
         "bnet_to_bnd_and_cfg",
         "import_neko_handoff",

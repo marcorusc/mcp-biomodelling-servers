@@ -475,7 +475,7 @@ def test_neko_prompt_and_resources_publish_exact_contracts() -> None:
     assert resources[0].title == "NeKo agent operations manual"
     assert resources[0].mime_type == "text/markdown"
 
-    assert len(templates) == 1
+    assert len(templates) == 2
     assert str(templates[0].uri_template) == (
         "neko://session/{session_id}/history"
     )
@@ -524,6 +524,7 @@ def test_status_returns_structured_network_presence_and_counts() -> None:
         "has_network": False,
         "node_count": 0,
         "interaction_count": 0,
+        "network_id": None, "state_id": None, "database_name": None,
     }
 
     edges = pd.DataFrame(
@@ -640,7 +641,7 @@ def test_find_paths_returns_captured_structured_lines() -> None:
     )
 
     assert result.is_error is False
-    assert "Paths (full output)" in result.content[0].text
+    assert "Paths (bounded output)" in result.content[0].text
     assert result.structured_content == {
         "server": "NeKo",
         "session_id": session_id,
@@ -648,12 +649,46 @@ def test_find_paths_returns_captured_structured_lines() -> None:
         "target": "MDM2",
         "max_length": 3,
         "has_output": True,
+        "network_id": session_manager.get_session(session_id).network_id,
+        "paths": [[{"label": "TP53", "uniprot": None, "identity": "unresolved"}, {"label": "MDM2", "uniprot": None, "identity": "unresolved"}],
+                  [{"label": "TP53", "uniprot": None, "identity": "unresolved"}, {"label": "AKT1", "uniprot": None, "identity": "unresolved"}, {"label": "MDM2", "uniprot": None, "identity": "unresolved"}]],
+        "status": "paths_found", "diagnostics": [], "truncated": False,
         "output_line_count": 2,
         "path_output_lines": [
             "TP53 -> MDM2",
             "TP53 -> AKT1 -> MDM2",
         ],
     }
+
+
+def test_find_paths_full_verbosity_is_bounded_by_max_paths() -> None:
+    def print_paths(*args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        print("TP53 -> MDM2")
+        print("TP53 -> AKT1 -> MDM2")
+        print("TP53 -> PTEN -> MDM2")
+
+    network = _network_stub(print_my_paths=print_paths)
+    session_id = _create_session(network)
+
+    result = _run(
+        _call_tool(
+            "find_paths",
+            {
+                "session_id": session_id,
+                "source": "TP53",
+                "target": "MDM2",
+                "verbosity": "full",
+                "max_paths": 2,
+            },
+        )
+    )
+
+    assert result.is_error is False
+    assert result.content[0].text == "Paths (bounded output):\nTP53 -> MDM2\nTP53 -> AKT1 -> MDM2"
+    assert result.structured_content["output_line_count"] == 3
+    assert len(result.structured_content["paths"]) == 2
+    assert result.structured_content["truncated"] is True
 
 
 def test_disconnected_nodes_return_both_biological_identifiers() -> None:
@@ -1643,6 +1678,49 @@ def test_partial_add_nodes_failure_is_reported_as_tool_error() -> None:
     assert added_genes == ["TP53"]
 
 
+@pytest.mark.parametrize("partial", [False, True])
+def test_add_nodes_reports_database_refusal_without_autoconnect(partial: bool) -> None:
+    connected = []
+    network = _network_stub()
+
+    def add_node(gene: str) -> bool:
+        if gene == "REJECTED":
+            return False
+        network.nodes.loc[len(network.nodes)] = [gene, gene]
+        return True
+
+    network.add_node = add_node
+    network.connect_nodes = lambda **kwargs: connected.append(kwargs)
+    session_id = _create_session(network)
+    session = session_manager.get_session(session_id)
+    assert session is not None
+    session._edges_cache_dirty = False
+    genes = ["TP53", "REJECTED"] if partial else ["REJECTED"]
+    result = _run(_call_tool("add_nodes", {
+        "session_id": session_id, "genes": genes, "autoconnect": True,
+    }))
+
+    assert result.is_error is True
+    assert f"Added {int(partial)}/{len(genes)} genes" in result.content[0].text
+    assert "REJECTED: rejected by the resource database" in result.content[0].text
+    assert len(network.nodes) == int(partial)
+    assert connected == []
+    assert session._edges_cache_dirty is True
+
+
+def test_add_nodes_does_not_count_existing_nodes_as_additions() -> None:
+    network = _network_stub(
+        nodes=pd.DataFrame([{"Uniprot": "P04637", "Genesymbol": "TP53"}]),
+        add_node=lambda gene: True,
+    )
+    result = _run(_call_tool("add_nodes", {
+        "session_id": _create_session(network),
+        "genes": ["TP53"], "autoconnect": False,
+    }))
+    assert result.is_error is False
+    assert "Added 0/1 genes. Unchanged: 1." in result.content[0].text
+
+
 def test_empty_path_query_remains_successful() -> None:
     network = _network_stub(print_my_paths=lambda *args, **kwargs: None)
     session_id = _create_session(network)
@@ -1659,7 +1737,7 @@ def test_empty_path_query_remains_successful() -> None:
     )
 
     assert result.is_error is False
-    assert result.content[0].text == "No paths found."
+    assert result.content[0].text == "No directed path found within 3 edges."
     assert result.structured_content == {
         "server": "NeKo",
         "session_id": session_id,
@@ -1667,6 +1745,8 @@ def test_empty_path_query_remains_successful() -> None:
         "target": "MDM2",
         "max_length": 3,
         "has_output": False,
+        "network_id": session_manager.get_session(session_id).network_id,
+        "status": "no_path_within_bound", "diagnostics": [], "truncated": False,
         "output_line_count": 0,
         "path_output_lines": [],
     }
@@ -2030,11 +2110,11 @@ def test_all_neko_tools_publish_safety_annotations() -> None:
     }
     read_only_open = {"preview_connection_impact"}
     idempotent_closed = {
-        "export_network",
         "set_default_params",
         "set_default_session",
     }
     non_idempotent_closed = {
+        "export_network",
         "create_session",
         "export_biomass_handoff",
         "export_neko_handoff",
@@ -2054,6 +2134,7 @@ def test_all_neko_tools_publish_safety_annotations() -> None:
         "remove_undefined_interactions",
     }
     destructive_non_idempotent = {
+        "edit_interactions",
         "remove_gene",
         "remove_interaction",
         "delete_session",
@@ -2119,7 +2200,7 @@ def test_neko_tool_schemas_publish_stable_enums_and_bounds() -> None:
     assert create_schema["list_of_initial_genes"]["items"]["minLength"] == 1
 
     export_schema = tools["export_network"].input_schema["properties"]
-    assert export_schema["format"]["enum"] == ["sif", "bnet"]
+    assert export_schema["format"]["enum"] == ["sif", "bnet", "history"]
 
     handoff_schema = tools["export_neko_handoff"].input_schema
     assert handoff_schema["required"] == ["biological_context"]

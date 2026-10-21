@@ -454,6 +454,10 @@ class PatchConfigStub:
         )
         self.physiboss = PatchPhysiBoSSStub(self)
 
+    def generate_xml(self):
+        import json
+        return json.dumps(self.cell_type_data, sort_keys=True)
+
     def copy(self) -> PatchConfigStub:
         return PatchConfigStub(
             self.cell_type_data,
@@ -1239,7 +1243,7 @@ def test_cell_parameter_patch_preserves_omitted_values_and_other_cells() -> None
     )
 
     assert result.is_error is False
-    assert "All omitted cell parameters were preserved" in result.content[0].text
+    assert result.structured_content["stored"]["volume"] == original.cell_type_data["tumour"]["phenotype"]["volume"]
     assert session.config is not original
     phenotype = session.config.cell_type_data["tumour"]["phenotype"]
     assert phenotype["volume"] == {
@@ -1318,7 +1322,7 @@ def test_legacy_full_positional_cell_call_keeps_session_position() -> None:
         session_id,
     )
 
-    assert "Cell parameters patched" in result
+    assert result.changed is True
     session = session_manager.get_session(session_id)
     assert session is not None
     phenotype = session.config.cell_type_data["tumour"]["phenotype"]
@@ -1347,12 +1351,12 @@ def test_identical_cell_patch_does_not_inflate_xml_tracking() -> None:
     )
 
     assert result.is_error is False
-    assert "already matched" in result.content[0].text
+    assert result.structured_content["changed"] is False
     assert session.config is config
     assert session.xml_modification_count == 0
 
 
-def test_empty_cell_patch_is_rejected_without_mutation() -> None:
+def test_empty_cell_patch_inspects_without_mutation() -> None:
     config = _patch_config()
     session_id = _create_session(config)
 
@@ -1363,8 +1367,8 @@ def test_empty_cell_patch_is_rejected_without_mutation() -> None:
         )
     )
 
-    assert result.is_error is True
-    assert "At least one cell parameter" in result.content[0].text
+    assert result.is_error is False
+    assert result.structured_content["stored"]["motility"] == config.cell_type_data["tumour"]["phenotype"]["motility"]
     session = session_manager.get_session(session_id)
     assert session is not None
     assert session.config is config
@@ -2232,7 +2236,7 @@ def test_valid_csv_export_stays_in_session_artifacts(
     assert ruleset_calls == [
         {
             "name": "default",
-            "folder": str(output_path),
+            "folder": str(output_path.parent),
             "filename": expected_name,
             "enabled": True,
         }
@@ -2241,7 +2245,7 @@ def test_valid_csv_export_stays_in_session_artifacts(
     assert result.structured_content is not None
     assert result.structured_content["server"] == "PhysiCell"
     assert result.structured_content["session_id"] == session_id
-    assert result.structured_content["xml_reference"] == f"./config/{expected_name}"
+    assert result.structured_content["xml_reference"] == str(output_path)
     assert result.structured_content["enabled"] is True
     assert result.structured_content["rule_count"] == 1
     assert result.structured_content["file"]["path"] == str(output_path)
@@ -2737,6 +2741,8 @@ def test_all_physicell_tools_publish_safety_annotations() -> None:
         "export_cell_rules_csv",
     }
     non_idempotent = {
+        "configure_simulation_inputs",
+        "export_configuration_bundle",
         "create_session",
         "add_single_cell_rule",
         "add_physiboss_input_link",

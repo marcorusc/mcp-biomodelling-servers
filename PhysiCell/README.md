@@ -1,5 +1,8 @@
 # PhysiCell MCP Server
 
+The [Wave 2 integration guide](../docs/wave2-server-features.md) covers stored
+configuration readback, typed inputs, required-substrate visibility and portable bundles.
+
 The PhysiCell server creates, loads, inspects, modifies, validates, and exports
 PhysiCell configuration files through the Model Context Protocol (MCP). It uses
 the [`physicell-settings`](https://pypi.org/project/physicell-settings/)
@@ -222,6 +225,9 @@ Repeat the tool independently for every cell type that needs configuration.
 At least one of `secretion_rate` or `uptake_rate` is required. An omitted rate
 is preserved, as are the existing secretion target and net export rate. Repeat
 the tool for every required pair or call it again later to revise one rate.
+The result contains the interaction values actually stored for the pair, the
+configuration revision and `changed`, which is false when the requested values
+already matched.
 
 ## Signals, behaviors, and Cell Rules
 
@@ -341,7 +347,8 @@ cell types.
 
 Then call repeatedly as needed:
 
-- `add_physiboss_input_link` to map a PhysiCell signal to a Boolean node;
+- `add_physiboss_input_link` to map a PhysiCell signal to a Boolean node and
+  return the stored input mapping;
 - `add_physiboss_output_link` to map a Boolean node to a PhysiCell behavior;
 - `apply_physiboss_mutation` to fix a Boolean node to `0` or `1`.
 
@@ -448,10 +455,10 @@ model.
 | MaBoSS context and handoff | `import_maboss_handoff`, `set_maboss_context`, `get_maboss_context` |
 | Existing XML | `validate_xml_file`, `load_xml_configuration`, `analyze_loaded_configuration`, `list_loaded_components` |
 | Domain and scenario | `analyze_biological_scenario`, `create_simulation_domain` |
-| Substrates and cells | `add_single_substrate`, `add_single_cell_type`, `configure_cell_parameters`, `set_substrate_interaction` |
+| Substrates and cells | `add_single_substrate`, `add_single_cell_type`, `configure_cell_parameters`, `set_substrate_interaction`, `configure_simulation_inputs` |
 | Discovery and rules | `get_available_cycle_models`, `list_all_available_signals`, `list_all_available_behaviors`, `add_single_cell_rule` |
 | PhysiBoSS | `add_physiboss_model`, `configure_physiboss_settings`, `add_physiboss_input_link`, `add_physiboss_output_link`, `apply_physiboss_mutation` |
-| Export and artifacts | `export_xml_configuration`, `export_cell_rules_csv`, `list_generated_files`, `clean_generated_files` |
+| Export and artifacts | `export_xml_configuration`, `export_cell_rules_csv`, `export_configuration_bundle`, `list_generated_files`, `clean_generated_files` |
 | Help | `get_help` |
 
 ## Structured output and validation results

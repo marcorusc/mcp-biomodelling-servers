@@ -48,8 +48,8 @@ Each server publishes:
 - concise initialization instructions;
 - structured scientific results where downstream applications need typed data.
 
-The current public surface contains 113 tools:
-24 MaBoSS, 33 NeKo, 34 PhysiCell, and 22 BioMASS. If the tool surface changes, update the
+The current public surface contains 117 tools:
+25 MaBoSS, 34 NeKo, 36 PhysiCell, and 22 BioMASS. If the tool surface changes, update the
 relevant server README/manual and the cross-server schema tests together.
 
 ## Session State and Concurrency
@@ -210,6 +210,11 @@ scientific choices.
 - Preserve progress reporting for blocking simulation work.
 - Return trajectory plots as complete native MCP image content with structured
   artifact metadata.
+- pyMaBoSS runs the external `MaBoSS` executables (`MaBoSS`, `MaBoSS_128n`, ...)
+  to load and simulate models; pip/uvx do not install them. Wrap new pyMaBoSS
+  load, copy or run calls in `maboss_executable()` so a missing executable is
+  named. CI installs a pinned, checksum-verified MaBoSS release; a local
+  executable on `PATH` can hide this dependency from local test runs.
 
 ### NeKo
 
@@ -257,7 +262,7 @@ Important declared ranges include:
 - `mcp>=2,<3`;
 - `pydantic>=2.12`;
 - `pandas>=2.2,<4`;
-- `nekomata>=1.10.1,<2`;
+- `nekomata>=1.10.2,<2`;
 - `maboss>=0.8.15,<0.9`;
 - `physicell-settings>=0.6.2,<0.7`.
 

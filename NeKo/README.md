@@ -1,5 +1,8 @@
 # NeKo MCP Server
 
+The [Wave 2 integration guide](../docs/wave2-server-features.md) covers bounded
+diagnostics and the coordinated lightweight-history API.
+
 The NeKo server builds, curates, analyzes, and exports signalling networks
 through the Model Context Protocol (MCP). It uses
 [NeKo](https://github.com/sysbio-curie/Neko) to construct networks from curated
@@ -116,7 +119,7 @@ The construction parameters are:
 | `path_policy` | `one_shortest`, `all_shortest`, or `all_bounded` |
 | `reuse_policy` | `none`, `discovered_paths`, or `induced_subgraph` |
 | `only_signed` | Keep only signed interactions when true |
-| `consensus` | Require support from multiple curated sources when true |
+| `consensus` | Use the resource's own consensus sign flags when true; this does not universally imply multiple databases or higher confidence |
 | `verbosity` | `summary`, `preview`, or `full` |
 
 Construction may query an external biological database and can take several
@@ -412,11 +415,11 @@ route does not preserve the typed scientific context and provenance manifest.
 |---|---|
 | Sessions | `create_session`, `list_sessions`, `list_artifact_sessions`, `set_default_session`, `status`, `reset_network`, `delete_session` |
 | Construction and editing | `create_network`, `set_default_params`, `add_nodes`, `remove_gene`, `remove_interaction` |
-| Curation | `remove_bimodal_interactions`, `remove_undefined_interactions` |
+| Curation | `edit_interactions`, `remove_bimodal_interactions`, `remove_undefined_interactions` |
 | Inspection and evidence | `list_genes_and_interactions`, `filter_interactions`, `find_paths`, `get_references`, `analyze_connectivity`, `analyze_gene_set` |
 | Connection strategies | `preview_connection_impact`, `bridge_components`, `connect_targeted_nodes`, `apply_global_connection` |
 | Branching history | `list_network_history`, `navigate_network_history`, `compare_network_states`, `set_network_history_limit` |
-| Export and artifacts | `export_network`, `export_neko_handoff`, `list_bnet_files`, `clean_generated_files` |
+| Export and artifacts | `export_network`, `export_neko_handoff`, `export_biomass_handoff`, `list_bnet_files`, `clean_generated_files` |
 
 ## Resources and prompt
 
@@ -479,3 +482,24 @@ listed with their location. See the root README's artifact storage section.
 imports. A parent is a verified `.lineage.json` from a SIF export; an edited copy
 requires `derived_from` to identify the intact parent SIF. SIF/BNET exports retain
 source hashes in sibling `.lineage.json` files, independently of handoff approval.
+
+## Evidence-backed interaction editing (Wave 2)
+
+With the updated NeKo curation API, `edit_interactions` accepts up to 20 explicit
+`add` or `set_effect` operations between existing nodes. Each operation requires
+an effect, rationale, and publication evidence. PMIDs are optional when another
+citation is supplied; missing references are never invented. Obtain the exact
+network/state IDs from `status` and pass them with the session ID. A stale request,
+ambiguous endpoint or conflicting addition fails without partial batch mutation.
+The capability does not grant scientific authorization.
+
+Inspection preserves manual origin and separates original evidence from edit
+justification. Existing history tools expose bounded summaries and exact-state
+detail resources. Use `export_network(format='history')` to save retained branches,
+snapshots and explanations, then `Network.from_history(path)` to restore them.
+Database identity reports the name used for construction only.
+
+SIF/BNET exports and handoffs include verified history/provenance companions.
+Keep the referenced files together and use the coordinated MCP package to read
+new manifests. See [Wave 2 integration](../docs/wave2-neko-integration.md) for the
+agreed API, compatibility table, source requirements and measured interface costs.
