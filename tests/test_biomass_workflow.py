@@ -322,7 +322,7 @@ def test_graph_dependency_failure_is_actionable(monkeypatch):
         "find_spec",
         lambda name: None if name == "pygraphviz" else original(name),
     )
-    with pytest.raises(RuntimeError, match="biomass-graph"):
+    with pytest.raises(RuntimeError, match="PyGraphviz"):
         graph({"format": "png", "graph_options": {}}, None)
 
 
@@ -350,7 +350,9 @@ def test_html_uses_upstream_without_opening_browser(monkeypatch, tmp_path):
     assert result["edges"] == [["A", "B"]]
 
 
-def test_real_standalone_generation_simulation_graphs_and_export(manager, tmp_path):
+def test_real_standalone_generation_simulation_graphs_and_export(manager, tmp_path, monkeypatch):
+    # Bundled PyGraphviz renders without a system Graphviz (dot) on PATH.
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
     sid = server.create_session().session_id
     server.import_text(ENZYME, session_id=sid)
     generated = server.generate_model(session_id=sid)

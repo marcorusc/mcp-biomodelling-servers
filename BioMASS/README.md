@@ -13,19 +13,13 @@ python -m pip install mcp-biomodelling-servers
 mcp-biomass-server
 ```
 
-For graph rendering:
+Graph rendering is part of the standard installation: PyGraphviz wheels bundle
+Graphviz, so no system Graphviz or `dot` program is needed. The former
+`[biomass-graph]` extra is kept as an empty alias for existing install commands.
+On a platform without a PyGraphviz wheel, pip builds it from source, which needs
+a C compiler and Graphviz development headers.
 
-```bash
-python -m pip install 'mcp-biomodelling-servers[biomass-graph]'
-dot -V
-```
-
-Install the Graphviz system runtime too. Building PyGraphviz from source may
-require a C compiler, Python development headers, and Graphviz development
-headers (for example, `graphviz libgraphviz-dev build-essential` on Debian/Ubuntu).
-If graph dependencies are unavailable, construction and simulation still work.
-
-Example MCP client configuration with visualization enabled:
+Example MCP client configuration:
 
 ```json
 {
@@ -33,16 +27,13 @@ Example MCP client configuration with visualization enabled:
     "biomass": {
       "type": "stdio",
       "command": "uvx",
-      "args": [
-        "--from", "mcp-biomodelling-servers[biomass-graph]",
-        "mcp-biomass-server"
-      ]
+      "args": ["--from", "mcp-biomodelling-servers", "mcp-biomass-server"]
     }
   }
 }
 ```
 
-From a source checkout, install with `python -m pip install '.[dev,biomass-graph]'`
+From a source checkout, install with `python -m pip install '.[dev]'`
 and run `python -m BioMASS.server`. The repository's wheel path remapping does
 not support editable installs.
 

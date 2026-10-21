@@ -34,10 +34,10 @@ Alternatively, run it in an isolated environment:
 uvx --from mcp-biomodelling-servers mcp-neko-server
 ```
 
-The external Graphviz `dot` executable is required to render the branching
-history resource. See the [repository README](../README.md) for Graphviz setup,
-supported Python versions, complete MCP client configuration, and
-source-checkout instructions.
+The branching history resource renders with the bundled PyGraphviz; no system
+Graphviz is needed. See the [repository README](../README.md) for supported
+Python versions, complete MCP client configuration, and source-checkout
+instructions.
 
 ## Sessions and network state
 
@@ -359,9 +359,9 @@ neko://session/{session_id}/history
 ```
 
 to obtain read-only HTML containing NeKo's inline SVG history diagram. This
-resource does not change the checked-out state. Rendering requires the
-Graphviz `dot` executable; if it is missing, the resource returns an actionable
-rendering error.
+resource does not change the checked-out state. The server renders NeKo's
+history digraph with the bundled PyGraphviz rather than an external `dot`
+executable; a rendering failure is returned as a resource error.
 
 ## Export and the MaBoSS handoff
 

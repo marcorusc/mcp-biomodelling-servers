@@ -314,11 +314,11 @@ def simulate(request: dict, model, summary: dict) -> dict:
 
 def graph(request: dict, description) -> dict:
     import importlib.util
-    import shutil
 
-    if importlib.util.find_spec("pygraphviz") is None or shutil.which("dot") is None:
+    # PyGraphviz wheels bundle Graphviz and lay out in-process; no system dot is needed.
+    if importlib.util.find_spec("pygraphviz") is None:
         raise RuntimeError(
-            "Graph rendering requires mcp-biomodelling-servers[biomass-graph] and the Graphviz system runtime (dot). Install Graphviz headers/compiler if building PyGraphviz from source."
+            "Graph rendering requires PyGraphviz, a dependency of mcp-biomodelling-servers. Reinstall the package."
         )
     options = GraphOptions.model_validate(request["graph_options"])
     fmt = request["format"]
@@ -330,7 +330,7 @@ def graph(request: dict, description) -> dict:
     elif fmt == "html":
         if importlib.util.find_spec("pyvis") is None:
             raise RuntimeError(
-                "Interactive HTML requires mcp-biomodelling-servers[biomass-graph] (pyvis)."
+                "Interactive HTML requires pyvis, a dependency of mcp-biomodelling-servers. Reinstall the package."
             )
         description.dynamic_plot(
             save_dir=".",

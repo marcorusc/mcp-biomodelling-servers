@@ -13,6 +13,7 @@ from ..contracts import (
     READ_ONLY_CLOSED,
     NonEmptyString,
 )
+from ..services.history_rendering import history_html
 from ..session_manager import ensure_session, session_manager
 from ..src.helpers import _invalidate, requires_network, session_locked
 from ..src.history import (
@@ -45,11 +46,10 @@ def network_history_resource(session_id: str) -> str:
                     "No network in this session. Call create_network first."
                 )
             try:
-                return sess.network.history_html()
+                return history_html(sess.network)
             except Exception as exc:
                 raise RuntimeError(
-                    "Unable to render NeKo history as HTML. "
-                    f"Check the Graphviz installation: {exc}"
+                    f"Unable to render NeKo history as HTML: {exc}"
                 ) from exc
     except KeyError as exc:
         raise ResourceNotFoundError(
