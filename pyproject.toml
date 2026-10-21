@@ -22,6 +22,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
 ]
 dependencies = [
     "mcp>=2,<3",
@@ -32,14 +33,19 @@ dependencies = [
     "matplotlib>=3.8,<4",
     "nekomata>=1.10.2,<2",
     "maboss>=0.8.15,<0.9",
+    # The MaBoSS server simulates with this bundled engine, not the MaBoSS executable.
+    "cmaboss>=1.0.0b32,<2",
     "physicell-settings>=0.6.3,<0.7",
     "requests>=2.31,<3",
     "tabulate>=0.9,<1",
-    "biomass>=0.14.0,<0.15",
+    # Graph rendering is built in: PyGraphviz wheels bundle Graphviz.
+    "biomass[graph]>=0.14.0,<0.15",
+    "pygraphviz>=2.0.4,<3",
 ]
 
 [project.optional-dependencies]
-biomass-graph = ["biomass[graph]>=0.14.0,<0.15"]
+# Kept so existing install commands work; graph support is now a core dependency.
+biomass-graph = []
 dev = [
     "build>=1.2",
     "mypy>=1.10,<2",

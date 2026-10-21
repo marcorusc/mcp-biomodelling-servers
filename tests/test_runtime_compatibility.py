@@ -16,11 +16,17 @@ import textwrap
 import pytest
 
 
-def _run_in_clean_interpreter(source: str) -> None:
-    """Execute a runtime contract check without pytest's import stubs."""
+def _run_in_clean_interpreter(source: str, *, empty_path: bool = False) -> None:
+    """Execute a runtime contract check without pytest's import stubs.
+
+    With ``empty_path``, no external executable (such as Graphviz dot or
+    MaBoSS) can be found, proving the check needs only Python packages.
+    """
     with tempfile.TemporaryDirectory() as config_directory:
         environment = os.environ.copy()
         environment["XDG_CONFIG_HOME"] = config_directory
+        if empty_path:
+            environment["PATH"] = config_directory
         if os.name == "nt":
             environment["USERPROFILE"] = config_directory
         completed = subprocess.run(
@@ -60,8 +66,8 @@ def test_neko_runtime_exposes_server_and_history_contracts() -> None:
         required_history_api = {
             "checkout",
             "compare_states",
+            "history_digraph",
             "history_graph",
-            "history_html",
             "list_states",
             "redo",
             "set_max_history",
@@ -90,7 +96,10 @@ def test_neko_runtime_exposes_server_and_history_contracts() -> None:
         states = network.list_states()
         assert isinstance(states, list)
         assert network.history_graph() is not None
-        assert isinstance(network.history_html(), str)
+        # The server renders NeKo's digraph with bundled PyGraphviz, not dot.
+        from NeKo.services.history_rendering import history_html
+        rendered = history_html(network)
+        assert "<svg" in rendered and "explanation" in rendered
 
         export_network = Network(
             initial_nodes=["P04637", "P38398"],
@@ -109,7 +118,8 @@ def test_neko_runtime_exposes_server_and_history_contracts() -> None:
             generated_bnets = list(Path(temporary_directory).glob("*.bnet"))
             assert len(generated_bnets) == 1
             assert generated_bnets[0].name.startswith("runtime")
-        """
+        """,
+        empty_path=True,
     )
 
 
@@ -143,7 +153,18 @@ def test_maboss_runtime_exposes_plotting_contract_and_compiled_engine() -> None:
             )
             assert bnd_path.is_file() and bnd_path.stat().st_size > 0
             assert cfg_path.is_file() and cfg_path.stat().st_size > 0
-        """
+
+            # The server loads and simulates through bundled cmaboss, never MaBoSS.
+            from MaBoSS.external import pymaboss
+            simulation = pymaboss.load(str(bnd_path), str(cfg_path))
+            simulation.network.set_output(["A"])
+            simulation.update_parameters(sample_count=100, max_time=1, time_tick=0.5)
+            result = simulation.run()
+            assert result._err == 0, result.error_detail
+            assert not result.get_last_states_probtraj().empty
+            assert Path(result.get_probtraj_file()).is_file()
+        """,
+        empty_path=True,
     )
 
 

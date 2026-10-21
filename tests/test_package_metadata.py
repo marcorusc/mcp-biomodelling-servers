@@ -39,8 +39,9 @@ def test_source_version_matches_project_metadata() -> None:
 
 def test_biomass_entrypoint_dependency_and_graph_extra() -> None:
     project = _project_text()
-    assert '"biomass>=0.14.0,<0.15"' in project
-    assert 'biomass-graph = ["biomass[graph]>=0.14.0,<0.15"]' in project
+    assert '"biomass[graph]>=0.14.0,<0.15"' in project
+    assert '"pygraphviz>=2.0.4,<3"' in project
+    assert "biomass-graph = []" in project
     assert 'mcp-biomass-server = "mcp_biomodelling_servers.biomass:main"' in project
     assert '"BioMASS" = "mcp_biomodelling_servers/BioMASS"' in project
 

@@ -32,24 +32,14 @@ jobs:
             pyproject.toml
             requirements-ci-wave1.txt
 
-      - name: Install the MaBoSS executable
-        env:
-          MABOSS_RELEASE: v2.6.7.0
-          MABOSS_SHA256: 813781b872bdaadd4690051fcb939780313d8537f0b83c569b17450e237238ae
+      - name: Report external modelling executables
         run: |
-          # pyMaBoSS runs this executable to load and simulate models; pip does not install it.
-          curl -fsSL -o "$RUNNER_TEMP/MaBoSS-linux64.zip" \
-            "https://github.com/sysbio-curie/MaBoSS/releases/download/${MABOSS_RELEASE}/MaBoSS-linux64.zip"
-          echo "${MABOSS_SHA256}  $RUNNER_TEMP/MaBoSS-linux64.zip" | sha256sum --check
-          unzip -q "$RUNNER_TEMP/MaBoSS-linux64.zip" 'MaBoSS*' -d "$RUNNER_TEMP/maboss-bin"
-          echo "$RUNNER_TEMP/maboss-bin" >> "$GITHUB_PATH"
-          "$RUNNER_TEMP/maboss-bin/MaBoSS" --version
-
-      - name: Install Graphviz runtime
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends graphviz libgraphviz-dev
-          dot -V
+          # The servers need only Python packages: cmaboss replaces the MaBoSS
+          # executable and bundled PyGraphviz replaces Graphviz dot. Tests that
+          # matter run with an empty PATH; this only records the runner image.
+          for tool in MaBoSS dot; do
+            if command -v "$tool" >/dev/null; then echo "$tool present: $(command -v "$tool")"; else echo "$tool absent"; fi
+          done
 
       - name: Install project and development dependencies
         run: |
@@ -118,6 +108,8 @@ jobs:
             PhysiCell/tools/inputs.py \
             PhysiCell/tools/bundle.py \
             NeKo/services/path_reporting.py \
+            NeKo/services/history_rendering.py \
+            MaBoSS/external.py \
             MaBoSS/scientific_outputs.py \
             MaBoSS/session_manager.py \
             NeKo/src/history.py \
@@ -285,6 +277,8 @@ jobs:
                   "maboss",
                   "physicell-settings",
                   "biomass",
+                  "cmaboss",
+                  "pygraphviz",
                   "requests",
                   "tabulate",
               )
@@ -321,6 +315,9 @@ jobs:
           - label: Python 3.14 · pandas 3
             python_version: "3.14"
             pandas_spec: "pandas>=3,<4"
+          - label: Python 3.15 · pandas 3
+            python_version: "3.15"
+            pandas_spec: "pandas>=3,<4"
 
     steps:
       - uses: actions/checkout@v6
@@ -334,24 +331,14 @@ jobs:
             pyproject.toml
             requirements-ci-wave1.txt
 
-      - name: Install the MaBoSS executable
-        env:
-          MABOSS_RELEASE: v2.6.7.0
-          MABOSS_SHA256: 813781b872bdaadd4690051fcb939780313d8537f0b83c569b17450e237238ae
+      - name: Report external modelling executables
         run: |
-          # pyMaBoSS runs this executable to load and simulate models; pip does not install it.
-          curl -fsSL -o "$RUNNER_TEMP/MaBoSS-linux64.zip" \
-            "https://github.com/sysbio-curie/MaBoSS/releases/download/${MABOSS_RELEASE}/MaBoSS-linux64.zip"
-          echo "${MABOSS_SHA256}  $RUNNER_TEMP/MaBoSS-linux64.zip" | sha256sum --check
-          unzip -q "$RUNNER_TEMP/MaBoSS-linux64.zip" 'MaBoSS*' -d "$RUNNER_TEMP/maboss-bin"
-          echo "$RUNNER_TEMP/maboss-bin" >> "$GITHUB_PATH"
-          "$RUNNER_TEMP/maboss-bin/MaBoSS" --version
-
-      - name: Install Graphviz runtime
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends graphviz libgraphviz-dev
-          dot -V
+          # The servers need only Python packages: cmaboss replaces the MaBoSS
+          # executable and bundled PyGraphviz replaces Graphviz dot. Tests that
+          # matter run with an empty PATH; this only records the runner image.
+          for tool in MaBoSS dot; do
+            if command -v "$tool" >/dev/null; then echo "$tool present: $(command -v "$tool")"; else echo "$tool absent"; fi
+          done
 
       - name: Install project with pinned released companion libraries
         run: |
