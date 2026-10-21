@@ -263,9 +263,11 @@ registration without trying to upload the existing PyPI version again.
 
 ## License
 
-The package metadata declares the project under the MIT license. The wrapped
-modelling packages retain their own licenses; consult their upstream projects
-for details.
+This project is licensed under the GNU General Public License, version 3 only
+(`GPL-3.0-only`). See [LICENSE](LICENSE) for the full terms.
+
+The wrapped modelling packages retain their own licenses; consult their upstream
+projects for details.
 
 ### Artifact storage and ordinary import provenance
 

@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
@@ -7,7 +7,8 @@ name = "mcp-biomodelling-servers"
 version = "2.5.0"
 description = "MCP servers for NeKo signalling-network construction, MaBoSS Boolean simulation, PhysiCell configuration, and BioMASS ODE construction"
 readme = "README.md"
-license = { text = "MIT" }
+license = "GPL-3.0-only"
+license-files = ["LICENSE"]
 requires-python = ">=3.10"
 keywords = ["mcp", "systems-biology", "bioinformatics", "neko", "maboss", "physicell", "biomass"]
 classifiers = [
@@ -21,7 +22,6 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
-    "License :: OSI Approved :: MIT License",
 ]
 dependencies = [
     "mcp>=2,<3",
@@ -115,6 +115,7 @@ include = [
     "BioMASS/",
     "artifact_manager.py",
     "README.md",
+    "LICENSE",
     "pyproject.toml",
 ]
 exclude = [
