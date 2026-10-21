@@ -74,6 +74,7 @@ from .contracts import (
     NonEmptyString,
 )
 from .guidance import MABOSS_AGENT_MANUAL, MABOSS_SERVER_INSTRUCTIONS
+from .external import maboss_executable
 from .external import pymaboss as maboss
 from .locking import (
     resource_session_locked as _resource_session_locked,
@@ -449,10 +450,11 @@ def import_neko_handoff(
                     )
 
             try:
-                candidate_simulation = maboss.load(
-                    str(temporary_bnd),
-                    str(temporary_cfg),
-                )
+                with maboss_executable():
+                    candidate_simulation = maboss.load(
+                        str(temporary_bnd),
+                        str(temporary_cfg),
+                    )
             except Exception as exc:
                 raise RuntimeError(
                     f"Error loading the converted MaBoSS simulation: {exc}"
@@ -692,7 +694,8 @@ def build_simulation(
     logger.info("Loading MaBoSS simulation: BND=%s CFG=%s", bnd_path, cfg_path)
 
     try:
-        loaded_sim = maboss.load(bnd_path, cfg_path)
+        with maboss_executable():
+            loaded_sim = maboss.load(bnd_path, cfg_path)
     except Exception as e:
         logger.exception("Failed to load simulation")
         raise RuntimeError(f"Error loading MaBoSS simulation: {e}") from e
@@ -760,7 +763,8 @@ async def run_simulation(
             art_dir = get_artifact_dir(_SERVER_ROOT, sess.session_id)
             run_result = None
             try:
-                run_result = sess.sim.run()
+                with maboss_executable():
+                    run_result = sess.sim.run()
                 if getattr(run_result, "_err", 0):
                     raise RuntimeError(f"Engine exit code {run_result._err}")
             except Exception as exc:
@@ -1839,7 +1843,8 @@ async def simulate_mutation(
                 )
             try:
                 logger.info("Running mutant simulation")
-                mutated_simulation = sess.sim.copy()
+                with maboss_executable():
+                    mutated_simulation = sess.sim.copy()
                 for node, mutation_state in zip(
                     node_list,
                     state_list,
@@ -1856,7 +1861,8 @@ async def simulate_mutation(
                 art_dir = get_artifact_dir(_SERVER_ROOT, sess.session_id)
                 mutation_result = None
                 try:
-                    mutation_result = mutated_simulation.run()
+                    with maboss_executable():
+                        mutation_result = mutated_simulation.run()
                     if getattr(mutation_result, "_err", 0):
                         raise RuntimeError(f"Engine exit code {mutation_result._err}")
                 except Exception as exc:

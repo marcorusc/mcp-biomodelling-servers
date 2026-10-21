@@ -210,6 +210,11 @@ scientific choices.
 - Preserve progress reporting for blocking simulation work.
 - Return trajectory plots as complete native MCP image content with structured
   artifact metadata.
+- pyMaBoSS runs the external `MaBoSS` executables (`MaBoSS`, `MaBoSS_128n`, ...)
+  to load and simulate models; pip/uvx do not install them. Wrap new pyMaBoSS
+  load, copy or run calls in `maboss_executable()` so a missing executable is
+  named. CI installs a pinned, checksum-verified MaBoSS release; a local
+  executable on `PATH` can hide this dependency from local test runs.
 
 ### NeKo
 

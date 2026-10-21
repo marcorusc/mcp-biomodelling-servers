@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from MaBoSS.external import maboss_executable
 from MaBoSS.services import artifacts
 from MaBoSS.services.model import model_revision
 from MaBoSS.services.runs import load_run
@@ -128,3 +129,24 @@ def test_diagnostic_storage_failure_does_not_mask_original_phase(tmp_path):
     from MaBoSS.services.runs import record_failure
     result = record_failure(tmp_path / "missing", "fixture", "engine", "exit 1", "revision")
     assert "diagnostic storage also failed" in str(result)
+
+
+def test_missing_maboss_executable_is_named(tmp_path, monkeypatch):
+    monkeypatch.setattr(maboss_server, "_SERVER_ROOT", tmp_path / "MaBoSS")
+    sid = _create_simulation_session(model_session().sim)
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+
+    failed = _run(_call_tool("run_simulation", {"session_id": sid}))
+
+    assert failed.is_error
+    assert "The MaBoSS executable 'MaBoSS' is not on PATH" in failed.content[0].text
+    assert session_manager.get_session(sid).latest_run_id is None
+
+
+def test_executable_guard_only_translates_maboss_executables():
+    with pytest.raises(RuntimeError, match="'MaBoSS_128n' is not on PATH"):
+        with maboss_executable():
+            raise FileNotFoundError(2, "No such file or directory", "MaBoSS_128n")
+    with pytest.raises(FileNotFoundError):
+        with maboss_executable():
+            raise FileNotFoundError(2, "No such file or directory", "model.bnd")

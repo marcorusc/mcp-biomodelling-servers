@@ -106,6 +106,7 @@ class PreservationTests(unittest.TestCase):
             "json": json,
             "pd": pd,
             "record_failure": __import__("MaBoSS.services.runs", fromlist=["record_failure"]).record_failure,
+            "maboss_executable": __import__("MaBoSS.external", fromlist=["maboss_executable"]).maboss_executable,
             "logger": logging.getLogger("mock-run"),
             "Field": lambda **kwargs: kwargs.get("default"),
             "session_manager": SimpleNamespace(session_scope=lambda sid: nullcontext()),

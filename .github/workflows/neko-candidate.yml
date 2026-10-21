@@ -42,6 +42,19 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+      - name: Install the MaBoSS executable
+        env:
+          MABOSS_RELEASE: v2.6.7.0
+          MABOSS_SHA256: 813781b872bdaadd4690051fcb939780313d8537f0b83c569b17450e237238ae
+        run: |
+          # pyMaBoSS runs this executable to load and simulate models; pip does not install it.
+          curl -fsSL -o "$RUNNER_TEMP/MaBoSS-linux64.zip" \
+            "https://github.com/sysbio-curie/MaBoSS/releases/download/${MABOSS_RELEASE}/MaBoSS-linux64.zip"
+          echo "${MABOSS_SHA256}  $RUNNER_TEMP/MaBoSS-linux64.zip" | sha256sum --check
+          unzip -q "$RUNNER_TEMP/MaBoSS-linux64.zip" 'MaBoSS*' -d "$RUNNER_TEMP/maboss-bin"
+          echo "$RUNNER_TEMP/maboss-bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/maboss-bin/MaBoSS" --version
+
       - name: Install Graphviz and the candidate through the dependency resolver
         run: |
           sudo apt-get update

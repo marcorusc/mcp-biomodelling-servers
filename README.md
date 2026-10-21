@@ -38,17 +38,33 @@ For more details, please check the related article:
   automatically by `pip` or `uvx`.
 - The Graphviz system runtime for NeKo history diagrams. The Python `graphviz`
   package is not a replacement for the external `dot` renderer.
+- The MaBoSS executables for the MaBoSS server. pyMaBoSS runs them to load and
+  simulate models; `pip` and `uvx` install only the Python packages, not the
+  executables.
 
-Check whether Graphviz is available with:
+Check whether Graphviz and MaBoSS are available with:
 
 ```bash
 dot -V
+MaBoSS --version
 ```
 
-If this command is missing, install Graphviz using your operating system or
+If `dot` is missing, install Graphviz using your operating system or
 environment package manager. See the
 [Graphviz installation guide](https://graphviz.org/download/) for
 platform-specific instructions.
+
+If `MaBoSS` is missing, either install it with conda:
+
+```bash
+conda install -c colomoto maboss
+```
+
+or download the archive for your platform (for example `MaBoSS-linux64.zip`)
+from the [MaBoSS releases](https://github.com/sysbio-curie/MaBoSS/releases),
+extract it, and put the extracted directory on `PATH`. The archive contains
+`MaBoSS` and its larger-network variants (`MaBoSS_128n` to `MaBoSS_1024n`),
+which pyMaBoSS selects by model size. CI tests against MaBoSS 2.6.7.
 
 ## Installation
 
