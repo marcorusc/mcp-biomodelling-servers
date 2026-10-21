@@ -641,7 +641,7 @@ def test_find_paths_returns_captured_structured_lines() -> None:
     )
 
     assert result.is_error is False
-    assert "Paths (full output)" in result.content[0].text
+    assert "Paths (bounded output)" in result.content[0].text
     assert result.structured_content == {
         "server": "NeKo",
         "session_id": session_id,
@@ -659,6 +659,36 @@ def test_find_paths_returns_captured_structured_lines() -> None:
             "TP53 -> AKT1 -> MDM2",
         ],
     }
+
+
+def test_find_paths_full_verbosity_is_bounded_by_max_paths() -> None:
+    def print_paths(*args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        print("TP53 -> MDM2")
+        print("TP53 -> AKT1 -> MDM2")
+        print("TP53 -> PTEN -> MDM2")
+
+    network = _network_stub(print_my_paths=print_paths)
+    session_id = _create_session(network)
+
+    result = _run(
+        _call_tool(
+            "find_paths",
+            {
+                "session_id": session_id,
+                "source": "TP53",
+                "target": "MDM2",
+                "verbosity": "full",
+                "max_paths": 2,
+            },
+        )
+    )
+
+    assert result.is_error is False
+    assert result.content[0].text == "Paths (bounded output):\nTP53 -> MDM2\nTP53 -> AKT1 -> MDM2"
+    assert result.structured_content["output_line_count"] == 3
+    assert len(result.structured_content["paths"]) == 2
+    assert result.structured_content["truncated"] is True
 
 
 def test_disconnected_nodes_return_both_biological_identifiers() -> None:
