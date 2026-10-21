@@ -1,7 +1,7 @@
 """MCP-level Wave 2 inspection of real pyMaBoSS models (B-MB-5/7/8/9)."""
-import maboss
 import pytest
 
+from MaBoSS.external import pymaboss as maboss
 from MaBoSS.services.model import model_revision
 from tests.test_maboss_mcp_errors import (
     _call_tool,

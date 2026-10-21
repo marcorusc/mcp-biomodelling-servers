@@ -74,7 +74,6 @@ from .contracts import (
     NonEmptyString,
 )
 from .guidance import MABOSS_AGENT_MANUAL, MABOSS_SERVER_INSTRUCTIONS
-from .external import maboss_executable
 from .external import pymaboss as maboss
 from .locking import (
     resource_session_locked as _resource_session_locked,
@@ -450,11 +449,10 @@ def import_neko_handoff(
                     )
 
             try:
-                with maboss_executable():
-                    candidate_simulation = maboss.load(
-                        str(temporary_bnd),
-                        str(temporary_cfg),
-                    )
+                candidate_simulation = maboss.load(
+                    str(temporary_bnd),
+                    str(temporary_cfg),
+                )
             except Exception as exc:
                 raise RuntimeError(
                     f"Error loading the converted MaBoSS simulation: {exc}"
@@ -694,8 +692,7 @@ def build_simulation(
     logger.info("Loading MaBoSS simulation: BND=%s CFG=%s", bnd_path, cfg_path)
 
     try:
-        with maboss_executable():
-            loaded_sim = maboss.load(bnd_path, cfg_path)
+        loaded_sim = maboss.load(bnd_path, cfg_path)
     except Exception as e:
         logger.exception("Failed to load simulation")
         raise RuntimeError(f"Error loading MaBoSS simulation: {e}") from e
@@ -763,10 +760,9 @@ async def run_simulation(
             art_dir = get_artifact_dir(_SERVER_ROOT, sess.session_id)
             run_result = None
             try:
-                with maboss_executable():
-                    run_result = sess.sim.run()
+                run_result = sess.sim.run()
                 if getattr(run_result, "_err", 0):
-                    raise RuntimeError(f"Engine exit code {run_result._err}")
+                    raise RuntimeError(f"Engine exit code {run_result._err}: {getattr(run_result, 'error_detail', '')}")
             except Exception as exc:
                 diagnostic = record_failure(art_dir, sess.session_id, "engine", exc, revision, run_result)
                 raise RuntimeError(f"MaBoSS engine failed; incomplete record: {diagnostic}: {exc}") from exc
@@ -1843,8 +1839,7 @@ async def simulate_mutation(
                 )
             try:
                 logger.info("Running mutant simulation")
-                with maboss_executable():
-                    mutated_simulation = sess.sim.copy()
+                mutated_simulation = sess.sim.copy()
                 for node, mutation_state in zip(
                     node_list,
                     state_list,
@@ -1861,10 +1856,9 @@ async def simulate_mutation(
                 art_dir = get_artifact_dir(_SERVER_ROOT, sess.session_id)
                 mutation_result = None
                 try:
-                    with maboss_executable():
-                        mutation_result = mutated_simulation.run()
+                    mutation_result = mutated_simulation.run()
                     if getattr(mutation_result, "_err", 0):
-                        raise RuntimeError(f"Engine exit code {mutation_result._err}")
+                        raise RuntimeError(f"Engine exit code {mutation_result._err}: {getattr(mutation_result, 'error_detail', '')}")
                 except Exception as exc:
                     diagnostic = record_failure(art_dir, sess.session_id, "engine", exc, revision, mutation_result)
                     raise RuntimeError(f"Mutant engine failed; incomplete record: {diagnostic}: {exc}") from exc

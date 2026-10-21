@@ -32,39 +32,16 @@ For more details, please check the related article:
 
 ## Requirements
 
-- Python 3.10–3.14.
+- Python 3.10–3.15.
 - MCP Python SDK 2.x, installed automatically with this package.
 - The modelling-package dependencies declared in `pyproject.toml`, installed
   automatically by `pip` or `uvx`.
-- The Graphviz system runtime for NeKo history diagrams. The Python `graphviz`
-  package is not a replacement for the external `dot` renderer.
-- The MaBoSS executables for the MaBoSS server. pyMaBoSS runs them to load and
-  simulate models; `pip` and `uvx` install only the Python packages, not the
-  executables.
 
-Check whether Graphviz and MaBoSS are available with:
-
-```bash
-dot -V
-MaBoSS --version
-```
-
-If `dot` is missing, install Graphviz using your operating system or
-environment package manager. See the
-[Graphviz installation guide](https://graphviz.org/download/) for
-platform-specific instructions.
-
-If `MaBoSS` is missing, either install it with conda:
-
-```bash
-conda install -c colomoto maboss
-```
-
-or download the archive for your platform (for example `MaBoSS-linux64.zip`)
-from the [MaBoSS releases](https://github.com/sysbio-curie/MaBoSS/releases),
-extract it, and put the extracted directory on `PATH`. The archive contains
-`MaBoSS` and its larger-network variants (`MaBoSS_128n` to `MaBoSS_1024n`),
-which pyMaBoSS selects by model size. CI tests against MaBoSS 2.6.7.
+No system software is needed. MaBoSS simulations use the compiled `cmaboss`
+engine that ships with pyMaBoSS, so the separate `MaBoSS` executable is not
+required. NeKo history diagrams and BioMASS graphs render with PyGraphviz,
+whose wheels bundle Graphviz, so the external `dot` program is not required
+either. Prebuilt wheels cover Linux, macOS and Windows.
 
 ## Installation
 
@@ -143,7 +120,7 @@ The following example uses `uvx` and works with clients that accept the common
     "biomass": {
       "type": "stdio",
       "command": "uvx",
-      "args": ["--from", "mcp-biomodelling-servers[biomass-graph]", "mcp-biomass-server"]
+      "args": ["--from", "mcp-biomodelling-servers", "mcp-biomass-server"]
     }
   }
 }
@@ -187,9 +164,9 @@ records evidence and assumptions, and authors Text2Model reactions. BioMASS
 supports standalone text too, along with graph rendering and bounded exploratory
 simulation. Calibration and sensitivity analysis are deferred.
 
-For visualization, install `mcp-biomodelling-servers[biomass-graph]` and the Graphviz
-system runtime. See the [BioMASS manual](BioMASS/README.md) for an MCP client
-configuration, the 22 tools, graph interpretation limits, and a runnable example.
+Graph rendering is included in the standard installation. See the
+[BioMASS manual](BioMASS/README.md) for an MCP client configuration, the 22
+tools, graph interpretation limits, and a runnable example.
 
 ## Sessions, artifacts, and errors
 

@@ -210,11 +210,12 @@ scientific choices.
 - Preserve progress reporting for blocking simulation work.
 - Return trajectory plots as complete native MCP image content with structured
   artifact metadata.
-- pyMaBoSS runs the external `MaBoSS` executables (`MaBoSS`, `MaBoSS_128n`, ...)
-  to load and simulate models; pip/uvx do not install them. Wrap new pyMaBoSS
-  load, copy or run calls in `maboss_executable()` so a missing executable is
-  named. CI installs a pinned, checksum-verified MaBoSS release; a local
-  executable on `PATH` can hide this dependency from local test runs.
+- Never launch the external `MaBoSS` executable; pip/uvx do not install it.
+  `MaBoSS/services/engine.py` replaces pyMaBoSS's `Simulation.check` and
+  `Simulation.run` so validation and simulation use the bundled `cmaboss`
+  engine in a child process (cmaboss holds the GIL and can abort on malformed
+  input). Tests that build real models import `pymaboss` from
+  `MaBoSS.external` so they use the same engine.
 
 ### NeKo
 
@@ -223,8 +224,8 @@ scientific choices.
 - Run connection strategies through history-aware `Network` methods.
 - Preserve the unbounded history default unless a session limit is explicitly
   configured.
-- Graphviz's external `dot` executable is required for HTML/SVG history
-  rendering.
+- Render history with `NeKo/services/history_rendering.py` (bundled PyGraphviz),
+  not NeKo's `history_html`, which needs an external `dot` executable.
 - Database-backed tools are open-world operations and may require network
   access.
 
@@ -254,8 +255,9 @@ resources.
 
 ## Dependencies and Packaging
 
-The supported interpreter range is Python 3.10-3.14. Keep emitted syntax
-compatible with Python 3.10 while retaining the Python 3.14/pandas 3 lane.
+The supported interpreter range is Python 3.10-3.15. Keep emitted syntax
+compatible with Python 3.10 while retaining the Python 3.14 and 3.15/pandas 3
+lanes.
 
 Important declared ranges include:
 
@@ -263,12 +265,16 @@ Important declared ranges include:
 - `pydantic>=2.12`;
 - `pandas>=2.2,<4`;
 - `nekomata>=1.10.2,<2`;
-- `maboss>=0.8.15,<0.9`;
-- `physicell-settings>=0.6.2,<0.7`.
+- `maboss>=0.8.15,<0.9` and `cmaboss>=1.0.0b32,<2`;
+- `physicell-settings>=0.6.3,<0.7`;
+- `biomass[graph]>=0.14.0,<0.15` and `pygraphviz>=2.0.4,<3`.
 
 `requests` and `tabulate` are direct runtime dependencies. Do not reintroduce
 the removed direct `paramiko`, `fastmcp`, or old PyPath dependency assumptions.
-Conda is optional; pip and uvx installs must work from the published package.
+Conda is optional; pip and uvx installs must work from the published package
+with no system software: no `MaBoSS` executable and no Graphviz `dot`. Tests
+that prove this run with an empty `PATH`; keep them that way, since a local
+executable on `PATH` hides such dependencies.
 
 Hatch maps the three source server directories under the installed
 `mcp_biomodelling_servers` namespace. Ordinary wheel and source-distribution
@@ -276,8 +282,8 @@ builds are supported. Editable `uv run` installation is not currently
 supported by this prefix-changing source layout; do not mix a package-layout
 rewrite into an unrelated change.
 
-The root and installed copies of `artifact_manager.py` must remain identical
-until that packaging duplication is deliberately redesigned.
+The root-level `artifact_manager.py` is a compatibility shim that re-exports
+`mcp_biomodelling_servers/artifact_manager.py`.
 
 ## Verification Workflow
 

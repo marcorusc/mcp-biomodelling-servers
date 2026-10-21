@@ -34,6 +34,8 @@ def _install_neko_import_stubs() -> None:
     inputs_module = ModuleType("neko.inputs")
     tools_module = ModuleType("neko.core.tools")
     strategies_module = ModuleType("neko.core.strategies")
+    history_module = ModuleType("neko.core.history")
+    history_module.json_value = lambda value: value  # type: ignore[attr-defined]
 
     class StubNetwork:
         pass
@@ -72,6 +74,7 @@ def _install_neko_import_stubs() -> None:
             "neko.inputs": inputs_module,
             "neko.core.tools": tools_module,
             "neko.core.strategies": strategies_module,
+            "neko.core.history": history_module,
         }
     )
 
@@ -315,8 +318,10 @@ class _HistoryNetwork:
                 self.current_state_id: [],
             }
 
-    def history_html(self) -> str:
-        return '<div class="neko-history-graph"><svg>history</svg></div>'
+    def history_digraph(self, include_metadata: bool = True) -> SimpleNamespace:
+        del include_metadata
+        edges = " ".join(f'"{parent}" -> "{child}"' for child, parents in self._parents.items() for parent in parents)
+        return SimpleNamespace(source="digraph { " + edges + " }")
 
 
 @pytest.fixture(autouse=True)
@@ -1992,9 +1997,11 @@ def test_network_history_resource_returns_inline_svg_html() -> None:
 
     assert len(result.contents) == 1
     assert result.contents[0].mime_type == "text/html"
-    assert result.contents[0].text == (
-        '<div class="neko-history-graph"><svg>history</svg></div>'
-    )
+    text = result.contents[0].text
+    assert text.startswith('<div class="neko-history-graph">')
+    assert "<svg" in text and "</svg>" in text
+    assert '<details id="neko-state-6"><summary>State 6 explanation</summary>' in text
+    assert "remove_node" in text
 
 
 def test_missing_network_history_resource_does_not_create_session() -> None:

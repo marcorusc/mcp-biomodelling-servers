@@ -33,12 +33,10 @@ Alternatively, run it in an isolated environment:
 uvx --from mcp-biomodelling-servers mcp-maboss-server
 ```
 
-The server also needs the MaBoSS executables on `PATH`: pyMaBoSS runs them to
-load and simulate models, and `pip`/`uvx` do not install them. Check with
-`MaBoSS --version`. Install them with `conda install -c colomoto maboss`, or
-from the [MaBoSS releases](https://github.com/sysbio-curie/MaBoSS/releases).
-Without them, loading or running a model fails with an error naming the missing
-executable.
+The server does not need the separate `MaBoSS` executable. It validates and
+simulates models with `cmaboss`, the compiled engine installed with pyMaBoSS,
+in a child Python process so a long simulation never blocks the server. Loading
+a model that the engine rejects fails with the engine's message.
 
 See the [repository README](../README.md) for the supported Python versions,
 complete MCP client configuration, source-checkout instructions, and shared

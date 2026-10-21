@@ -101,7 +101,7 @@ restore_session reloads the durable authoring state. list_generated_files lists
 nested artifacts. clean_generated_files deletes generated revisions and runs,
 but preserves authoring state and source lineage. Session resources are read-only.
 
-Install mcp-biomodelling-servers[biomass-graph] plus Graphviz for graph rendering.
+Graph rendering uses the bundled PyGraphviz; no system Graphviz is needed.
 PyGraphviz may require Graphviz headers and a compiler when no wheel is available.
 Missing graph dependencies do not prevent construction or simulation.
 
