@@ -327,7 +327,7 @@ jobs:
           sudo apt-get install --yes --no-install-recommends graphviz libgraphviz-dev
           dot -V
 
-      - name: Install project with pinned companion library candidates
+      - name: Install project with pinned released companion libraries
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements-ci-wave1.txt \

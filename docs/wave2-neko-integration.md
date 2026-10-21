@@ -183,3 +183,14 @@ the CI pin to the pushed lightweight-history candidate
 `history_status()`, avoiding full-history metadata copies and graph construction.
 Unknown legacy delta counts remain null. Older candidates retain the original
 public-API fallback; the earlier measurements above remain historical baselines.
+
+## Released companion libraries
+
+NeKo 1.10.2 and PhysiCell Settings 0.6.3 are now published on PyPI. Their release
+tags contain the pinned candidates (`7b845ae` and `82f66c4`); NeKo 1.10.2 adds
+further history, export and curation changes after `7b845ae`. CI now installs the
+exact published releases instead of Git commits. In a clean Python 3.13
+environment installed only from PyPI (mcp 2.3.0, pandas 3.0.6, maboss 0.8.16),
+all 813 tests passed with Wave 2 required, together with `pip check`, the CI
+lint/syntax checks, mypy, the wheel/sdist builds, the packaged-module check and
+`scripts/check_release.py`.
