@@ -44,7 +44,47 @@ def main() -> None:
             {"type": "positional", "value": command},
         ], server
         assert f"<!-- mcp-name: {manifest['name']} -->" in readme, server
+        plugin_name = server.lower()
+        plugin_dir = ROOT / "plugins" / plugin_name
+        launch = {
+            "command": "uvx",
+            "args": ["--from", f"{project['name']}=={version}", command],
+        }
+        for path, mcp_pointer, mcp_path, mcp_server in (
+            ("plugin.json", None, "mcp.json", {"type": "stdio", **launch}),
+            (
+                ".claude-plugin/plugin.json",
+                "./.claude-plugin/mcp.json",
+                ".claude-plugin/mcp.json",
+                launch,
+            ),
+        ):
+            plugin = json.loads((plugin_dir / path).read_text())
+            assert plugin["name"] == plugin_name, f"{server} {path}"
+            assert plugin["version"] == version, f"{server} {path}"
+            assert plugin.get("mcpServers") == mcp_pointer, f"{server} {path}"
+            servers = json.loads((plugin_dir / mcp_path).read_text())["mcpServers"]
+            assert servers == {plugin_name: mcp_server}, f"{server} {mcp_path}"
         manifests.append(manifest)
+    for path in (".claude-plugin/marketplace.json", ".agents/plugins/marketplace.json"):
+        entries = json.loads((ROOT / path).read_text())["plugins"]
+        assert sorted(e["name"] for e in entries) == sorted(
+            s.lower() for s in SERVERS
+        ), path
+        for entry in entries:
+            # A version or a git ref/sha here would pin a stale plugin release.
+            assert "version" not in entry, f"{path} {entry['name']}"
+            plugin_path = f"./plugins/{entry['name']}"
+            if path.startswith(".claude-plugin/"):
+                # Relative to the marketplace checkout, so any branch or fork installs itself.
+                source = plugin_path
+            else:
+                source = {
+                    "source": "git-subdir",
+                    "url": f"{project['urls']['Repository']}.git",
+                    "path": plugin_path,
+                }
+            assert entry["source"] == source, f"{path} {entry['name']}"
     assert (
         f'__version__ = "{version}"'
         in (ROOT / "mcp_biomodelling_servers" / "__init__.py").read_text()
@@ -107,7 +147,7 @@ def main() -> None:
     }
     assert all(alias.asname is None for alias in exports.names)
     print(
-        f"Release {version}: four server manifests, ownership markers and entry points agree."
+        f"Release {version}: four server manifests, plugin manifests and marketplaces, ownership markers and entry points agree."
     )
 
 
