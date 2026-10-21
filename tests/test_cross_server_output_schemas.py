@@ -89,6 +89,8 @@ EXPECTED_NAMED_OUTPUTS = {
         "configure_cell_parameters": "CellConfigurationResult",
         "configure_physiboss_settings": "CellConfigurationResult",
         "add_physiboss_output_link": "CellConfigurationResult",
+        "add_physiboss_input_link": "CellConfigurationResult",
+        "set_substrate_interaction": "CellConfigurationResult",
         "configure_simulation_inputs": "SimulationInputsResult",
         "export_configuration_bundle": "ConfigurationBundleResult",
         "list_sessions": "PhysiCellSessionListResult",
@@ -269,10 +271,11 @@ def test_schema_titles_are_unique_except_for_intentional_aliases() -> None:
         title: sorted(uses) for title, uses in uses_by_title.items() if len(uses) > 1
     }
     assert Counter(map(len, duplicated_titles.values())) == Counter(
-        {3: 4, 2: 1, 9: 1, 5: 1}
+        {3: 3, 2: 1, 9: 1, 5: 2}
     )
     assert duplicated_titles == {
-        "CellConfigurationResult": sorted(["PhysiCell.configure_cell_parameters", "PhysiCell.configure_physiboss_settings", "PhysiCell.add_physiboss_output_link"]),
+        "CellConfigurationResult": sorted(["PhysiCell.configure_cell_parameters", "PhysiCell.configure_physiboss_settings", "PhysiCell.add_physiboss_output_link",
+                                           "PhysiCell.add_physiboss_input_link", "PhysiCell.set_substrate_interaction"]),
         "BioMASSStateResult": sorted(
             "BioMASS." + name
             for name in (

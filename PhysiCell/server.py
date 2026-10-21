@@ -1550,7 +1550,7 @@ def set_substrate_interaction(
     secretion_rate: Annotated[Optional[float], Field(ge=0, allow_inf_nan=False, description="New secretion rate in 1/min. Omit to preserve the current value.")] = None,
     uptake_rate: Annotated[Optional[float], Field(ge=0, allow_inf_nan=False, description="New substrate uptake rate in 1/min. Omit to preserve the current value. Typical oxygen uptake: 10.")] = None,
     session_id: Optional[NonEmptyString] = Field(default=None, description="Session to use. Omit to use the active session."),
-) -> str:
+) -> CellConfigurationResult:
     """Patch a cell type's secretion and uptake rates for one substrate.
 
     Both cell type and substrate must already exist in the current session.
@@ -1558,8 +1558,8 @@ def set_substrate_interaction(
     supplied. Call repeatedly to configure multiple cell-substrate pairs or
     revise one pair after inspecting a simulation result.
 
-    Returns:
-        str: Confirmation listing only the requested rate updates.
+    Returns the interaction values actually stored for the pair, and whether
+    the configuration changed.
     """
     session = _require_configuration(session_id)
     if secretion_rate is None and uptake_rate is None:
@@ -1638,17 +1638,19 @@ def set_substrate_interaction(
             configuration_changed=configuration_changed,
         )
 
-        lines = [
-            f"**Substrate interaction patched:** {cell_type} ↔ {substrate}"
-        ]
-        if secretion_rate is not None:
-            lines.append(f"- secretion rate: {secretion_rate:g} min⁻¹")
-        if uptake_rate is not None:
-            lines.append(f"- uptake rate: {uptake_rate:g} min⁻¹")
-        if not configuration_changed:
-            lines.append("- The requested values already matched the configuration.")
-        lines.append("- All omitted interaction values were preserved.")
-        return "\n".join(lines)
+        stored = _mapping_at(
+            _configuration_cell_type(session.config, cell_type),
+            "phenotype",
+            "secretion",
+            substrate,
+        )
+        return CellConfigurationResult(
+            session_id=session.session_id,
+            cell_type=cell_type,
+            stored={"substrate": substrate, **deepcopy(stored)},
+            changed=configuration_changed,
+            model_revision=configuration_revision(session.config),
+        )
     except Exception as exc:
         raise RuntimeError(
             f"Could not set the substrate interaction: {exc}"
@@ -2140,19 +2142,19 @@ def add_physiboss_input_link(
     threshold: float = Field(default=1.0, allow_inf_nan=False, description="Signal level at which the node is toggled."),
     smoothing: int = Field(default=0, ge=0, description="Smoothing level (0 = no smoothing)."),
     session_id: Optional[NonEmptyString] = Field(default=None, description="Session to use. Omit to use the active session."),
-) -> str:
+) -> CellConfigurationResult:
     """Create an input link from a PhysiCell signal to a MaBoSS boolean node.
-    Requires a PhysiBoSS model already attached to the cell type.
-    Call `add_physiboss_output_link()` after all input links are defined.
-    Returns:
-        str: Confirmation with link details and next step.
+
+    Requires a PhysiBoSS model already attached to the cell type. Returns the
+    stored input mapping. Call `add_physiboss_output_link()` after all input
+    links are defined.
     """
     session = _require_configuration(session_id)
     _require_physiboss()
-    
+
     try:
-        # Use direct config.physiboss API (simpler and more reliable)
-        session.config.physiboss.add_intracellular_input(
+        candidate = deepcopy(session.config)
+        candidate.physiboss.add_intracellular_input(
             cell_type_name=cell_type,
             physicell_name=physicell_signal,
             intracellular_name=boolean_node,
@@ -2160,19 +2162,13 @@ def add_physiboss_input_link(
             threshold=threshold,
             smoothing=smoothing
         )
-        
-        # Update session tracking
-        session.physiboss_input_links_count += 1
-        session.mark_step_complete(WorkflowStep.PHYSIBOSS_INPUTS_LINKED)
-        
-        result = f"**PhysiBoSS input:** {physicell_signal} → {boolean_node}\n"
-        result += f"- Action: {action}\n"
-        result += f"- Threshold: {threshold}\n"
-        result += f"- Smoothing: {smoothing}\n"
-        result += f"- Progress: {session.get_progress_percentage():.0f}%\n"
-        result += f"**Next step:** Use `add_physiboss_output_link()` to connect boolean nodes to cell behaviors."
-        
-        return result
+
+        after_revision = configuration_revision(candidate)
+        session.publish_config_update(config=candidate, completed_step=WorkflowStep.PHYSIBOSS_INPUTS_LINKED,
+                                      configuration_changed=True, physiboss_tracking=_physiboss_tracking(candidate))
+        stored = _configuration_cell_type(session.config, cell_type)["phenotype"]["intracellular"]["mapping"]["inputs"][-1]
+        return CellConfigurationResult(session_id=session.session_id, cell_type=cell_type, stored=stored,
+                                       model_revision=after_revision)
     except Exception as exc:
         raise RuntimeError(
             f"Could not add the PhysiBoSS input link: {exc}"

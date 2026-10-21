@@ -1353,18 +1353,32 @@ def get_maboss_logical_rules(
     ),
     selected_nodes: Annotated[list[NonEmptyString] | None, Field(min_length=1, max_length=25, description="Inspect only these node rules; omitted returns up to 100 nodes.")] = None,
 ) -> Annotated[CallToolResult, MaBoSSLogicalRulesResult]:
-    """Return the Boolean logical rules of the loaded MaBoSS network."""
+    """Return the Boolean logical rules of the loaded MaBoSS network.
+
+    rule_limitation flags nodes whose custom rate expressions mean the rule
+    alone does not describe switching; inspect them with get_maboss_nodes.
+    """
     sess = ensure_session(session_id)
     if sess.sim is None:
         raise RuntimeError(
             "No simulation loaded. Call bnet_to_bnd_and_cfg then build_simulation first."
         )
     try:
+        total_node_count = truncated = None
         if hasattr(sess.sim, "print_cfg"):
-            names = selected_nodes or list(sess.sim.network)[:100]
+            all_names = list(sess.sim.network)
+            names = selected_nodes or all_names[:100]
+            if selected_nodes is None:
+                total_node_count, truncated = len(all_names), len(all_names) > len(names)
             records = inspect_nodes(sess.sim, names, sess.readouts)
-            rules = [{"node": item["node"], "rule": item["rule"] or item["rule_limitation"]} for item in records]
-            logical_rules = "\n".join(item["node"] + " = " + item["rule"] for item in rules)
+            rules = [{"node": item["node"], "rule": item["rule"] or None,
+                      "rule_limitation": item["rule_limitation"]} for item in records]
+            lines = [item["node"] + " = " + (item["rule"] or "(no explicit rule)")
+                     + (f"  [{item['rule_limitation']}]" if item["rule_limitation"] else "")
+                     for item in rules]
+            if truncated:
+                lines.append(f"Showing {len(names)} of {total_node_count} nodes; use selected_nodes for others.")
+            logical_rules = "\n".join(lines)
         else:
             logical_rules = sess.sim.get_logical_rules()
             rules = _logical_rule_records(logical_rules)
@@ -1374,6 +1388,8 @@ def get_maboss_logical_rules(
             model_revision=model_revision(sess.sim, sess.readouts) if hasattr(sess.sim, "print_cfg") else None,
             rule_count=len(rules),
             rules=rules,
+            total_node_count=total_node_count,
+            truncated=truncated,
         )
         return structured_report(str(logical_rules), payload)
     except Exception as e:

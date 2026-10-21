@@ -8,6 +8,7 @@ from xml.etree import ElementTree as ET
 
 import pytest
 from physicell_config import PhysiCellConfig
+from physicell_config.config import embedded_signals_behaviors as real_vocabulary
 
 from PhysiCell.services.bundle import export_bundle
 from PhysiCell.session_manager import SessionState
@@ -136,6 +137,61 @@ def test_fractional_timing_and_integer_steepness_are_stored(tmp_path):
     invalid = _run(_call_tool("add_physiboss_output_link", {"session_id": sid, "cell_type": "tumour",
                    "boolean_node": "A", "physicell_behavior": "cycle entry", "steepness": 0.5}))
     assert invalid.is_error
+
+
+def test_input_link_and_substrate_interaction_return_stored_values():
+    cfg = config()
+    cfg.substrates.add_substrate("oxygen")
+    cfg.physiboss.add_intracellular_model("tumour", bnd_filename="fixture.bnd", cfg_filename="fixture.cfg")
+    sid = _create_session(cfg)
+    session = session_manager.get_session(sid)
+
+    linked = call("add_physiboss_input_link", sid, cell_type="tumour", physicell_signal="oxygen",
+                  boolean_node="A", action="inhibition", threshold=0)
+    assert linked["stored"] == {"physicell_name": "oxygen", "intracellular_name": "A",
+                                "settings": {"action": "inhibition", "threshold": 0.0, "smoothing": 0}}
+    assert session.physiboss_input_links_count == 1
+
+    first = call("set_substrate_interaction", sid, cell_type="tumour", substrate="oxygen", uptake_rate=10)
+    assert first["changed"] is True
+    assert first["stored"]["substrate"] == "oxygen"
+    assert first["stored"]["uptake_rate"] == 10
+    assert first["stored"]["secretion_rate"] == 0
+    second = call("set_substrate_interaction", sid, cell_type="tumour", substrate="oxygen", secretion_rate=0)
+    assert second["changed"] is False
+    assert second["stored"] == first["stored"]
+    assert second["model_revision"] == first["model_revision"]
+
+
+def test_cell_specific_behaviors_keep_only_configured_cycle_exits(monkeypatch):
+    # The shared protocol helpers stub the vocabulary; restore the real one.
+    from PhysiCell import server
+    for name in ("get_signals_behaviors", "get_expanded_behaviors", "update_signals_behaviors_context_from_config"):
+        monkeypatch.setattr(server, name, getattr(real_vocabulary, name))
+    sid = _create_session(config())
+    def exits(**kwargs):
+        names = {item["name"] for item in call("list_all_available_behaviors", sid, **kwargs)["behaviors"]}
+        return names, {name for name in names if name.startswith("exit from cycle phase")}
+
+    all_names, all_exits = exits()
+    names, cell_exits = exits(cell_type="tumour")
+    # flow_cytometry_separated has phases 0-3; phase 0 exit is named "cycle entry".
+    assert cell_exits == {"exit from cycle phase 1", "exit from cycle phase 2", "exit from cycle phase 3"}
+    assert cell_exits < all_exits
+    assert "cycle entry" in names
+    assert names - cell_exits == all_names - all_exits
+
+
+def test_failed_input_link_leaves_configuration_unchanged():
+    cfg = config()
+    sid = _create_session(cfg)
+    session = session_manager.get_session(sid)
+    before = deepcopy(session.config.cell_types.get_cell_types())
+    result = _run(_call_tool("add_physiboss_input_link", {
+        "session_id": sid, "cell_type": "tumour", "physicell_signal": "oxygen", "boolean_node": "A"}))
+    assert result.is_error
+    assert session.config.cell_types.get_cell_types() == before
+    assert session.physiboss_input_links_count == 0
 
 
 def test_portable_rules_use_stored_updates_and_keep_original_export(tmp_path):

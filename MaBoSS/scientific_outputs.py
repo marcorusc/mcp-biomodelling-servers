@@ -57,7 +57,12 @@ class MaBoSSLogicalRuleRecord(StructuredOutputModel):
     """Boolean update rule for one network node."""
 
     node: str = Field(min_length=1)
-    rule: str
+    rule: str | None = Field(description="Boolean rule; null when the node has no explicit logic.")
+    rule_limitation: str | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Why the rule alone does not describe switching, when it does not.",
+    )
 
 
 class MaBoSSLogicalRulesResult(MaBoSSScientificResult):
@@ -65,6 +70,8 @@ class MaBoSSLogicalRulesResult(MaBoSSScientificResult):
 
     rule_count: int = Field(ge=0)
     rules: list[MaBoSSLogicalRuleRecord]
+    total_node_count: int | None = Field(default=None, ge=0, exclude_if=lambda value: value is None)
+    truncated: bool | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 class MaBoSSMutationRecord(StructuredOutputModel):

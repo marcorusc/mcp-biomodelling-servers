@@ -119,7 +119,7 @@ The construction parameters are:
 | `path_policy` | `one_shortest`, `all_shortest`, or `all_bounded` |
 | `reuse_policy` | `none`, `discovered_paths`, or `induced_subgraph` |
 | `only_signed` | Keep only signed interactions when true |
-| `consensus` | Require support from multiple curated sources when true |
+| `consensus` | Use the resource's own consensus sign flags when true; this does not universally imply multiple databases or higher confidence |
 | `verbosity` | `summary`, `preview`, or `full` |
 
 Construction may query an external biological database and can take several
@@ -415,11 +415,11 @@ route does not preserve the typed scientific context and provenance manifest.
 |---|---|
 | Sessions | `create_session`, `list_sessions`, `list_artifact_sessions`, `set_default_session`, `status`, `reset_network`, `delete_session` |
 | Construction and editing | `create_network`, `set_default_params`, `add_nodes`, `remove_gene`, `remove_interaction` |
-| Curation | `remove_bimodal_interactions`, `remove_undefined_interactions` |
+| Curation | `edit_interactions`, `remove_bimodal_interactions`, `remove_undefined_interactions` |
 | Inspection and evidence | `list_genes_and_interactions`, `filter_interactions`, `find_paths`, `get_references`, `analyze_connectivity`, `analyze_gene_set` |
 | Connection strategies | `preview_connection_impact`, `bridge_components`, `connect_targeted_nodes`, `apply_global_connection` |
 | Branching history | `list_network_history`, `navigate_network_history`, `compare_network_states`, `set_network_history_limit` |
-| Export and artifacts | `export_network`, `export_neko_handoff`, `list_bnet_files`, `clean_generated_files` |
+| Export and artifacts | `export_network`, `export_neko_handoff`, `export_biomass_handoff`, `list_bnet_files`, `clean_generated_files` |
 
 ## Resources and prompt
 

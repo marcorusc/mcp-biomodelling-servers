@@ -166,7 +166,10 @@ must be unique and each vector must have the same length as `nodes`.
 
 ### Logical rules and mutations
 
-- `get_maboss_logical_rules` returns the current Boolean rules.
+- `get_maboss_logical_rules` returns the current Boolean rules, up to 100 nodes
+  unless `selected_nodes` is given (`truncated` reports when more exist). A
+  `rule_limitation` marks nodes whose custom rate expressions mean the rule alone
+  does not describe their switching; inspect those with `get_maboss_nodes`.
 - `change_maboss_rule` replaces one node's rule and restores the previous rule
   if model validation rejects the change.
 - `get_maboss_mutations` reports mutations currently stored in the model.
@@ -276,7 +279,7 @@ integrity metadata, and provenance.
 | Sessions | `create_session`, `list_sessions`, `list_artifact_sessions`, `set_default_session`, `delete_session` |
 | Import and loading | `import_neko_handoff`, `bnet_to_bnd_and_cfg`, `build_simulation` |
 | Inspection | `get_maboss_nodes`, `get_maboss_initial_state`, `get_maboss_logical_rules`, `get_maboss_mutations` |
-| Configuration | `change_maboss_rule`, `update_maboss_parameters`, `set_maboss_output_nodes`, `set_maboss_initial_state` |
+| Configuration | `change_maboss_rule`, `edit_maboss_readouts`, `update_maboss_parameters`, `set_maboss_output_nodes`, `set_maboss_initial_state` |
 | Simulation and analysis | `run_simulation`, `simulate_mutation`, `get_simulation_result`, `visualize_network_trajectories` |
 | Export | `export_maboss_bnd_cfg`, `export_maboss_handoff` |
 | Artifacts | `list_generated_files`, `clean_generated_files` |
@@ -294,7 +297,7 @@ templates:
 | `maboss://session/{session_id}/initial_state` | Initial-state distribution |
 | `maboss://session/{session_id}/logical_rules` | Boolean rules |
 | `maboss://session/{session_id}/mutations` | Current mutations |
-| `maboss://session/{session_id}/result` | Latest state-probability result |
+| `maboss://session/{session_id}/result` | Latest in-memory state-probability result (use `get_simulation_result(run_id=...)` for saved runs) |
 | `maboss://session/{session_id}/files` | Generated artifact files |
 
 `maboss_workflow_prompt` exposes the same recommended operating rules as an
@@ -302,24 +305,36 @@ MCP prompt.
 
 ## Preserved simulation runs
 
-Each successful file-backed `run_simulation` preserves a unique `run_<uuid>`
-artifact set before pyMaBoSS releases its temporary directory:
+Each successful file-backed `run_simulation` and `simulate_mutation` call
+preserves a unique `run_<uuid>` artifact set before pyMaBoSS releases its
+temporary directory:
 
-- Exact BND/CFG inputs and the engine's actual output files.
+- Exact BND/CFG inputs sent to the engine (for mutant runs, the mutated copy)
+  and the engine's actual output files.
 - Full state-probability and node-marginal CSV tables, including their original
   time index labelled `Time`.
-- A JSON inventory with session/run identity, reported timepoints, file sizes and
-  SHA-256 hashes. The inventory is published after its files.
+- A JSON inventory with session/run identity, run kind, source model revision,
+  requested mutations, effective configuration (parameters, rates, initial
+  state, outputs, readouts), reported timepoints, file sizes and SHA-256 hashes.
+  The inventory is published after its files.
 
-`list_generated_files` exposes these flat artifacts. Repeated runs keep distinct
-sets. The legacy `result.csv`, result resource and tool response retain their
-latest final-snapshot behavior; use the per-run tables for time courses. Saving
-results does not fill missing timepoints or validate numerical/biological behavior.
+Both tools return the run ID. `get_simulation_result(run_id=...)` and
+`visualize_network_trajectories(run_id=...)` read a saved run from disk after
+verifying its integrity, including after a server restart, without rerunning the
+engine. Omitting `run_id` selects the latest ordinary run of the session and
+reports the resolved ID; mutant runs never replace that selection, and the base
+model is not modified. An unknown run ID, or one from another session, is an
+error rather than a fallback. Each plot is saved under a new
+`<run_id>.plot_<uuid>.png` name, so earlier plots are never overwritten.
 
-A copy, parsing or publication error fails the operation without rerunning the
-engine. Partial publication rolls back only that attempt's new links. Previously
-saved runs remain intact. This path expects pyMaBoSS's file-backed result interface;
-it does not extend mutation-analysis exports or add a new simulation backend.
+The legacy `result.csv` and result resource keep their latest final-snapshot
+behavior and are not the historical record. Saving results does not fill missing
+timepoints or validate numerical/biological behavior.
+
+An engine failure or a copy, parsing or publication error fails the operation
+without rerunning the engine and is recorded as a separate `failed_<uuid>.json`
+incomplete record with any available diagnostic files. Partial publication rolls
+back only that attempt's new links. Previously saved runs remain intact.
 
 ## Errors and artifact cleanup
 

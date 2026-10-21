@@ -19,6 +19,11 @@ from mcp_biomodelling_servers.structured_outputs import StructuredOutputModel
 
 PARAMETER = re.compile(r"\$" + NAME)
 COEFFICIENT = r"(?:\$[A-Za-z_][A-Za-z_0-9]*|(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)"
+# The standard conditional rate forms, in which @logic alone gates switching.
+CONDITIONAL_RATE = {
+    "up": rf"(@logic\s*\?\s*)({COEFFICIENT})(\s*:\s*0(?:\.0*)?)",
+    "down": rf"(@logic\s*\?\s*0(?:\.0*)?\s*:\s*)({COEFFICIENT})()",
+}
 
 
 class RateEdit(BaseModel):
@@ -84,7 +89,7 @@ def inspect_nodes(sim, names, readouts=None):
         expressions = {"up": str(node.rt_up), "down": str(node.rt_down)}
         refs = sorted(set(PARAMETER.findall(" ".join(expressions.values()))))
         records.append({"node": name, "rule": node.logExp,
-                        "rule_limitation": None if node.logExp else "No explicit Boolean logic; custom transition rates determine behavior",
+                        "rule_limitation": _rule_limitation(node.logExp, expressions),
                         "rate_expressions": expressions,
                         "parameters": {ref: sim.param[ref] for ref in refs if ref in sim.param},
                         "unresolved_parameters": [ref for ref in refs if ref not in sim.param],
@@ -94,15 +99,24 @@ def inspect_nodes(sim, names, readouts=None):
     return records
 
 
+def _rule_limitation(rule, expressions):
+    """Say when the Boolean rule alone does not describe the node's switching."""
+    if not rule:
+        return "No explicit Boolean logic; custom transition rates determine behavior"
+    custom = [direction for direction, text in expressions.items()
+              if not re.fullmatch(CONDITIONAL_RATE[direction], text.strip())]
+    if custom:
+        return ("Custom " + "/".join(custom) + " rate expression; the rule alone does not "
+                "determine switching. Inspect rate_expressions")
+    return None
+
+
 def replace_coefficient(expression, value, direction):
     """Accept the standard conditional form; never guess arbitrary expressions."""
     text = str(expression).strip()
     if re.fullmatch(COEFFICIENT, text):
         return repr(float(value))  # Already unconditional; no logical guard is removed.
-    pattern = (rf"(@logic\s*\?\s*)({COEFFICIENT})(\s*:\s*0(?:\.0*)?)"
-               if direction == "up" else
-               rf"(@logic\s*\?\s*0(?:\.0*)?\s*:\s*)({COEFFICIENT})()")
-    match = re.fullmatch(pattern, text)
+    match = re.fullmatch(CONDITIONAL_RATE[direction], text)
     if not match:
         raise ValueError(f"Cannot unambiguously edit {direction} coefficient in {text!r}; expected standard @logic conditional")
     # Inline the coefficient rather than modifying a potentially shared parameter.
