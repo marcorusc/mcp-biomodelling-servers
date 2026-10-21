@@ -120,8 +120,12 @@ client. Each plugin here is the `plugins/<name>` directory of this repository.
 In VS Code, open the Command Palette, run **Chat: Install Plugin from Source**,
 choose a git repository, and enter `marcorusc/mcp-biomodelling-servers`.
 
-The BioMASS plugin runs the server without the `biomass-graph` extra. For graph
-rendering, use the manual configuration below.
+All four plugins work fully as installed, including BioMASS graph rendering:
+[uv](https://docs.astral.sh/uv/getting-started/installation/) is the only
+prerequisite, and no MaBoSS executable or Graphviz installation is needed. The
+first start of a plugin downloads and caches the package environment (about
+1 GB), which can take a minute or more on a slow connection; later starts reuse
+the cache and take a few seconds.
 
 ## Configure an MCP client
 
