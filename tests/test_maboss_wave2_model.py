@@ -1,9 +1,9 @@
 """Real pyMaBoSS object contracts without running a stochastic engine."""
 from types import SimpleNamespace
 
-import maboss
 import pytest
 
+from MaBoSS.external import pymaboss as maboss
 from MaBoSS.services.model import (
     RateEdit,
     ReadoutEdit,

@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from MaBoSS.external import maboss_executable
-from MaBoSS.services import artifacts
+from MaBoSS.external import pymaboss as maboss
+from MaBoSS.services import artifacts, engine
 from MaBoSS.services.model import model_revision
 from MaBoSS.services.runs import load_run
 from tests.test_maboss_mcp_errors import (
@@ -131,22 +131,46 @@ def test_diagnostic_storage_failure_does_not_mask_original_phase(tmp_path):
     assert "diagnostic storage also failed" in str(result)
 
 
-def test_missing_maboss_executable_is_named(tmp_path, monkeypatch):
+def test_real_runs_use_cmaboss_without_a_maboss_executable(tmp_path, monkeypatch):
+    monkeypatch.setattr(maboss_server, "_SERVER_ROOT", tmp_path / "MaBoSS")
+    sim = model_session().sim
+    sim.network.set_output(["A", "B"])
+    sim.update_parameters(sample_count=200, max_time=2, time_tick=0.5, thread_count=1)
+    sid = _create_simulation_session(sim)
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+
+    ordinary = call("run_simulation", session_id=sid)
+    mutant = call("simulate_mutation", session_id=sid, nodes="A", state="OFF")
+
+    manifest, path = load_run(maboss_server._SERVER_ROOT, ordinary["run_id"], sid)
+    inputs = {entry["source_name"]: (path.parent / entry["name"]).read_text()
+              for entry in manifest["files"] if entry["role"] == "engine_input"}
+    assert inputs == {"input.bnd": str(sim.network), "input.cfg": sim.str_cfg()}
+    outputs = {entry["source_name"] for entry in manifest["files"] if entry["role"] == "engine_output"}
+    assert {"res_probtraj.csv", "res_fp.csv", "res_statdist.csv", "res_run.txt"} <= outputs
+    assert manifest["state_timepoints"][-1] == pytest.approx(1.5)
+    mutant_result = call("get_simulation_result", session_id=sid, run_id=mutant["run_id"])
+    assert mutant_result["run_id"] == mutant["run_id"]
+    assert session_manager.get_session(sid).latest_run_id == ordinary["run_id"]
+
+
+def test_engine_crash_is_a_recorded_failure_not_a_server_crash(tmp_path, monkeypatch):
     monkeypatch.setattr(maboss_server, "_SERVER_ROOT", tmp_path / "MaBoSS")
     sid = _create_simulation_session(model_session().sim)
-    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    crash = tmp_path / "crash.py"
+    crash.write_text("import os, sys\nprint('engine exploded', file=sys.stderr)\nsys.stderr.flush()\nos.abort()\n")
+    monkeypatch.setattr(engine, "WORKER", crash)
 
     failed = _run(_call_tool("run_simulation", {"session_id": sid}))
 
     assert failed.is_error
-    assert "The MaBoSS executable 'MaBoSS' is not on PATH" in failed.content[0].text
+    assert "engine exploded" in failed.content[0].text
+    (record,) = list(tmp_path.rglob("failed_*.json"))
+    assert json.loads(record.read_text())["phase"] == "engine"
     assert session_manager.get_session(sid).latest_run_id is None
 
 
-def test_executable_guard_only_translates_maboss_executables():
-    with pytest.raises(RuntimeError, match="'MaBoSS_128n' is not on PATH"):
-        with maboss_executable():
-            raise FileNotFoundError(2, "No such file or directory", "MaBoSS_128n")
-    with pytest.raises(FileNotFoundError):
-        with maboss_executable():
-            raise FileNotFoundError(2, "No such file or directory", "model.bnd")
+def test_rejected_model_reports_the_engine_message():
+    node = maboss.Node("A", "A", "@logic ? $missing : 0", "@logic ? 0 : 1")
+    with pytest.raises(ValueError, match=r"MaBoSS rejected the model: .*\$missing"):
+        maboss.Simulation(maboss.Network([node]))
