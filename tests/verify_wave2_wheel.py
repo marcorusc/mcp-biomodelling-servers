@@ -12,6 +12,8 @@ MODULES = (
     "PhysiCell.services.configuration", "PhysiCell.tools.bundle",
     "PhysiCell.tools.inputs", "boolean_readouts",
     "MaBoSS.server", "PhysiCell.server",
+    # NeKo imports nekomata on first tool use, so its server imports offline.
+    "NeKo.server", "cli", "neko",
 )
 
 
@@ -29,7 +31,7 @@ def main(wheel):
             f"for name in {MODULES!r}:\n"
             "    module = importlib.import_module('mcp_biomodelling_servers.' + name)\n"
             "    assert pathlib.Path(module.__file__).is_relative_to(root), module.__file__\n"
-            "print('All Wave 2 wheel modules and MaBoSS/PhysiCell server registrations imported')\n"
+            "print('All Wave 2 wheel modules and MaBoSS/PhysiCell/NeKo server registrations imported')\n"
         )
         subprocess.run([sys.executable, "-c", code], cwd=root, env=environment,
                        check=True, timeout=60)
