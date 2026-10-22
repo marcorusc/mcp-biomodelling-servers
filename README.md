@@ -51,14 +51,17 @@ either. Prebuilt wheels cover Linux, macOS and Windows.
 python -m pip install mcp-biomodelling-servers
 ```
 
-NeKo (`nekomata`) 1.10.1 or newer (below 2.0) is required to preserve SIF
-evidence references. This minimum is enforced by the source dependency metadata
-and CI. Until a package release includes this metadata change, install the
-already published pair explicitly:
+This installs every server's modelling dependencies, including NeKo
+(`nekomata` 1.10.2 or newer, below 2.0), PhysiCell-settings 0.6.3 or newer
+(below 0.7), the bundled MaBoSS engine and PyGraphviz. To reproduce a specific
+release, pin it, for example `mcp-biomodelling-servers==2.5.1`.
 
-```bash
-python -m pip install "mcp-biomodelling-servers==2.3.0" "nekomata==1.10.1"
-```
+The MaBoSS engine package, `cmaboss`, has no stable release yet: every build
+on PyPI is a `1.0.0b*` pre-release. The dependency `cmaboss>=1.0.0b32,<2` names
+a pre-release, so `pip` and `uv` accept these builds without
+`--pre`/`--prerelease` flags, and a stable `1.x` will satisfy the same range
+once it is published. A resolver configured to reject all pre-releases cannot
+install the package.
 
 The installation provides four console entry points:
 
@@ -68,6 +71,11 @@ mcp-maboss-server
 mcp-physicell-server
 mcp-biomass-server
 ```
+
+Each one serves MCP over stdio, so when run in a terminal it waits for a client
+on standard input. Pass `--help` for usage and environment variables, or
+`--version` to print the installed release; both exit without starting the
+server.
 
 ### Run in an isolated environment with uvx
 
@@ -126,6 +134,14 @@ prerequisite, and no MaBoSS executable or Graphviz installation is needed. The
 first start of a plugin downloads and caches the package environment (about
 1 GB), which can take a minute or more on a slow connection; later starts reuse
 the cache and take a few seconds.
+
+Enabling a plugin connects its MCP server to the whole client session, so every
+agent and subagent in that session sees its tools. A project that must give
+specific agents their own servers, for example one modelling specialist per
+agent, should leave the plugin disabled and start the same command
+(`uvx --from mcp-biomodelling-servers==<version> mcp-<server>-server`) from that
+agent's own MCP configuration instead. In Codex, `codex mcp list` shows
+plugin-provided servers next to configured ones.
 
 ## Configure an MCP client
 
@@ -288,8 +304,11 @@ See the [PyPI trusted publishing guide](https://docs.pypi.org/trusted-publishers
 and [MCP Registry GitHub Actions guide](https://github.com/modelcontextprotocol/registry/blob/main/docs/modelcontextprotocol-io/github-actions.mdx).
 
 For each release, synchronize the version in `pyproject.toml`, the source
-fallback in `mcp_biomodelling_servers/__init__.py`, and all four `server.json`
-files, including their pinned `--from` arguments. Build with `python -m build`,
+fallback in `mcp_biomodelling_servers/__init__.py`, all four `server.json`
+files, including their pinned `--from` arguments, and every plugin under
+`plugins/<name>/`: the `version` in `plugin.json` and `.claude-plugin/plugin.json`
+and the `--from` pin in `mcp.json` and `.claude-plugin/mcp.json`. Add an entry
+to [CHANGELOG.md](CHANGELOG.md). Build with `python -m build`,
 check with `python -m twine check --strict dist/*`, and run
 `python scripts/check_release.py --tag v<version>` using Python 3.12+.
 Start with a clean `dist/` directory. Commit and push the reviewed changes before
@@ -349,10 +368,13 @@ becomes active only when its generated BND/CFG model is loaded.
   `<filename>.lineage.json` files. NeKo BNET handoff exports also carry this
   sidecar; MaBoSS handoff exports with an active ordinary import write a sidecar
   alongside the handoff JSON. The independent
-  `mcp-biomodelling-source-lineage` v1 schema records source/parent digests,
+  `mcp-biomodelling-source-lineage` schema records source/parent digests,
   `standalone`, `byte-identical`, or `edited-derivative` relationships, and UTC
   ISO8601 timestamps. Historical digests are retained even if old inputs later
   change; using an export as a new parent verifies its current exported bytes.
+  New sidecars use version `2.1` when they bind a NeKo curation companion
+  (`curation_file`) and `2.0` otherwise; version `1.0` sidecars remain
+  readable. See the version table below.
 
 Source lineage is provenance, not approval or evidence of biological equivalence.
 The required handoff v1 fields, accepted lineage rules, and approval checks
@@ -368,3 +390,14 @@ Boolean NeKo/MaBoSS handoff exports now use v2 portable source ancestry while
 retaining v1 reading and exact stage-parent validation. See
 [Boolean lineage v2](docs/boolean-lineage-v2.md) for derivative semantics,
 approval boundaries, offline verification and safe capture helpers.
+
+Versions written by this release (`nekomata` 1.10.2 or newer always provides
+the NeKo history that a curation companion needs):
+
+| Document | Written | Without a NeKo curation companion | Also read |
+| --- | --- | --- | --- |
+| NeKo → MaBoSS handoff | `2.1` | `2.0` | `1.0`, `2.0` |
+| MaBoSS → PhysiCell handoff | `2.1` | not applicable | `1.0`, `2.0` |
+| NeKo → BioMASS handoff | `2.0` | `1.0` | `1.0` |
+| Source-lineage sidecar | `2.1` (NeKo) | `2.0` (MaBoSS, legacy NeKo) | `1.0`, `2.0` |
+| Source-import record | `2.0` | `2.0` | `1.0` |

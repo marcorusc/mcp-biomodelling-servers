@@ -11,19 +11,23 @@ from .timestamps import utc_now
 METADATA_FILENAME = "session_meta.json"
 
 
-def artifact_base(server_root: Path) -> Path:
-    """Current write root: configured/cache root, server namespace."""
+def artifact_root() -> Path:
+    """Configured or cache root shared by all server namespaces."""
     configured = os.environ.get("MCP_BIOMODELLING_ARTIFACT_ROOT")
     if configured:
         root = Path(configured).expanduser()
         if not root.is_absolute():
             raise ValueError("MCP_BIOMODELLING_ARTIFACT_ROOT must be absolute.")
-    else:
-        cache = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))).expanduser()
-        if not cache.is_absolute():
-            cache = Path.home() / ".cache"
-        root = cache / "mcp-biomodelling" / "artifacts"
-    return root / Path(server_root).name
+        return root
+    cache = Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))).expanduser()
+    if not cache.is_absolute():
+        cache = Path.home() / ".cache"
+    return cache / "mcp-biomodelling" / "artifacts"
+
+
+def artifact_base(server_root: Path) -> Path:
+    """Current write root: configured/cache root, server namespace."""
+    return artifact_root() / Path(server_root).name
 
 
 def _validate_session(session_id: str) -> None:

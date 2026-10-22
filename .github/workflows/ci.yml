@@ -126,6 +126,9 @@ jobs:
             BioMASS/ \
             NeKo/services/ode_exporting.py \
             mcp_biomodelling_servers/ode_handoff.py \
+            mcp_biomodelling_servers/cli.py \
+            mcp_biomodelling_servers/neko.py \
+            NeKo/services/nekomata_imports.py \
             tests/
 
       - name: Check server syntax
@@ -162,7 +165,10 @@ jobs:
             BioMASS/contracts.py \
             BioMASS/outputs.py \
             BioMASS/session_manager.py \
-            mcp_biomodelling_servers/ode_handoff.py
+            mcp_biomodelling_servers/ode_handoff.py \
+            mcp_biomodelling_servers/cli.py \
+            mcp_biomodelling_servers/neko.py \
+            NeKo/services/nekomata_imports.py
 
       # ------------------------------------------------------------------ #
       # Unit tests                                                           #

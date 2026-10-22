@@ -8,6 +8,7 @@ import io
 import json
 
 import anyio
+import matplotlib
 import matplotlib.pyplot as plt
 import pandas as pd
 from mcp.server.mcpserver import Context, Image
@@ -144,6 +145,10 @@ from .services.model import RateEdit, edit_rates, inspect_nodes, model_revision,
 from .tools.curation import edit_maboss_readouts  # noqa: F401
 
 logger = logging.getLogger(__name__)
+
+# Plots are saved, never shown. A GUI backend, picked when a display exists, aborts
+# the process when tools draw in worker threads, so always render off-screen.
+matplotlib.use("Agg")
 
 _SERVER_ROOT = Path(__file__).parent
 
@@ -661,8 +666,9 @@ def build_simulation(
 
     When bnd_path/cfg_path are omitted, the files produced by the last
     bnet_to_bnd_and_cfg call for this session are used automatically.
-    After loading, inspect parameters via the maboss://session/{id}/parameters
-    resource, tune with update_maboss_parameters, then call run_simulation.
+    The result lists the loaded parameters (the maboss://session/{id}/parameters
+    resource repeats them); tune with update_maboss_parameters, then call
+    run_simulation.
     """
     if not isinstance(bnd_path, str):
         bnd_path = None
@@ -734,8 +740,9 @@ async def run_simulation(
     Restricting to a small set of output nodes keeps the run time and result size manageable.
 
     Tune performance via update_maboss_parameters (sample_count, thread_count)
-    before running large simulations. After completion, read the result from
-    maboss://session/{id}/result.
+    before running large simulations. The result includes a run_id; read the
+    saved run with get_simulation_result(run_id=...), which also works after
+    the session ends or the server restarts.
     """
     await ctx.report_progress(0, 2)
 

@@ -24,10 +24,12 @@ def files(directory: Path) -> list[Path]:
     for path in sorted(directory.rglob("*")):
         if path.is_symlink():
             raise ValueError("Symlinks are not allowed in BioMASS artifact trees.")
+        # Skip caches inside the tree only: the default root is itself under ~/.cache.
+        parts = path.relative_to(directory).parts
         if (
             path.is_file()
-            and "__pycache__" not in path.parts
-            and ".cache" not in path.parts
+            and "__pycache__" not in parts
+            and ".cache" not in parts
         ):
             path.resolve().relative_to(directory.resolve())
             result.append(path)
