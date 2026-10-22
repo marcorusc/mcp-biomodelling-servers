@@ -11,10 +11,6 @@ from typing import Annotated, List, Optional
 
 import anyio
 import pandas as pd
-from neko._outputs.exports import Exports
-from neko.core.network import Network
-from neko.core.tools import is_connected
-from neko.inputs import signor
 from pydantic import Field
 
 from mcp_biomodelling_servers import __version__
@@ -86,6 +82,7 @@ from .contracts import (
 )
 from .guidance import NEKO_AGENT_MANUAL, NEKO_SERVER_INSTRUCTIONS
 from .services.exporting import export_sanitized_bnet
+from .services.nekomata_imports import DeferredAttribute
 from .services.provenance import export_provenance, export_history
 from .services.network_analysis import (
     edge_degrees as _edge_degrees,
@@ -155,6 +152,12 @@ from mcp.types import CallToolResult
 
 logger = logging.getLogger(__name__)
 _stdout_capture_lock = Lock()
+
+# Imported on first use: importing nekomata contacts OmniPath (see the module).
+Exports = DeferredAttribute("neko._outputs.exports", "Exports")
+Network = DeferredAttribute("neko.core.network", "Network")
+is_connected = DeferredAttribute("neko.core.tools", "is_connected")
+signor = DeferredAttribute("neko.inputs", "signor")
 
 # Compatibility facade for callers and tests that imported handlers directly
 # from NeKo.server before registration was split into focused modules.
