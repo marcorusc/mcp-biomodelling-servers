@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "physicell",
-  "version": "2.5.0",
+  "version": "2.5.1",
   "description": "Build, inspect, and export PhysiCell and PhysiBoSS configuration files.",
   "author": {
     "name": "Marco Ruscone"
