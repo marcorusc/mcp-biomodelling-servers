@@ -543,3 +543,28 @@ def test_worker_in_wheel_namespace_does_not_shadow_upstream_biomass(
         {"operation": "generate", "text": ENZYME, "configuration": {}},
     )
     assert set(result["species"]) == {"E", "S", "ES", "P"}
+
+
+def test_artifact_listing_skips_only_caches_inside_the_tree(tmp_path):
+    # The default artifact root is ~/.cache/mcp-biomodelling/artifacts.
+    directory = tmp_path / ".cache" / "mcp-biomodelling" / "artifacts" / "BioMASS" / "sid"
+    (directory / ".cache").mkdir(parents=True)
+    (directory / ".cache" / "fontlist.json").write_text("{}")
+    (directory / "species.csv").write_text("time,E\n0,1\n")
+
+    assert artifacts.files(directory) == [directory / "species.csv"]
+    artifacts.seal(directory)
+    assert list(json.loads((directory / "integrity.json").read_text())) == ["species.csv"]
+
+
+def test_real_simulation_lists_files_under_a_dot_cache_root(tmp_path, monkeypatch):
+    root = tmp_path / ".cache" / "mcp-biomodelling" / "artifacts"
+    monkeypatch.setenv("MCP_BIOMODELLING_ARTIFACT_ROOT", str(root))
+    monkeypatch.setattr(server, "session_manager", BioMASSSessionManager(root / "BioMASS"))
+    sid = server.create_session().session_id
+    server.import_text(ENZYME, session_id=sid)
+    server.generate_model(session_id=sid)
+
+    simulation = server.run_simulation(SimulationScenario(name="enzyme"), session_id=sid)
+
+    assert "species.csv" in {f.name for f in simulation.files}
