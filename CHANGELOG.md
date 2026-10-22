@@ -1,10 +1,12 @@
 # Changelog
 
-## 2.5.1 (unreleased)
+## 2.5.1 (2026-10-22)
 
 A patch release: documentation corrections, the agent plugins in a tagged
-release, and startup fixes. Tools, schemas, handoff versions, scientific
-defaults and engine behaviour are unchanged from 2.5.0.
+release, startup fixes, and fixes for two 2.5.0 bugs (BioMASS artifact
+integrity under the default artifact root, and MaBoSS plotting on machines
+with a display). Tools, schemas, handoff versions, scientific defaults and
+engine behaviour are unchanged from 2.5.0.
 
 ### Added
 
