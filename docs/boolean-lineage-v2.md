@@ -1,9 +1,21 @@
 # Boolean handoff ancestry v2
 
-NeKo and MaBoSS typed exports now write `mcp-biomodelling-handoff` version
-`2.0`. Existing typed class names and default v1 constructors remain supported;
-`load_handoff_manifest` reads both versions. No ODE contracts or simulation
-settings change.
+`mcp-biomodelling-handoff` version `2.0` added portable source ancestry to the
+Boolean handoffs. Version `2.1` keeps the `source_ancestry` rules below and adds
+the fields in this table. Typed exports currently write:
+
+| Handoff | Written | Without a NeKo curation companion | Also read |
+| --- | --- | --- | --- |
+| NeKo → MaBoSS | `2.1`, adds required `curation_file` | `2.0` | `1.0`, `2.0` |
+| MaBoSS → PhysiCell | `2.1`, adds model revision and readout definitions | not applicable | `1.0`, `2.0` |
+| NeKo → BioMASS (ODE) | `2.0`, adds required `curation_file` | `1.0` | `1.0` |
+
+The NeKo → BioMASS contract has its own `2.0`; it carries curation provenance,
+not the Boolean `source_ancestry` described here. Existing typed class names
+and default v1 constructors remain supported; `load_handoff_manifest` reads
+every listed Boolean version. See
+[the NeKo integration notes](wave2-neko-integration.md) for the curation
+companion.
 
 V2 requires an explicit `source_ancestry` list. An empty list means that the
 current session has no recorded source import. Each import records:
@@ -91,9 +103,10 @@ above, not re-run a live import on arbitrary history. Legacy reference-only
 files remain available. Missing files or corrupt evidence are errors, never a
 reason to replace ancestry with a standalone record.
 
-New source-export sidecars and import-event records use version `2.0`, with v1
-reading retained. New typed handoffs require embedded evidence, including for
-standalone imports. At initial import, stale source bytes fail verification;
+New source-export sidecars use version `2.1` when they bind a NeKo curation
+companion and `2.0` otherwise; import-event records use version `2.0`. Version
+`1.0` reading is retained for both. New typed handoffs require embedded
+evidence, including for standalone imports. At initial import, stale source bytes fail verification;
 after successful import, changing or deleting historical files does not alter
 its durable snapshot. Export verifies the snapshot rather than treating the
 historical filename as the current model.

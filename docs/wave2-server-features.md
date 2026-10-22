@@ -1,5 +1,12 @@
 # Wave 2 MCP feature integration
 
+> **Dated record.** This describes the Wave 2 implementation as of 2026-10-20,
+> before the 2.5.0 release. Two statements were later superseded; both are
+> corrected in place below. CI now installs the released NeKo 1.10.2 and
+> PhysiCell Settings 0.6.3 instead of Git commits, and 2.5.0 added the
+> `cmaboss` and `pygraphviz` runtime dependencies. For current behaviour, see
+> the [README](../README.md) and the server manuals.
+
 This implements the accepted MCP work in W2-D008–010, W2-D014, W2-D016–020,
 alongside the previously implemented W2-D003–007. Scientific authorization stays
 with the governing workflow. An edit, saved run, or configuration export does
@@ -20,8 +27,11 @@ not grant approval or establish biological validity.
 | D020: NeKo diagnostics | Import/construction distinction, accurate canonical counts, resource-specific consensus text, bounded paths with identity, actionable export-label failures. |
 
 Only three tools are added: one MaBoSS editor and two PhysiCell tools. No new
-history family, general-purpose executor, runtime dependency or engine/package
-modification is introduced.
+history family, general-purpose executor or engine/package modification is
+introduced. This feature work added no runtime dependency, but the same 2.5.0
+release later added `cmaboss` (the bundled MaBoSS engine, replacing the
+`MaBoSS` executable) and `pygraphviz` (graph rendering without the `dot`
+program).
 
 ## MaBoSS readouts, rates and revisions
 
@@ -156,18 +166,19 @@ requested length before this display bound; this is not a computation limit.
 No path within a bound does not establish disconnected components. BNET export
 fails with offending node IDs/rows for missing labels, without inventing names.
 
-CI now pins NeKo **1.10.2** at the pushed commit
-`7b845ae0d7cfc3578c7191b2147cb3f5ab5f33e3`. The lightweight public contract is
+At the time of writing, CI pinned NeKo **1.10.2** at the pushed commit
+`7b845ae0d7cfc3578c7191b2147cb3f5ab5f33e3`. CI now installs the published
+`nekomata==1.10.2` release instead (commit `601dfdf`). The lightweight public contract is
 `history_status()`, `state_count` and
 `list_states(offset=..., limit=..., detail="summary")`. Routine MCP history uses
 those interfaces without building a full graph or materializing all metadata.
 Unknown legacy change counts remain null. Full evidence is still accessible
 through existing state/history resources. Older candidates retain a public-API
-fallback. The package range stays `nekomata>=1.10.2,<2`; verify the published
-release contents before replacing the Git pin.
+fallback. The package range stays `nekomata>=1.10.2,<2`.
 
-PhysiCell Settings remains pinned to 0.6.3 candidate
-`82f66c4504da2408d9e8037b78896ac29551d150`. Engine semantics were checked against
+PhysiCell Settings was pinned to 0.6.3 candidate
+`82f66c4504da2408d9e8037b78896ac29551d150`; CI now installs the published
+`physicell-settings==0.6.3` release, whose tag contains that commit. Engine semantics were checked against
 the local PhysiCell source at `69a23dbe7eaac4f41dc9548ad85072eff7921a03`.
 
 ## Governing-workflow adoption
