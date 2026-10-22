@@ -8,6 +8,7 @@ import io
 import json
 
 import anyio
+import matplotlib
 import matplotlib.pyplot as plt
 import pandas as pd
 from mcp.server.mcpserver import Context, Image
@@ -144,6 +145,10 @@ from .services.model import RateEdit, edit_rates, inspect_nodes, model_revision,
 from .tools.curation import edit_maboss_readouts  # noqa: F401
 
 logger = logging.getLogger(__name__)
+
+# Plots are saved, never shown. A GUI backend, picked when a display exists, aborts
+# the process when tools draw in worker threads, so always render off-screen.
+matplotlib.use("Agg")
 
 _SERVER_ROOT = Path(__file__).parent
 
