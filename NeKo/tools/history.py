@@ -200,7 +200,7 @@ def compare_network_states(
         NonEmptyString | None,
         Field(description="Session ID; omit to use the active/default session."),
     ] = None,
-    limit: Annotated[int, Field(ge=1, le=100, description="Maximum entries per change category; read state resources for full records.")] = 25,
+    limit: Annotated[int, Field(ge=1, le=100, description="Maximum entries per change category. For full records, read the details_uris resources or call export_network(format='history').")] = 25,
     *,
     sess=None,
     network=None,

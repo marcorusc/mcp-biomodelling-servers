@@ -666,8 +666,9 @@ def build_simulation(
 
     When bnd_path/cfg_path are omitted, the files produced by the last
     bnet_to_bnd_and_cfg call for this session are used automatically.
-    After loading, inspect parameters via the maboss://session/{id}/parameters
-    resource, tune with update_maboss_parameters, then call run_simulation.
+    The result lists the loaded parameters (the maboss://session/{id}/parameters
+    resource repeats them); tune with update_maboss_parameters, then call
+    run_simulation.
     """
     if not isinstance(bnd_path, str):
         bnd_path = None
@@ -739,8 +740,9 @@ async def run_simulation(
     Restricting to a small set of output nodes keeps the run time and result size manageable.
 
     Tune performance via update_maboss_parameters (sample_count, thread_count)
-    before running large simulations. After completion, read the result from
-    maboss://session/{id}/result.
+    before running large simulations. The result includes a run_id; read the
+    saved run with get_simulation_result(run_id=...), which also works after
+    the session ends or the server restarts.
     """
     await ctx.report_progress(0, 2)
 
