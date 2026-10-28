@@ -54,7 +54,7 @@ python -m pip install mcp-biomodelling-servers
 This installs every server's modelling dependencies, including NeKo
 (`nekomata` 1.10.2 or newer, below 2.0), PhysiCell-settings 0.6.3 or newer
 (below 0.7), the bundled MaBoSS engine and PyGraphviz. To reproduce a specific
-release, pin it, for example `mcp-biomodelling-servers==2.5.1`.
+release, pin it, for example `mcp-biomodelling-servers==2.5.2`.
 
 The MaBoSS engine package, `cmaboss`, has no stable release yet: every build
 on PyPI is a `1.0.0b*` pre-release. The dependency `cmaboss>=1.0.0b32,<2` names

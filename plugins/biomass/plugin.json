@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "biomass",
-  "version": "2.5.1",
+  "version": "2.5.2",
   "description": "Construct, visualize, and simulate evidence-backed ODE models with BioMASS.",
   "author": {
     "name": "Marco Ruscone"

@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 2.5.2 (2026-10-28)
+
+A patch release that makes the typed handoffs work on hosts that give each MCP
+server a private filesystem, such as Claude Science, and lets agents pass model
+files as text. It adds `export_handoff_bundle` and optional `handoff_bundle`,
+`sif_text` and `bnet_text` arguments. Handoff manifest versions, path-based
+calls, scientific defaults and engine behaviour are unchanged from 2.5.1.
 
 ### Fixed
 
