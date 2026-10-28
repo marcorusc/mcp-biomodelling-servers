@@ -1771,6 +1771,7 @@ def test_all_maboss_tools_publish_safety_annotations() -> None:
         "get_maboss_mutations",
         "get_simulation_result",
         "list_generated_files",
+        "export_handoff_bundle",
     }
     idempotent = {
         "edit_maboss_readouts",
@@ -1842,7 +1843,9 @@ def test_maboss_tool_schemas_constrain_common_inputs() -> None:
         assert prefix_schema["maxLength"] == 128
         assert prefix_schema["pattern"].startswith("^")
     import_schema = tools["import_neko_handoff"].input_schema
-    assert import_schema["required"] == ["manifest_path"]
+    # Exactly one of manifest_path or handoff_bundle is checked at call time.
+    assert "required" not in import_schema
+    assert {"manifest_path", "handoff_bundle"} <= set(import_schema["properties"])
     export_schema = tools["export_maboss_handoff"].input_schema
     assert export_schema["required"] == ["target_cell_type"]
 

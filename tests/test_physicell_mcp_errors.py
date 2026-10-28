@@ -2934,8 +2934,11 @@ def test_physicell_tool_schemas_publish_stable_enums_and_bounds() -> None:
         "import_maboss_handoff"
     ].input_schema
     import_properties = import_schema["properties"]
-    assert "manifest_path" in import_schema["required"]
-    assert import_properties["manifest_path"]["minLength"] == 1
+    assert "required" not in import_schema
+    assert "handoff_bundle" in import_properties
+    manifest_options = import_properties["manifest_path"]["anyOf"]
+    assert {"type": "null"} in manifest_options
+    assert next(o for o in manifest_options if o.get("type") == "string")["minLength"] == 1
     assert import_properties["artifact_prefix"]["default"] == "maboss_import"
     assert import_properties["artifact_prefix"]["pattern"] == (
         r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9_-])?$"

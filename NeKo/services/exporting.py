@@ -11,6 +11,43 @@ from pathlib import Path
 from typing import Any
 
 
+def _bimodal_edges(exporter: Any) -> list[str]:
+    """Return consolidated bimodal source -> target pairs, if exposed."""
+    interactions = getattr(exporter, "interactions", None)
+    columns = getattr(interactions, "columns", ())
+    if not {"source", "target", "Effect"}.issubset(columns):
+        return []
+    rows = interactions[interactions["Effect"] == "bimodal"]
+    return [f"{source} -> {target}" for source, target in zip(rows["source"], rows["target"], strict=True)]
+
+
+def _multiple_models_message(exporter: Any, generated_bnets: list[Path]) -> str:
+    names = ", ".join(path.name for path in generated_bnets)
+    bimodal = _bimodal_edges(exporter)
+    count = f"{len(bimodal)} bimodal interaction(s)" if bimodal else "Bimodal interactions"
+    unresolved = (
+        "**Unresolved:** " + ", ".join(bimodal[:20])
+        + (f", ... ({len(bimodal) - 20} more)" if len(bimodal) > 20 else "") + "\n\n"
+        if bimodal else ""
+    )
+    return (
+        "## BNET Export Failed: Bimodal Interactions Unresolved\n\n"
+        "**Issue:** BNET export needs every interaction signed. "
+        f"{count} remain, so NeKo generated multiple BNET models ({names}), "
+        "one per sign assignment; this export requires exactly one model. A pair "
+        "recorded with both signs counts as bimodal. Nothing was exported, and "
+        "connectivity is not the cause.\n\n"
+        + unresolved
+        + "### Resolve them, then export again\n\n"
+        "**1. Curate each edge with evidence (keeps the edge and its references):**\n"
+        "`edit_interactions` with `operation='set_effect'` and "
+        "`effect='stimulation'` or `'inhibition'`, a rationale and evidence.\n\n"
+        "**2. Drop every bimodal edge:** `remove_bimodal_interactions()` deletes "
+        "them all, can disconnect the network, and discards their references. "
+        "Run `analyze_connectivity()` afterwards.\n"
+    )
+
+
 def export_sanitized_bnet(
     network: object,
     destination: Path,
@@ -44,8 +81,9 @@ def export_sanitized_bnet(
             prefix=".neko-bnet-",
         ) as temporary_directory:
             temporary_prefix = Path(temporary_directory) / destination.stem
+            exporter = export_factory(network)
             try:
-                export_factory(network).export_bnet(str(temporary_prefix))
+                exporter.export_bnet(str(temporary_prefix))
             except Exception as exc:
                 raise RuntimeError(f"Error exporting BNET: {exc}") from exc
             generated_bnets = sorted(Path(temporary_directory).glob("*.bnet"))
@@ -55,12 +93,8 @@ def export_sanitized_bnet(
                     f"directory {temporary_directory}."
                 )
             if len(generated_bnets) > 1:
-                generated_names = ", ".join(
-                    path.name for path in generated_bnets
-                )
                 raise RuntimeError(
-                    "NeKo generated multiple BNET models "
-                    f"({generated_names}); this export requires exactly one model."
+                    _multiple_models_message(exporter, generated_bnets)
                 )
             temporary_bnet = generated_bnets[0]
             companion = temporary_bnet.with_name(temporary_bnet.name + ".neko.json")

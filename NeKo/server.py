@@ -34,6 +34,10 @@ from mcp_biomodelling_servers.handoff import (
     write_handoff_manifest,
 )
 from mcp_biomodelling_servers.import_lineage import capture_import, write_source_export, write_source_import
+from mcp_biomodelling_servers.inline_sources import (
+    MAX_INLINE_SOURCE_CHARS,
+    resolve_source_path,
+)
 from mcp_biomodelling_servers.structured_outputs import (
     ArtifactSessionSummary,
     NeKoArtifactCleanupResult,
@@ -126,6 +130,7 @@ from .src.structured_outputs import (
 )
 from .tools.analysis import analyze_connectivity, analyze_gene_set
 from .tools.curation import edit_interactions
+from .tools.handoff_bundle import export_handoff_bundle  # noqa: F401
 from .tools.guidance import (
     neko_agent_manual_resource,
     neko_workflow_prompt,
@@ -222,7 +227,7 @@ def _network_history_state_id(network) -> int | None:
     structured_output=True,
 )
 async def create_network(
-                   list_of_initial_genes: Annotated[List[NonEmptyString], Field(description="Gene symbols to seed the network (e.g. ['TP53', 'MYC', 'CASP3']). Can be empty if sif_file is provided.")],
+                   list_of_initial_genes: Annotated[List[NonEmptyString], Field(description="Gene symbols to seed the network (e.g. ['TP53', 'MYC', 'CASP3']). Can be empty if sif_file or sif_text is provided.")],
                    ctx: Context,
                    database: Database = Field("omnipath", description="Knowledge-base to query. 'omnipath' (default) or 'signor'."),
                    sif_file: Optional[NonEmptyString] = Field(None, description="Absolute path to an existing SIF file to bootstrap the network from. Combined with list_of_initial_genes when both are given."),
@@ -234,13 +239,15 @@ async def create_network(
                    session_id: Optional[NonEmptyString] = Field(None, description="Session ID to write the network into. Omit to use the active/default session."),
                    verbosity: NormalizedVerbosity = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary' (default, token-frugal), 'preview' (truncated tables), 'full'."),
                    parent_manifest: Annotated[NonEmptyString | None, Field(description="Path to a verified source-lineage sidecar or supported typed parent manifest; records provenance, not approval.")] = None,
-                   derived_from: Annotated[NonEmptyString | None, Field(description="Exact original artifact path recorded by parent_manifest, required for an edited derivative.")] = None) -> str:
+                   derived_from: Annotated[NonEmptyString | None, Field(description="Exact original artifact path recorded by parent_manifest, required for an edited derivative.")] = None,
+                   sif_text: Annotated[str | None, Field(min_length=1, max_length=MAX_INLINE_SOURCE_CHARS, pattern=r"\S", description="Complete SIF file content, for callers whose files this server cannot read. Use instead of sif_file; it is stored verbatim in the session artifact directory.")] = None) -> str:
     """Build a NeKo gene regulatory network from seed genes and/or a SIF file.
 
     Seed construction calls complete_connection to bridge genes via the database.
     SIF import preserves the imported edges, adds requested genes separately,
     and does not run connection completion.
-    After creation, run remove_bimodal_interactions() and analyze_connectivity()
+    After creation, resolve bimodal interactions (edit_interactions set_effect with
+    evidence, or remove_bimodal_interactions) and run analyze_connectivity()
     before exporting. Always call create_session() first.
 
     For SIF provenance, parent_manifest names a verified source-lineage sidecar.
@@ -250,8 +257,17 @@ async def create_network(
     verbosity = normalize_verbosity(verbosity)
     if database not in ["omnipath", "signor"]:
         raise ValueError("Unsupported database. Use `omnipath` or `signor`.")
+    if sif_text is not None:
+        session_id = ensure_session(session_id).session_id
+        sif_file = resolve_source_path(
+            sif_file, sif_text, artifact_dir=get_artifact_dir(_SERVER_ROOT, session_id),
+            suffix=".sif", path_name="sif_file", text_name="sif_text",
+        )
     if sif_file is not None and not os.path.isfile(sif_file):
-        raise FileNotFoundError(f"SIF file not found: {sif_file}")
+        raise FileNotFoundError(
+            f"SIF file not found: {sif_file}. If it exists on the caller's side, this "
+            "server cannot read it (separate sandbox): pass its content as sif_text."
+        )
     if sif_file is None and not list_of_initial_genes:
         raise ValueError(format_no_input_guidance())
 
@@ -618,13 +634,14 @@ def remove_interaction(
 )
 @session_locked
 def export_network(
-        format: NormalizedExportFormat = Field("sif", description="sif, bnet (connected network), or history (all retained snapshots and explanations)."),
+        format: NormalizedExportFormat = Field("sif", description="sif, bnet (connected network without bimodal interactions), or history (all retained snapshots and explanations)."),
         session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session."),
         verbosity: NormalizedVerbosity = Field(DEFAULT_VERBOSITY, description="Output detail level: 'summary', 'preview', or 'full'.")) -> Annotated[CallToolResult, NeKoNetworkExportResult]:
     """Export the current network to SIF or BNET format.
 
     After BNET export, hand the file path to the MaBoSS server via bnet_to_bnd_and_cfg().
-    BNET export fails if the network is not fully connected — run analyze_connectivity() first.
+    BNET export fails if the network is not fully connected — run analyze_connectivity() first —
+    or if bimodal interactions remain: resolve them with edit_interactions or remove_bimodal_interactions.
     """
     verbosity = normalize_verbosity(verbosity)
     export_format = format.lower()
@@ -918,7 +935,9 @@ def export_neko_handoff(
         f"  BNET: {bnet_path}\n"
         f"  Boolean nodes: {len(nodes)}\n"
         f"  Declared outputs: {output_summary}\n\n"
-        "Next: pass the manifest path to the MaBoSS handoff import tool."
+        "Next: pass the manifest path to the MaBoSS handoff import tool. If "
+        "MaBoSS cannot read NeKo's files, pass the result of "
+        "export_handoff_bundle(manifest_path) as handoff_bundle instead."
     )
     return structured_report(text, payload)
 
@@ -1143,8 +1162,9 @@ def remove_bimodal_interactions(
         session_id: Optional[NonEmptyString] = Field(None, description="Session ID; omit to use the active/default session.")) -> str:
     """Remove all bimodal (simultaneously activating and inhibiting) edges from the network.
 
-    Bimodal interactions are ambiguous and cause contradictory Boolean rules in BNET export.
-    Run this as part of the standard curation step after create_network().
+    Bimodal interactions are ambiguous and block BNET export. This deletes every one,
+    with its references, and can disconnect the network. Prefer edit_interactions
+    (operation='set_effect') with evidence for edges whose sign matters.
     """
     sess, network = _session_network(session_id)
     if network is None:
@@ -2004,7 +2024,14 @@ def export_biomass_handoff(
     result = write_ode_handoff(_export_dir(sess.session_id), artifact_prefix, graph,
                               source, biological_context, _network_history_state_id(network),
                               curation_exporter=lambda artifact: export_provenance(network, sess, artifact))
-    return structured_report(f"Exported {len(graph.edges)} referenced interactions for BioMASS.", result)
+    return structured_report(
+        f"Exported {len(graph.edges)} referenced interactions for BioMASS.\n"
+        f"  Manifest: {result.manifest_file.path}\n\n"
+        "Next: pass the manifest path to BioMASS import_neko_handoff. If BioMASS "
+        "cannot read NeKo's files, pass the result of "
+        "export_handoff_bundle(manifest_path) as handoff_bundle instead.",
+        result,
+    )
 
 
 if __name__ == "__main__":

@@ -36,6 +36,7 @@ from mcp_biomodelling_servers.handoff import (
     MaBoSSToPhysiCellHandoffManifest,
     NeKoToMaBoSSHandoffManifest,
     PhysiCellTarget,
+    bnd_node_names,
     bnet_node_names,
     handoff_artifact,
     load_handoff_manifest,
@@ -43,11 +44,19 @@ from mcp_biomodelling_servers.handoff import (
     verify_handoff_manifest,
     write_handoff_manifest,
 )
+from mcp_biomodelling_servers.handoff_bundle import (
+    HandoffBundle,
+    resolve_handoff_source,
+)
 from mcp_biomodelling_servers.import_lineage import (
     SourceExport,
     capture_import,
     write_source_export,
     write_source_import,
+)
+from mcp_biomodelling_servers.inline_sources import (
+    MAX_INLINE_SOURCE_CHARS,
+    resolve_source_path,
 )
 from mcp_biomodelling_servers.structured_outputs import (
     ArtifactSessionSummary,
@@ -91,7 +100,7 @@ from .services.handoff import (
     handoff_parameters as _handoff_parameters,
     maboss_package_version as _maboss_package_version,
 )
-from .services.formatting import clean_for_markdown
+from .services.formatting import cfg_parameters, clean_for_markdown, workload_warning
 from .services.normalization import (
     initial_state_groups as _initial_state_groups,
     logical_rule_records as _logical_rule_records,
@@ -143,6 +152,7 @@ __all__ = [
 from .services.runs import effective_configuration, load_run, run_table, record_failure
 from .services.model import RateEdit, edit_rates, inspect_nodes, model_revision, print_bnd_with_readouts, read_readouts
 from .tools.curation import edit_maboss_readouts  # noqa: F401
+from .tools.handoff_bundle import export_handoff_bundle  # noqa: F401
 
 logger = logging.getLogger(__name__)
 
@@ -370,14 +380,15 @@ def delete_session(
 @_session_locked
 def import_neko_handoff(
     manifest_path: Annotated[
-        NonEmptyString,
+        NonEmptyString | None,
         Field(
             description=(
                 "Path to a NeKo `neko-to-maboss` handoff manifest. Its BNET "
-                "artifact and integrity metadata are verified before import."
+                "artifact and integrity metadata are verified before import. "
+                "Omit when passing handoff_bundle."
             )
         ),
-    ],
+    ] = None,
     artifact_prefix: HandoffArtifactPrefix = Field(
         default="neko_import",
         description=(
@@ -392,9 +403,21 @@ def import_neko_handoff(
             "Omit to use the active default session."
         ),
     ),
+    handoff_bundle: Annotated[
+        HandoffBundle | None,
+        Field(
+            description=(
+                "Object returned by NeKo export_handoff_bundle, for servers "
+                "that cannot read NeKo's files. Use instead of manifest_path."
+            )
+        ),
+    ] = None,
 ) -> Annotated[CallToolResult, MaBoSSHandoffImportResult]:
     """Verify, convert, and atomically load a typed NeKo handoff."""
     sess = ensure_session(session_id)
+    manifest_path = resolve_handoff_source(
+        manifest_path, handoff_bundle, expected_handoff_type="neko-to-maboss",
+    )
     loaded_manifest = load_handoff_manifest(
         manifest_path,
         expected_handoff_type="neko-to-maboss",
@@ -412,7 +435,7 @@ def import_neko_handoff(
         session_id=loaded_manifest.source.session_id,
         role="parent_manifest",
     )
-    bnet_path = Path(loaded_manifest.bnet_file.path)
+    bnet_path = verify_handoff_artifact(loaded_manifest.bnet_file)
     stored_nodes = bnet_node_names(bnet_path)
     if stored_nodes != loaded_manifest.network.nodes:
         raise ValueError(
@@ -559,6 +582,12 @@ def import_neko_handoff(
         f"  Boolean nodes: {len(stored_nodes)}\n"
         f"  {output_guidance}"
     )
+    try:  # Advisory only: never fail a completed import over the warning.
+        warning = workload_warning(candidate_simulation.param, len(stored_nodes))
+    except (AttributeError, TypeError):
+        warning = ""
+    if warning:
+        text += f"\n\n{warning}"
     return structured_report(text, payload)
 
 
@@ -570,15 +599,28 @@ def import_neko_handoff(
 @_session_locked
 def bnet_to_bnd_and_cfg(
     bnet_path: Annotated[
-        NonEmptyString,
-        Field(description="Absolute or CWD-relative path to the .bnet file to convert."),
-    ],
+        NonEmptyString | None,
+        Field(description="Absolute or CWD-relative path to the .bnet file to convert. Omit when passing bnet_text."),
+    ] = None,
     session_id: NonEmptyString | None = Field(
         default=None,
         description="Session to write the output files into. Omit to use the active default session.",
     ),
     parent_manifest: Annotated[NonEmptyString | None, Field(description="Path to a verified source-lineage sidecar or supported typed parent manifest; records provenance, not approval.")] = None,
     derived_from: Annotated[NonEmptyString | None, Field(description="Exact original artifact path recorded by parent_manifest, required for an edited derivative.")] = None,
+    bnet_text: Annotated[
+        str | None,
+        Field(
+            min_length=1,
+            max_length=MAX_INLINE_SOURCE_CHARS,
+            pattern=r"\S",
+            description=(
+                "Complete BNET file content, for callers whose files this server "
+                "cannot read. Use instead of bnet_path; it is stored verbatim in "
+                "the session artifact directory."
+            ),
+        ),
+    ] = None,
 ) -> Annotated[CallToolResult, MaBoSSBnetConversionResult]:
     """Convert a BNET file to MaBoSS BND and CFG files.
 
@@ -591,9 +633,22 @@ def bnet_to_bnd_and_cfg(
     These arguments record provenance; they do not grant scientific approval.
     """
     sess = ensure_session(session_id)
+    art_dir = get_artifact_dir(_SERVER_ROOT, sess.session_id)
+    resolved_bnet = resolve_source_path(
+        bnet_path, bnet_text, artifact_dir=art_dir, suffix=".bnet",
+        path_name="bnet_path", text_name="bnet_text",
+    )
+    if resolved_bnet is None:
+        raise ValueError("Provide bnet_path or bnet_text.")
+    if not Path(resolved_bnet).exists():
+        raise FileNotFoundError(
+            f"BNET file not found: {resolved_bnet}. If it exists on the caller's "
+            "side, this server cannot read it (separate sandbox): pass its content "
+            "as bnet_text."
+        )
+    bnet_path = resolved_bnet
     source_import = capture_import(bnet_path, server="MaBoSS", session_id=sess.session_id,
                                    parent_manifest=parent_manifest, derived_from=derived_from)
-    art_dir = get_artifact_dir(_SERVER_ROOT, sess.session_id)
     bnd_out = str(safe_artifact_path(art_dir, "output.bnd"))
     cfg_out = str(safe_artifact_path(art_dir, "output.cfg"))
 
@@ -626,11 +681,19 @@ def bnet_to_bnd_and_cfg(
     sess.pending_source_import = source_import
     sess.import_history.append(source_import)
     logger.info("BND and CFG files created: %s, %s", bnd_out, cfg_out)
+    try:  # Advisory only: never fail a completed conversion over the warning.
+        warning = workload_warning(
+            cfg_parameters(Path(cfg_out).read_text(encoding="utf-8")),
+            len(bnd_node_names(bnd_out)),
+        )
+    except (OSError, ValueError):
+        warning = ""
     text = (
         f"MaBoSS .bnd and .cfg files created successfully.\n"
         f"  BND: {bnd_out}\n"
         f"  CFG: {cfg_out}\n\n"
-        f"Next: call build_simulation(session_id='{sess.session_id}') to load the simulation."
+        + (f"{warning}\n\n" if warning else "")
+        + f"Next: call build_simulation(session_id='{sess.session_id}') to load the simulation."
     )
     payload = MaBoSSBnetConversionResult(
         server="MaBoSS",
@@ -710,10 +773,15 @@ def build_simulation(
         sess.source_import = imported_source
         logger.info("MaBoSS simulation loaded successfully")
         parameters_str = "\n".join(f"{k}: {v}" for k, v in loaded_sim.param.items())
+        try:  # Advisory only: never fail a completed load over the warning.
+            warning = workload_warning(loaded_sim.param, len(loaded_sim.network))
+        except (AttributeError, TypeError):
+            warning = ""
         return (
             f"MaBoSS simulation loaded successfully.\n{parameters_str}\n\n"
-            f"NEXT STEP: call get_maboss_nodes() to retrieve the list of valid node "
-            f"names before calling set_maboss_output_nodes() or set_maboss_initial_state()."
+            + (f"{warning}\n\n" if warning else "")
+            + "NEXT STEP: call get_maboss_nodes() to retrieve the list of valid node "
+            "names before calling set_maboss_output_nodes() or set_maboss_initial_state()."
         )
     else:
         logger.error("maboss.load returned None")

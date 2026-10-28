@@ -308,6 +308,11 @@ Export a `maboss-to-physicell` handoff from the MaBoSS MCP server, then call:
 
 on `import_maboss_handoff`.
 
+If this server cannot read MaBoSS's files (a host that sandboxes each server),
+replace `manifest_path` with `handoff_bundle`, the object returned by MaBoSS
+`export_handoff_bundle`. See
+[Hosts that sandbox each server](../README.md#hosts-that-sandbox-each-server).
+
 The tool:
 
 - verifies the manifest, BND, CFG, optional result table, and artifact hashes;

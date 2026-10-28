@@ -927,12 +927,63 @@ def handoff_artifact(
     )
 
 
+_local_handoff_blobs_enabled = False
+
+_NOT_VISIBLE_HINT = (
+    " If the producing server runs in a separate sandbox, this server cannot "
+    "read its files: transfer the handoff with the producer's "
+    "export_handoff_bundle tool and pass the result as handoff_bundle."
+)
+
+
+def enable_local_handoff_blobs() -> None:
+    """Let this server process resolve artifacts from verified bundle copies.
+
+    Consuming servers call this once at startup. Library callers that never
+    enable it keep strict recorded-path resolution.
+    """
+    global _local_handoff_blobs_enabled
+    _local_handoff_blobs_enabled = True
+
+
+def handoff_blob_store() -> Path:
+    """Content-addressed directory holding bundle-imported handoff artifacts."""
+    from .artifact_manager import artifact_root
+
+    return artifact_root() / "handoff-blobs"
+
+
+def local_handoff_blob_path(sha256: str, name: str) -> Path:
+    """Return the local copy location for one artifact digest and basename."""
+    if not re.fullmatch(r"[0-9a-f]{64}", sha256):
+        raise ValueError("Handoff blob digests must be lowercase SHA-256.")
+    if not name or name in {".", ".."} or Path(name).name != name or "\\" in name:
+        raise ValueError(f"Unsafe handoff artifact name: {name!r}")
+    return handoff_blob_store() / sha256 / name
+
+
+def resolve_handoff_artifact_path(artifact: HandoffArtifact) -> Path:
+    """Return the recorded path, or a verified-bundle copy when it is not visible."""
+    recorded = Path(artifact.path)
+    if recorded.exists() or not _local_handoff_blobs_enabled:
+        return recorded
+    local = local_handoff_blob_path(artifact.sha256, artifact.name)
+    if local.is_file() and not local.is_symlink():
+        return local
+    return recorded
+
+
 def verify_handoff_artifact(artifact: HandoffArtifact) -> Path:
-    """Verify that a referenced artifact still matches its recorded metadata."""
-    artifact_path = Path(artifact.path)
+    """Verify that a referenced artifact still matches its recorded metadata.
+
+    Returns the path that was verified, which is a local bundle copy when the
+    recorded path is not visible to this process and copies are enabled.
+    """
+    artifact_path = resolve_handoff_artifact_path(artifact)
     if not artifact_path.exists():
         raise FileNotFoundError(
-            f"Handoff artifact no longer exists: {artifact_path}"
+            f"Handoff artifact no longer exists: {artifact_path}."
+            + _NOT_VISIBLE_HINT
         )
     if not artifact_path.is_file():
         raise ValueError(
@@ -977,11 +1028,13 @@ def verify_handoff_manifest(
     if manifest.schema_version != "1.0":
         from .import_lineage import verify_source_ancestry
         verify_source_ancestry(manifest.source_ancestry or [])
-    for artifact in manifest_artifacts(manifest):
-        verify_handoff_artifact(artifact)
+    verified = {
+        id(artifact): verify_handoff_artifact(artifact)
+        for artifact in manifest_artifacts(manifest)
+    }
     if isinstance(manifest, MaBoSSToPhysiCellHandoffManifest) and manifest.readouts:
         from .boolean_readouts import verify_bnd_readouts
-        verify_bnd_readouts(manifest.bnd_file.path, manifest.readouts, manifest.network.nodes)
+        verify_bnd_readouts(verified[id(manifest.bnd_file)], manifest.readouts, manifest.network.nodes)
     if isinstance(manifest, NeKoToMaBoSSHandoffManifest) and manifest.curation_file:
         from .neko_provenance import verify_neko_provenance
         evidence = verify_neko_provenance(manifest.curation_file, manifest.bnet_file)
@@ -991,7 +1044,7 @@ def verify_handoff_manifest(
             and isinstance(manifest, MaBoSSToPhysiCellHandoffManifest)
             and manifest.parent_manifest is not None):
         parent = load_handoff_manifest(
-            manifest.parent_manifest.path, expected_handoff_type="neko-to-maboss",
+            verified[id(manifest.parent_manifest)], expected_handoff_type="neko-to-maboss",
         )
         if manifest.lineage != [parent.source]:
             raise ValueError("Source stage-parent identity mismatch.")
@@ -1014,7 +1067,8 @@ def load_handoff_manifest(
         raise ValueError("Handoff manifests must use the .json suffix.")
     if not manifest_path.exists():
         raise FileNotFoundError(
-            f"Handoff manifest does not exist: {manifest_path}"
+            f"Handoff manifest does not exist: {manifest_path}."
+            + _NOT_VISIBLE_HINT
         )
     if not manifest_path.is_file():
         raise ValueError(

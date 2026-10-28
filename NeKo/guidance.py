@@ -22,8 +22,12 @@ NEKO_AGENT_MANUAL = """
 1. **Initialize:** `create_session()` -> `set_default_params(max_len=2,
    path_policy='one_shortest', reuse_policy='discovered_paths',
    only_signed=True, consensus=True)`
-2. **Build:** `create_network([...list_of_initial_genes...], database='omnipath')`
-3. **Curate:** `remove_bimodal_interactions()` -> `remove_undefined_interactions()`
+2. **Build:** `create_network([...list_of_initial_genes...], database='omnipath')`.
+   To start from a SIF this server cannot read, pass its content as `sif_text`.
+3. **Curate:** resolve bimodal edges (BNET export requires it). Use
+   `edit_interactions(operation='set_effect')` with evidence where the sign
+   matters; `remove_bimodal_interactions()` deletes all remaining ones and can
+   disconnect the network. Then `remove_undefined_interactions()`.
 4. **Audit Connectivity:** `analyze_connectivity()` reports both isolated
    (0-edge) nodes and the full connected-component partition in one call.
    - *If disconnected:* `preview_connection_impact()` -> Apply a connection tool
@@ -111,6 +115,11 @@ mechanism metadata, including disconnected and unsigned interactions. Read the
 papers with the calling agent's literature tools and record evidence or explicit
 assumptions in BioMASS. A signed edge does not uniquely determine a biochemical
 reaction or kinetic law. Existing export_neko_handoff remains the MaBoSS route.
+
+## Sandboxed consumers
+If the consuming server cannot read NeKo's files (it reports that the manifest
+does not exist), call export_handoff_bundle(manifest_path) here and pass the
+returned object unchanged as handoff_bundle to the consumer's import tool.
 """
 NEKO_SERVER_INSTRUCTIONS += (
     " For ODE construction, use export_biomass_handoff to preserve references "

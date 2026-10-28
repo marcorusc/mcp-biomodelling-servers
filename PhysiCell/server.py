@@ -33,6 +33,7 @@ from mcp_biomodelling_servers.artifact_manager import (
 from mcp_biomodelling_servers.handoff import (
     PhysiCellHandoffImportResult,
 )
+from mcp_biomodelling_servers.handoff_bundle import HandoffBundle, resolve_handoff_source
 from mcp_biomodelling_servers.structured_outputs import (
     ArtifactSessionSummary,
     PhysiCellArtifactCleanupResult,
@@ -731,14 +732,15 @@ def delete_session(
 @_session_locked
 def import_maboss_handoff(
     manifest_path: Annotated[
-        NonEmptyString,
+        Optional[NonEmptyString],
         Field(
             description=(
                 "Path to a `maboss-to-physicell` handoff manifest. The "
-                "manifest and its complete artifact lineage are verified."
+                "manifest and its complete artifact lineage are verified. "
+                "Omit when passing handoff_bundle."
             )
         ),
-    ],
+    ] = None,
     artifact_prefix: HandoffArtifactPrefix = Field(
         default="maboss_import",
         description=(
@@ -758,13 +760,25 @@ def import_maboss_handoff(
         default=None,
         description="Session to update; omit to use the active session.",
     ),
+    handoff_bundle: Annotated[
+        Optional[HandoffBundle],
+        Field(
+            description=(
+                "Object returned by MaBoSS export_handoff_bundle, for servers "
+                "that cannot read MaBoSS's files. Use instead of manifest_path."
+            )
+        ),
+    ] = None,
 ) -> Annotated[CallToolResult, PhysiCellHandoffImportResult]:
     """Verify and atomically attach a typed MaBoSS handoff through PhysiBoSS."""
     session = _require_configuration(session_id)
     _require_physiboss()
     text, payload = _import_maboss_handoff_transaction(
         session=session,
-        manifest_path=manifest_path,
+        manifest_path=resolve_handoff_source(
+            manifest_path, handoff_bundle,
+            expected_handoff_type="maboss-to-physicell",
+        ),
         artifact_prefix=artifact_prefix,
         replace_existing=replace_existing,
         server_root=_SERVER_ROOT,

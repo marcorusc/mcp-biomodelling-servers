@@ -35,6 +35,8 @@ internet access is required to learn the supported grammar:
 ## Workflow
 1. create_session; pass session_id explicitly when several sessions are active.
 2. For NeKo, call export_biomass_handoff on NeKo, then import_neko_handoff here.
+   If BioMASS cannot read NeKo's files, pass handoff_bundle (from NeKo
+   export_handoff_bundle) instead of manifest_path.
    For standalone work, use import_text or import_text_file. For conversational
    construction, start directly with build_reactions in the empty session.
 3. Retrieve papers with the calling agent's literature tools. Preserve DOI/PMID

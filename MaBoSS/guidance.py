@@ -17,8 +17,11 @@ MABOSS_AGENT_MANUAL = """
 ## 1. Recommended Workflow (in order)
 1. **Session:** `create_session()` — returns a session_id
 2. **Load a model:** Prefer `import_neko_handoff(manifest_path)` for a typed
-   NeKo transfer. For a standalone BNET, call
-   `bnet_to_bnd_and_cfg(bnet_path)` followed by `build_simulation()`.
+   NeKo transfer, or `import_neko_handoff(handoff_bundle=...)` with the object
+   from NeKo `export_handoff_bundle` when this server cannot read NeKo's files.
+   For a standalone BNET, call
+   `bnet_to_bnd_and_cfg(bnet_path)` followed by `build_simulation()`; pass the
+   file content as `bnet_text` if this server cannot read the path.
 3. **Inspect nodes (MANDATORY):** `get_maboss_nodes()` — list ALL valid node names; always do this before any configuration step to avoid referencing non-existent nodes
 4. **Inspect parameters:** `update_maboss_parameters()` (no args) — review current defaults
 5. **Tune:** `update_maboss_parameters({"sample_count": 1000, "thread_count": 4})`
@@ -30,7 +33,8 @@ MABOSS_AGENT_MANUAL = """
 11. **Mutate:** `simulate_mutation(nodes, state)` — preserves a one-off mutant run without changing the latest ordinary selection
 12. **PhysiCell handoff:** `export_maboss_handoff(target_cell_type=...)`
     snapshots the current model, parameters, outputs, optional result, and
-    complete NeKo lineage.
+    complete NeKo lineage. If PhysiCell cannot read this server's files, pass
+    `export_handoff_bundle(manifest_path)`'s result as its `handoff_bundle`.
 
 > **State space warning:** A network with N nodes produces up to 2^N possible Boolean states.
 > Always call `set_maboss_output_nodes` to restrict outputs before `run_simulation`.
@@ -40,7 +44,7 @@ MABOSS_AGENT_MANUAL = """
 ## 2. Tool Categories
 * **Session management:** `create_session`, `list_sessions`, `set_default_session`, `delete_session`
 * **Pipeline:** `import_neko_handoff`, `bnet_to_bnd_and_cfg`, `build_simulation`, `run_simulation`
-* **Handoff:** `import_neko_handoff`, `export_maboss_handoff`
+* **Handoff:** `import_neko_handoff`, `export_maboss_handoff`, `export_handoff_bundle`
 * **Inspection (read, no side effects):** `get_maboss_nodes`, `get_maboss_initial_state`, `get_maboss_logical_rules`, `get_maboss_mutations`, `update_maboss_parameters` (no args)
 * **Configuration:** `update_maboss_parameters`, `set_maboss_output_nodes`, `set_maboss_initial_state`
 * **Analysis:** `get_simulation_result`, `simulate_mutation`, `visualize_network_trajectories`

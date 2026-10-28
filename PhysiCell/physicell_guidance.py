@@ -76,7 +76,9 @@ Preferred typed workflow:
 1. Export a `maboss-to-physicell` handoff from MaBoSS for the intended cell
    type.
 2. Import it with `import_maboss_handoff()`. The tool verifies and copies the
-   complete NeKo/MaBoSS lineage, then atomically attaches the model.
+   complete NeKo/MaBoSS lineage, then atomically attaches the model. If this
+   server cannot read MaBoSS's files, pass `handoff_bundle` (from MaBoSS
+   `export_handoff_bundle`) instead of `manifest_path`.
 3. Set timing and inheritance with `configure_physiboss_settings()`.
 4. Connect PhysiCell signals to Boolean nodes with
    `add_physiboss_input_link()`.
