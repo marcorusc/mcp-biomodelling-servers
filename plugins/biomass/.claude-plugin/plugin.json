@@ -1,7 +1,7 @@
 {
   "name": "biomass",
   "displayName": "BioMASS ODE Builder",
-  "version": "2.5.1",
+  "version": "2.5.2",
   "description": "Construct, visualize, and simulate evidence-backed ODE models with BioMASS.",
   "author": {
     "name": "Marco Ruscone"

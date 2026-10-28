@@ -15,6 +15,10 @@ from mcp_biomodelling_servers import __version__
 from mcp_biomodelling_servers.artifact_manager import (
     list_artifact_sessions as disk_sessions,
 )
+from mcp_biomodelling_servers.handoff_bundle import (
+    HandoffBundle,
+    resolve_handoff_source,
+)
 from mcp_biomodelling_servers.ode_handoff import read_ode_handoff
 from mcp_biomodelling_servers.structured_outputs import (
     ArtifactSessionSummary,
@@ -168,15 +172,27 @@ def restore_session(
 @tool(annotations=WRITE, structured_output=True)
 def import_neko_handoff(
     manifest_path: Annotated[
-        NonEmpty, Field(description="Path to a NeKo-to-BioMASS handoff manifest.")
-    ],
+        NonEmpty | None,
+        Field(description="Path to a NeKo-to-BioMASS handoff manifest. Omit when passing handoff_bundle."),
+    ] = None,
     session_id: SessionID = None,
+    handoff_bundle: Annotated[
+        HandoffBundle | None,
+        Field(
+            description=(
+                "Object returned by NeKo export_handoff_bundle, for servers that "
+                "cannot read NeKo's files. Use instead of manifest_path."
+            )
+        ),
+    ] = None,
 ) -> BioMASSStateResult:
     """Verify and import a NeKo network and its complete reference provenance."""
     with session_manager.use(session_id) as sess:
         if sess.document.mode != "empty":
             raise ValueError("Import a network into a fresh session.")
-        manifest, network = read_ode_handoff(manifest_path)
+        manifest, network = read_ode_handoff(resolve_handoff_source(
+            manifest_path, handoff_bundle, expected_handoff_type="neko-to-biomass",
+        ))
         document = sess.document.model_copy(deep=True)
         document.mode, document.network, document.upstream = (
             "records",

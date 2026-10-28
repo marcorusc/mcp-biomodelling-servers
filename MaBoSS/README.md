@@ -85,7 +85,9 @@ For a standalone BNET model, use the following order:
 
 `bnet_to_bnd_and_cfg()` writes `output.bnd` and `output.cfg` into the session
 artifact directory. With no paths supplied, `build_simulation()` automatically
-loads those files.
+loads those files. If the server cannot read your BNET file (a host that
+sandboxes each server), pass its complete content as `bnet_text` instead of
+`bnet_path`; it is stored verbatim in the session artifact directory.
 
 > A Boolean network with N visible outputs can produce up to 2^N states.
 > Always call `set_maboss_output_nodes()` before `run_simulation()`. Selecting
@@ -257,6 +259,11 @@ the NeKo MCP server. The tool:
 If the manifest declares no output nodes, call `set_maboss_output_nodes()`
 before running or exporting the model.
 
+If this server cannot read NeKo's files (a host that sandboxes each server),
+pass `handoff_bundle`, the object returned by NeKo `export_handoff_bundle`,
+instead of `manifest_path`. See
+[Hosts that sandbox each server](../README.md#hosts-that-sandbox-each-server).
+
 ### MaBoSS to PhysiCell
 
 Call `export_maboss_handoff(target_cell_type=...)` to produce an
@@ -273,6 +280,11 @@ from NeKo may inherit that context. The export refuses to overwrite existing
 handoff artifacts, so choose a new `artifact_prefix` for every retained
 handoff.
 
+For a PhysiCell server that cannot read MaBoSS's files, call
+`export_handoff_bundle(manifest_path=...)` here and pass the result to
+`import_maboss_handoff(handoff_bundle=...)`. The bundle also carries the NeKo
+parent manifest and its files.
+
 Use `export_maboss_bnd_cfg()` when only standalone MaBoSS files are needed.
 Use `export_maboss_handoff()` when PhysiCell needs typed scientific context,
 integrity metadata, and provenance.
@@ -286,7 +298,7 @@ integrity metadata, and provenance.
 | Inspection | `get_maboss_nodes`, `get_maboss_initial_state`, `get_maboss_logical_rules`, `get_maboss_mutations` |
 | Configuration | `change_maboss_rule`, `edit_maboss_readouts`, `update_maboss_parameters`, `set_maboss_output_nodes`, `set_maboss_initial_state` |
 | Simulation and analysis | `run_simulation`, `simulate_mutation`, `get_simulation_result`, `visualize_network_trajectories` |
-| Export | `export_maboss_bnd_cfg`, `export_maboss_handoff` |
+| Export | `export_maboss_bnd_cfg`, `export_maboss_handoff`, `export_handoff_bundle` |
 | Artifacts | `list_generated_files`, `clean_generated_files` |
 
 ## Resources and prompt

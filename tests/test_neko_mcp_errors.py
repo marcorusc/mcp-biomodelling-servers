@@ -1327,7 +1327,37 @@ def test_neko_handoff_rejects_multiple_generated_models(
     assert result.is_error is True
     assert "generated multiple BNET models" in result.content[0].text
     assert "requires exactly one model" in result.content[0].text
+    assert "remove_bimodal_interactions" in result.content[0].text
     assert list(artifact_dir.iterdir()) == []
+
+
+def test_multiple_bnet_error_names_the_bimodal_interactions(tmp_path: Path) -> None:
+    from NeKo.services.exporting import export_sanitized_bnet
+
+    class BimodalExports:
+        interactions = pd.DataFrame([
+            {"source": "TP53", "target": "MDM2", "Effect": "bimodal"},
+            {"source": "MDM2", "target": "TP53", "Effect": "inhibition"},
+        ])
+
+        def __init__(self, network: object) -> None:
+            del network
+
+        def export_bnet(self, prefix: str) -> None:
+            for index in (1, 2):
+                Path(f"{prefix}_{index}.bnet").write_text("A, A\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError) as error:
+        export_sanitized_bnet(
+            object(), tmp_path / "Network.bnet", overwrite=False,
+            export_factory=BimodalExports, sanitizer=lambda path: {},
+        )
+    message = str(error.value)
+    assert "1 bimodal interaction(s) remain" in message
+    assert "**Unresolved:** TP53 -> MDM2" in message
+    assert message.index("edit_interactions") < message.index("remove_bimodal_interactions")
+    assert "connectivity is not the cause" in message
+    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.parametrize(
@@ -2102,6 +2132,7 @@ def test_all_neko_tools_publish_safety_annotations() -> None:
     tools = {tool.name: tool for tool in listed_tools.tools}
 
     read_only_closed = {
+        "export_handoff_bundle",
         "list_genes_and_interactions",
         "find_paths",
         "list_network_history",
@@ -2947,7 +2978,11 @@ def test_neko_biomass_handoff_preserves_references_and_mechanisms(tmp_path):
         "session_id": sid, "biological_context": "Synthetic mechanism fixture",
     }))
     assert not result.is_error
-    manifest, graph = read_ode_handoff(result.structured_content["manifest_file"]["path"])
+    manifest_path = result.structured_content["manifest_file"]["path"]
+    # Text-only clients (Claude Science's host.mcp) need the path in the prose.
+    assert manifest_path in result.content[0].text
+    assert "export_handoff_bundle" in result.content[0].text
+    manifest, graph = read_ode_handoff(manifest_path)
     assert manifest.history_state_id == 2
     assert graph.edges[0].references == ["10.1234/example", "PMID:1"]
     assert graph.edges[0].metadata["Mechanism"] == "binding"

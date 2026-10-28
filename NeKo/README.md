@@ -74,8 +74,11 @@ Use this order for a database-backed network:
 2. Optionally configure reusable connection settings with
    `set_default_params()`.
 3. Build the network with `create_network(...)`.
-4. Curate ambiguous edges with `remove_bimodal_interactions()` and, when
-   appropriate, `remove_undefined_interactions()`.
+4. Resolve bimodal edges, which BNET export requires: `edit_interactions`
+   (`operation='set_effect'`) with evidence where the sign matters, or
+   `remove_bimodal_interactions()` to delete all remaining ones (this can
+   disconnect the network). When appropriate, also call
+   `remove_undefined_interactions()`.
 5. Check connectivity with `analyze_connectivity()` (isolated nodes and the
    full component partition).
 6. If repair is needed, call `preview_connection_impact()` before selecting a
@@ -138,6 +141,10 @@ An existing SIF can be used instead:
 }
 ```
 
+If the server cannot read your file (a host that sandboxes each server), pass
+the file's complete content as `sif_text` instead of `sif_file`. NeKo stores it
+verbatim in the session artifact directory and records it as the import source.
+
 Additional seed genes may be supplied together with `sif_file`. A call that
 cannot complete successfully does not replace a valid network already stored
 in the session.
@@ -171,7 +178,8 @@ remove the reverse edge.
 ### Curate interaction signs
 
 - `remove_bimodal_interactions` removes edges reported as both activating and
-  inhibiting.
+  inhibiting, with their references, and can disconnect the network. Prefer
+  `edit_interactions` with evidence when an edge's sign matters.
 - `remove_undefined_interactions` removes edges whose effect cannot be mapped
   to a Boolean activation or inhibition.
 
@@ -409,6 +417,11 @@ Pass the returned manifest path to MaBoSS `import_neko_handoff()`. A standalone
 BNET path can instead be passed to MaBoSS `bnet_to_bnd_and_cfg()`, but that
 route does not preserve the typed scientific context and provenance manifest.
 
+If MaBoSS cannot read NeKo's files (a host that sandboxes each server), call
+`export_handoff_bundle(manifest_path=...)` and pass the returned object to
+`import_neko_handoff(handoff_bundle=...)` instead. See
+[Hosts that sandbox each server](../README.md#hosts-that-sandbox-each-server).
+
 ## Tool reference
 
 | Category | Tools |
@@ -419,7 +432,7 @@ route does not preserve the typed scientific context and provenance manifest.
 | Inspection and evidence | `list_genes_and_interactions`, `filter_interactions`, `find_paths`, `get_references`, `analyze_connectivity`, `analyze_gene_set` |
 | Connection strategies | `preview_connection_impact`, `bridge_components`, `connect_targeted_nodes`, `apply_global_connection` |
 | Branching history | `list_network_history`, `navigate_network_history`, `compare_network_states`, `set_network_history_limit` |
-| Export and artifacts | `export_network`, `export_neko_handoff`, `export_biomass_handoff`, `list_bnet_files`, `clean_generated_files` |
+| Export and artifacts | `export_network`, `export_neko_handoff`, `export_biomass_handoff`, `export_handoff_bundle`, `list_bnet_files`, `clean_generated_files` |
 
 ## Resources and prompt
 

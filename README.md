@@ -54,7 +54,7 @@ python -m pip install mcp-biomodelling-servers
 This installs every server's modelling dependencies, including NeKo
 (`nekomata` 1.10.2 or newer, below 2.0), PhysiCell-settings 0.6.3 or newer
 (below 0.7), the bundled MaBoSS engine and PyGraphviz. To reproduce a specific
-release, pin it, for example `mcp-biomodelling-servers==2.5.1`.
+release, pin it, for example `mcp-biomodelling-servers==2.5.2`.
 
 The MaBoSS engine package, `cmaboss`, has no stable release yet: every build
 on PyPI is a `1.0.0b*` pre-release. The dependency `cmaboss>=1.0.0b32,<2` names
@@ -216,6 +216,32 @@ instead use its console script directly:
 Refer to your MCP client's documentation for its configuration-file location
 and reload procedure. For Visual Studio Code, see
 [Use MCP servers in VS Code](https://code.visualstudio.com/docs/copilot/chat/mcp-servers).
+
+### Hosts that sandbox each server
+
+Handoff manifests are files, so `manifest_path` works only when the consuming
+server can read the producer's artifact directory. Some hosts (for example
+Claude Science) run every MCP server in its own sandbox with a private
+filesystem. There, transfer the handoff as a value instead:
+
+1. Call `export_neko_handoff`, `export_biomass_handoff` or `export_maboss_handoff`
+   as usual and keep the returned manifest path.
+2. Call `export_handoff_bundle(manifest_path=...)` on the same server (NeKo or
+   MaBoSS). It returns one JSON object that holds the manifest and every file
+   it references, transitively, keyed by SHA-256. It reads only files on disk,
+   so it also works after the exporting session has ended.
+3. Pass that object unchanged as `handoff_bundle` to `import_neko_handoff`
+   (MaBoSS or BioMASS) or `import_maboss_handoff` (PhysiCell), instead of
+   `manifest_path`.
+
+The importer checks every digest, stores the files under
+`<artifact root>/handoff-blobs/<sha256>/`, and then runs the normal import. The
+manifest is not rewritten, so its digest, recorded paths and provenance are the
+same as with a path import. A bundle holds at most 64 MiB of uncompressed data.
+
+The same applies to files the agent holds itself. Pass their content instead of
+a path: `sif_text` on NeKo `create_network` and `bnet_text` on MaBoSS
+`bnet_to_bnd_and_cfg`.
 
 ## ODE models with BioMASS
 

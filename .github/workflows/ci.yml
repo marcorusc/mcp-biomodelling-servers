@@ -98,10 +98,13 @@ jobs:
             artifact_manager.py \
             mcp_biomodelling_servers/artifact_manager.py \
             mcp_biomodelling_servers/handoff.py \
+            mcp_biomodelling_servers/handoff_bundle.py \
+            mcp_biomodelling_servers/inline_sources.py \
             mcp_biomodelling_servers/neko_provenance.py \
             mcp_biomodelling_servers/structured_outputs.py \
             MaBoSS/services/ \
             MaBoSS/tools/curation.py \
+            MaBoSS/tools/handoff_bundle.py \
             mcp_biomodelling_servers/boolean_readouts.py \
             PhysiCell/services/configuration.py \
             PhysiCell/services/bundle.py \
@@ -116,6 +119,7 @@ jobs:
             NeKo/src/structured_outputs.py \
             NeKo/session_manager.py \
             NeKo/tools/curation.py \
+            NeKo/tools/handoff_bundle.py \
             NeKo/tools/history.py \
             NeKo/services/provenance.py \
             NeKo/services/exporting.py \
@@ -152,6 +156,8 @@ jobs:
             --strict-optional \
             artifact_manager.py \
             mcp_biomodelling_servers/handoff.py \
+            mcp_biomodelling_servers/handoff_bundle.py \
+            mcp_biomodelling_servers/inline_sources.py \
             mcp_biomodelling_servers/neko_provenance.py \
             mcp_biomodelling_servers/structured_outputs.py \
             MaBoSS/scientific_outputs.py \

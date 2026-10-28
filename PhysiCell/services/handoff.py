@@ -58,7 +58,7 @@ def import_maboss_handoff_transaction(
         session_id=loaded_manifest.source.session_id,
         role="parent_manifest",
     )
-    stored_nodes = bnd_node_names(loaded_manifest.bnd_file.path)
+    stored_nodes = bnd_node_names(verify_handoff_artifact(loaded_manifest.bnd_file))
     if stored_nodes != loaded_manifest.network.nodes:
         raise ValueError(
             "The MaBoSS BND node order does not match the handoff manifest."
@@ -67,7 +67,7 @@ def import_maboss_handoff_transaction(
     neko_manifest = None
     if loaded_manifest.parent_manifest is not None:
         loaded_parent = load_handoff_manifest(
-            loaded_manifest.parent_manifest.path,
+            verify_handoff_artifact(loaded_manifest.parent_manifest),
             expected_handoff_type="neko-to-maboss",
             verify_artifacts=True,
         )
@@ -223,7 +223,7 @@ def import_maboss_handoff_transaction(
             if neko_manifest is not None:
                 assert loaded_manifest.parent_manifest is not None
                 reloaded_parent = load_handoff_manifest(
-                    loaded_manifest.parent_manifest.path,
+                    verify_handoff_artifact(loaded_manifest.parent_manifest),
                     expected_handoff_type="neko-to-maboss",
                     verify_artifacts=True,
                 )

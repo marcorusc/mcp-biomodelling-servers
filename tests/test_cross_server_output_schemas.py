@@ -52,6 +52,7 @@ EXPECTED_NAMED_OUTPUTS = {
         "run_simulation": "MaBoSSSimulationRunResult",
         "export_maboss_bnd_cfg": "MaBoSSModelExportResult",
         "export_maboss_handoff": "MaBoSSHandoffExportResult",
+        "export_handoff_bundle": "MaBoSSHandoffBundle",
         "get_maboss_nodes": "MaBoSSNodeListResult",
         "get_maboss_initial_state": "MaBoSSInitialStateResult",
         "get_maboss_logical_rules": "MaBoSSLogicalRulesResult",
@@ -68,6 +69,7 @@ EXPECTED_NAMED_OUTPUTS = {
         "export_network": "NeKoNetworkExportResult",
         "export_neko_handoff": "NeKoHandoffExportResult",
         "export_biomass_handoff": "NeKoBioMASSHandoffExportResult",
+        "export_handoff_bundle": "NeKoHandoffBundle",
         "list_genes_and_interactions": "NeKoNetworkInventoryResult",
         "find_paths": "NeKoPathSearchResult",
         "list_network_history": "NetworkHistorySummary",
@@ -113,8 +115,8 @@ EXPECTED_NAMED_OUTPUTS = {
 }
 
 EXPECTED_TOOL_COUNTS = {
-    "MaBoSS": 25,
-    "NeKo": 34,
+    "MaBoSS": 26,
+    "NeKo": 35,
     "BioMASS": 22,
     "PhysiCell": 36,
 }

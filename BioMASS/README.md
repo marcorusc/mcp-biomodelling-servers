@@ -44,7 +44,9 @@ not support editable installs.
    and available mechanism/context columns. It does not require connectivity.
 2. `create_session`, then `import_neko_handoff` with the returned manifest path.
    Import verifies artifact integrity and stores a durable copy of the network
-   and provenance inside the authoring snapshot.
+   and provenance inside the authoring snapshot. If BioMASS cannot read NeKo's
+   files (a host that sandboxes each server), pass `handoff_bundle`, the object
+   returned by NeKo `export_handoff_bundle`, instead of the path.
 3. Read papers with the calling agent's literature tools. `set_evidence` stores
    source identifiers, supporting passages or summaries, locations, biological
    context, limitations, and supporting/contradicting/context-only stances.

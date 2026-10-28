@@ -6,7 +6,7 @@
       "command": "uvx",
       "args": [
         "--from",
-        "mcp-biomodelling-servers==2.5.1",
+        "mcp-biomodelling-servers==2.5.2",
         "mcp-physicell-server"
       ]
     }
