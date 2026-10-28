@@ -50,6 +50,8 @@ calls, scientific defaults and engine behaviour are unchanged from 2.5.1.
 
 ### Changed
 
+- CI now tests against `nekomata` 1.10.3. The supported range stays
+  `nekomata>=1.10.2,<2`.
 - `manifest_path` on the three import tools and `bnet_path` on MaBoSS
   `bnet_to_bnd_and_cfg` are no longer required in the input schema, since
   `handoff_bundle` or `bnet_text` can replace them. Path-based calls behave as
